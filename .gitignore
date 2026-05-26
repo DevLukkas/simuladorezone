@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+
+node_modules/
+vendor/
+dist/
+build/
+
+.agents/
+.codex/
+.idea/
+.vscode/
+.DS_Store
+*.log

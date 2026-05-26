@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ezone_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ezone_simulator
+      POSTGRES_USER: ezone
+      POSTGRES_PASSWORD: ezone_secret
+    volumes:
+      - ezone_pgdata:/var/lib/postgresql/data
+
+volumes:
+  ezone_pgdata:
