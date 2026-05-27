@@ -1,4 +1,5 @@
 import { applyChangeElement } from './changeElement.js'
+import { applyCreatureFieldEffects } from './creatureEffects.js'
 import { applyDelayedEffect } from './delayedEffect.js'
 import { applyModifyStat } from './modifyStat.js'
 import { applySummonToken } from './summonToken.js'
@@ -19,6 +20,7 @@ const TRIGGER_HANDLERS = {
 export function createCreatureInstance(card) {
   return {
     ...card,
+    instanceId: card.instanceId ?? `${card.id}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     element: card.element ?? card.elemento ?? 'neutro',
     rarity: card.rarity ?? card.raridade,
     baseStats: {
@@ -50,6 +52,8 @@ export function recalculateCreatureStats(creature, attachedCards = [], gameConte
       if (handler) handler(effect, { ...gameContext, creature, source: card })
     }
   }
+
+  applyCreatureFieldEffects(creature, gameContext)
 
   for (const modifier of creature.permanentModifiers ?? []) {
     if (modifier.attack) creature.currentStats.attack += modifier.attack

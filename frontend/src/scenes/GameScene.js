@@ -7,6 +7,8 @@ import { itens }       from '../data/itens.js'
 import { comandos }    from '../data/comandos.js'
 import { cenarios }    from '../data/cenarios.js'
 import { abilityEffectNeedsTarget, applyTargetedAbilityEffect } from '../effects/abilityEffects.js'
+import { matchesCreatureRule } from '../effects/creatureEffects.js'
+import { applySummonToken } from '../effects/summonToken.js'
 import {
   activateAbility,
   canActivateAbility,
@@ -1003,8 +1005,13 @@ export default class GameScene extends Scene {
       } else if (this._isAttachmentCard(card) && this._canUseMainAction('attach') && this._attachmentTargets(card).length) {
         actions.unshift({ label: 'ANEXAR', color: '#6a3d9a', fn: () => this._startAttachmentSelection(cardObject) })
       }
-    } else if (source === 'field' && this._canAttackWith(cardObject)) {
-      actions.unshift({ label: 'ATACAR', color: '#9a2f22', fn: () => this._startAttack(cardObject) })
+    } else if (source === 'field') {
+      if (this._fieldCreatureAbilities(cardObject).length) {
+        actions.unshift({ label: 'ATIVAR', color: '#8a4a12', fn: () => this._activateFieldCreatureAbility(cardObject) })
+      }
+      if (this._canAttackWith(cardObject)) {
+        actions.unshift({ label: 'ATACAR', color: '#9a2f22', fn: () => this._startAttack(cardObject) })
+      }
     } else if (source === 'attachment' && this._activatableAbilities(cardObject).length) {
       actions.unshift({ label: 'ATIVAR', color: '#8a4a12', fn: () => this._openAbilityElementChoice(cardObject) })
     }
@@ -1130,8 +1137,8 @@ export default class GameScene extends Scene {
   _resolveCreatureAttack(attackerSlot, defenderSlot) {
     const attacker = attackerSlot.card
     const defender = defenderSlot.card
-    const atkDamage = attacker.currentStats?.attack ?? attacker.attack ?? 0
-    const defDamage = defender.currentStats?.attack ?? defender.attack ?? 0
+    const atkDamage = this._combatDamageAfterReduction(defenderSlot, this._slotsOpp, attacker.currentStats?.attack ?? attacker.attack ?? 0)
+    const defDamage = this._combatDamageAfterReduction(attackerSlot, this._slotsMy, defender.currentStats?.attack ?? defender.attack ?? 0)
 
     attacker.hasAttackedTurn = this._turnNumber
     defender.damageTaken = (defender.damageTaken ?? 0) + atkDamage
@@ -1139,27 +1146,28 @@ export default class GameScene extends Scene {
     this._recordDamage(attacker, defender, atkDamage)
     this._recordDamage(defender, attacker, defDamage)
 
-    this._refreshBattleDamage(attackerSlot, this._slotsMy)
-    this._refreshBattleDamage(defenderSlot, this._slotsOpp)
+    this._refreshBattleDamage(attackerSlot, this._slotsMy, defenderSlot)
+    this._refreshBattleDamage(defenderSlot, this._slotsOpp, attackerSlot)
     this._toast(`${attacker.name} atacou ${defender.name}.`)
     this._logAction(`${attacker.name} atacou ${defender.name}.`)
   }
 
-  _refreshBattleDamage(slot, ownerSlots) {
+  _refreshBattleDamage(slot, ownerSlots, destroyerSlot = null) {
     if (!slot?.card) return
     recalculateCreatureStats(slot.card, slot.attachments.map(entry => entry.card), {
       yourField: ownerSlots,
     })
     this._refreshFieldStatsOverlay(slot)
     if ((slot.card.currentStats?.defense ?? 1) <= 0) {
-      this._destroyCreatureInBattle(slot, ownerSlots === this._slotsMy ? 'my' : 'opp')
+      this._destroyCreatureInBattle(slot, ownerSlots === this._slotsMy ? 'my' : 'opp', destroyerSlot)
     }
   }
 
-  _destroyCreatureInBattle(slot, owner) {
+  _destroyCreatureInBattle(slot, owner, destroyerSlot = null) {
     const card = slot.card
     const pointsTo = owner === 'my' ? 'opp' : 'my'
     this._addScore(pointsTo, this._pointsForRarity(card))
+    this._resolveDestroyedByCreatureTriggers(card, destroyerSlot)
 
     const discard = owner === 'my' ? this.myDiscard : this.oppDiscard
     discard.push(card)
@@ -1177,7 +1185,28 @@ export default class GameScene extends Scene {
     } else {
       this._renderOpponentDiscardPile()
     }
+    this._resolveCreatureSentToDiscard(card, owner)
+    this._recalculateAllFieldCreatures()
     this._logAction(`${card.name} foi destruida em batalha.`)
+  }
+
+  _combatDamageAfterReduction(targetSlot, ownerSlots, incoming) {
+    let damage = Math.max(0, Number(incoming) || 0)
+    if (!targetSlot?.card || damage <= 0) return damage
+
+    for (const sourceSlot of ownerSlots ?? []) {
+      const source = sourceSlot.card
+      if (!source) continue
+
+      for (const effect of source.effects ?? []) {
+        if (effect.type !== 'reduce_combat_damage_taken') continue
+        if (effect.target === 'other_your_creatures' && source.instanceId === targetSlot.card.instanceId) continue
+        if (!matchesCreatureRule(targetSlot.card, effect.filter ?? {})) continue
+        damage = Math.max(0, damage - (Number(effect.value) || 0))
+      }
+    }
+
+    return damage
   }
 
   _pointsForRarity(card) {
@@ -1267,6 +1296,11 @@ export default class GameScene extends Scene {
   _startSummonSelection(cardObject) {
     if (!this._canUseMainAction('summon')) {
       this._toast('Você já invocou neste turno.')
+      return
+    }
+    const card = cardObject.getData('cardData')
+    if (card?.summonRule?.normal === false) {
+      this._toast(`${card.name} não pode ser invocada normalmente.`)
       return
     }
     if (!this._slotsMy.some(slot => !slot.card)) {
@@ -1968,12 +2002,14 @@ export default class GameScene extends Scene {
   _applyOnAttachElementChoice(slot, effect, element) {
     if (!slot?.card || !effect.choose?.includes(element)) return
 
+    const previousElement = slot.card.element
     slot.card.element = element
     if (this._elementChoiceMenu) {
       this._elementChoiceMenu.destroy(true)
       this._elementChoiceMenu = null
     }
 
+    this._resolveCreatureElementChanged(slot, previousElement, element)
     this._recalculateAllFieldCreatures()
     this._toast(`Elemento alterado para ${ELEMENT_LABEL[element] ?? element}.`)
   }
@@ -2002,6 +2038,8 @@ export default class GameScene extends Scene {
     const tokenObject = this._createCardObject(tokenCard, slot.x, slot.y, false)
     tokenObject.setDepth(8)
     tokenObject.setData('source', 'field')
+    tokenObject.setData('slot', slot)
+    tokenObject.setData('abilityState', { usedAbilities: {} })
     tokenObject.setInteractive({ useHandCursor: true })
     tokenObject.on('pointerdown', () => this._handleCardClick(tokenObject))
 
@@ -2010,6 +2048,8 @@ export default class GameScene extends Scene {
     slot.cardObject = tokenObject
     slot.attachments = slot.attachments ?? []
 
+    this._resolveCreatureEnterField(slot)
+    this._recalculateAllFieldCreatures()
     this._toast(`${tokenCard.name} criada.`)
     return true
   }
@@ -2022,6 +2062,315 @@ export default class GameScene extends Scene {
       })
       this._refreshFieldStatsOverlay(slot)
     })
+  }
+
+  _fieldCreatureAbilities(cardObject) {
+    const card = cardObject.getData('cardData')
+    const slot = cardObject.getData('slot')
+    const sourceState = cardObject.getData('abilityState') ?? { usedAbilities: {} }
+    if (!slot?.card) return []
+
+    return (card.activatedAbilities ?? []).filter(ability => {
+      if (ability.source !== 'field_creature') return false
+      if (ability.condition?.active_player === 'opponent' && this._activePlayer !== 'opp') return false
+      return canActivateAbility(ability, {
+        creature: slot.card,
+        source: card,
+        sourceState,
+        turn: this._turnNumber,
+      })
+    })
+  }
+
+  _activateFieldCreatureAbility(cardObject) {
+    const ability = this._fieldCreatureAbilities(cardObject)[0]
+    const slot = cardObject.getData('slot')
+    const sourceState = cardObject.getData('abilityState') ?? { usedAbilities: {} }
+    if (!ability || !slot?.card) {
+      this._toast('Habilidade indisponível.')
+      return
+    }
+
+    const resolved = this._payCreatureAbilityCost(slot, ability.cost)
+      && this._resolveCreatureAbilityAction(slot, ability.action)
+    if (!resolved) {
+      this._toast('Não foi possível ativar.')
+      return
+    }
+
+    if (ability.timing === 'once_per_turn') {
+      sourceState.usedAbilities = sourceState.usedAbilities ?? {}
+      sourceState.usedAbilities[ability.id] = this._turnNumber
+      cardObject.setData('abilityState', sourceState)
+    }
+
+    this._recalculateAllFieldCreatures()
+    this._toast('Habilidade ativada.')
+    this._logAction(`${slot.card?.name ?? 'Criatura'} ativou uma habilidade.`)
+  }
+
+  _payCreatureAbilityCost(slot, cost) {
+    if (!cost) return true
+
+    if (cost.type === 'destroy_attachment') {
+      const index = (slot.attachments ?? []).findIndex(entry => {
+        const name = String(entry.card?.name ?? entry.card?.nome ?? '').toLowerCase()
+        return name.includes(String(cost.name_includes ?? '').toLowerCase())
+      })
+      if (index === -1) return false
+      this._discardAttachment(slot, index)
+      return true
+    }
+
+    if (cost.type === 'sacrifice_self') {
+      this._sendFieldCreatureToDiscard(slot, 'my', 'efeito')
+      return true
+    }
+
+    return false
+  }
+
+  _resolveCreatureAbilityAction(sourceSlot, action) {
+    if (!action) return true
+
+    if (action.type === 'cannot_attack_next_turn') {
+      sourceSlot.card.cannotAttackUntilTurn = this._turnNumber + 1
+      return true
+    }
+
+    if (action.type === 'summon_from_discard') {
+      const slot = this._slotsMy.find(s => !s.card)
+      if (!slot) return false
+      const index = this.myDiscard.findIndex(card => this._matchesCardRule(card, action.filter ?? {}))
+      if (index === -1) return false
+      const [card] = this.myDiscard.splice(index, 1)
+      this._summonCreatureToSlot(card, slot)
+      this._renderDiscardPile()
+      return true
+    }
+
+    this._toast('Efeito preparado para a próxima camada de regras.')
+    return true
+  }
+
+  _resolveCreatureEnterField(enteredSlot) {
+    if (!enteredSlot?.card) return
+    const card = enteredSlot.card
+
+    for (const effect of card.onEnter ?? []) {
+      if (effect.type === 'discard_hand_card_then_search_deck') {
+        this._resolveDiscardHandCardThenSearch(effect)
+      } else if (effect.type === 'mill_then_gain_defense_per_discard_element') {
+        this._resolveMillThenGainDefense(card, effect)
+      } else if (effect.type === 'shuffle_discard_creature_then_debuff_enemy') {
+        this._resolveShuffleDiscardCreatureThenDebuff(effect)
+      }
+    }
+
+    this._resolveOtherCreatureEnterTriggers(enteredSlot)
+  }
+
+  _resolveDiscardHandCardThenSearch(effect) {
+    const discardIndex = this.myHand.findIndex(card => this._matchesCardRule(card, effect.discard ?? {}))
+    if (discardIndex === -1) return
+
+    const [discarded] = this.myHand.splice(discardIndex, 1)
+    this.myDiscard.push(discarded)
+
+    const searchIndex = this.myDeck.findIndex(card => this._matchesCardRule(card, effect.search ?? {}))
+    if (searchIndex !== -1 && this.myHand.length < MAX_HAND_SIZE) {
+      const [found] = this.myDeck.splice(searchIndex, 1)
+      this.myHand.push(found)
+      this._toast(`${found.name} adicionada à mão.`)
+    }
+
+    this._renderHand(this.myHand)
+    this._renderDeckPile()
+    this._renderDiscardPile()
+    this._playDiscardSmoke()
+  }
+
+  _resolveMillThenGainDefense(creature, effect) {
+    const count = Math.min(Number(effect.mill) || 0, this.myDeck.length)
+    for (let i = 0; i < count; i++) {
+      this.myDiscard.push(this.myDeck.shift())
+    }
+
+    const elements = new Set(this.myDiscard.map(card => card.element ?? card.elemento).filter(Boolean))
+    this._addPermanentMarker(creature, ['defense'], elements.size * (Number(effect.value) || 0))
+    this._renderDeckPile()
+    this._renderDiscardPile()
+    this._playDiscardSmoke()
+  }
+
+  _resolveShuffleDiscardCreatureThenDebuff(effect) {
+    const discardIndex = this.myDiscard.findIndex(card => (
+      card.card_type === 'criatura' && this._matchesCardRule(card, effect.discardFilter ?? {})
+    ))
+    const targetSlot = this._slotsOpp.find(slot => slot.card)
+    if (discardIndex === -1 || !targetSlot?.card) return
+
+    const [shuffled] = this.myDiscard.splice(discardIndex, 1)
+    this.myDeck.push(shuffled)
+    this.myDeck = this._shuffleCards(this.myDeck)
+
+    const value = Number(shuffled.attack ?? shuffled.ataque) || 0
+    targetSlot.card.tempModifiers = [...(targetSlot.card.tempModifiers ?? []), {
+      expiresOnTurn: this._turnNumber,
+      attack: -value,
+      defense: 0,
+    }]
+    this._renderDeckPile()
+    this._renderDiscardPile()
+    this._logAction(`${shuffled.name} voltou ao baralho e reduziu ATQ inimigo.`)
+  }
+
+  _resolveOtherCreatureEnterTriggers(enteredSlot) {
+    for (const sourceSlot of this._slotsMy) {
+      if (!sourceSlot.card || sourceSlot === enteredSlot) continue
+      for (const ability of sourceSlot.card.triggeredAbilities ?? []) {
+        if (ability.trigger !== 'other_creature_enters') continue
+        if (!matchesCreatureRule(enteredSlot.card, ability.filter ?? {})) continue
+        this._resolveCreatureTriggerAction(sourceSlot, ability.action, enteredSlot.card)
+      }
+    }
+  }
+
+  _resolveCreatureElementChanged(changedSlot, previousElement, newElement) {
+    if (!changedSlot?.card || previousElement === newElement) return
+
+    for (const sourceSlot of this._slotsMy) {
+      if (!sourceSlot.card) continue
+      for (const ability of sourceSlot.card.triggeredAbilities ?? []) {
+        const ownChange = ability.trigger === 'your_creature_element_changed'
+        const selfChange = ability.trigger === 'self_element_changed' && sourceSlot === changedSlot
+        if (!ownChange && !selfChange) continue
+        if (!matchesCreatureRule(changedSlot.card, ability.filter ?? {})) continue
+        this._resolveCreatureTriggerAction(sourceSlot, ability.action, changedSlot.card)
+      }
+    }
+  }
+
+  _resolveCreatureSentToDiscard(card, owner) {
+    if (owner !== 'my') return
+
+    for (const ability of card.triggeredAbilities ?? []) {
+      if (ability.trigger === 'sent_from_field_to_your_discard') {
+        this._resolveCreatureTriggerAction(null, ability.action, card)
+      }
+    }
+
+    for (const sourceSlot of this._slotsMy) {
+      if (!sourceSlot.card) continue
+      for (const ability of sourceSlot.card.triggeredAbilities ?? []) {
+        if (ability.trigger !== 'other_creature_sent_to_your_discard') continue
+        if (!matchesCreatureRule(card, ability.filter ?? {})) continue
+        this._resolveCreatureTriggerAction(sourceSlot, ability.action, card)
+      }
+    }
+  }
+
+  _resolveDestroyedByCreatureTriggers(card, destroyerSlot) {
+    if (!destroyerSlot?.card) return
+    for (const ability of card.triggeredAbilities ?? []) {
+      if (ability.trigger !== 'destroyed_by_creature') continue
+      if (ability.action?.type !== 'deal_damage_to_destroyer') continue
+      this._dealDamageToCreature(destroyerSlot, ability.action.damage ?? 0, this._slotsMy.includes(destroyerSlot) ? this._slotsMy : this._slotsOpp)
+    }
+  }
+
+  _resolveCreatureTriggerAction(sourceSlot, action, triggerCard) {
+    if (!action) return false
+
+    if (action.type === 'add_permanent_marker') {
+      const target = action.target === 'self' ? sourceSlot?.card : triggerCard
+      return this._addPermanentMarker(target, action.stats, action.value)
+    }
+
+    if (action.type === 'add_marker_to_your_creature') {
+      const targetSlot = this._slotsMy.find(slot => slot.card)
+      return this._addPermanentMarker(targetSlot?.card, action.stats, action.value)
+    }
+
+    if (action.type === 'summon_from_deck') {
+      const count = Number(action.count) || 1
+      let summoned = 0
+      for (let i = this.myDeck.length - 1; i >= 0 && summoned < count; i--) {
+        if (!this._matchesCardRule(this.myDeck[i], action.filter ?? {})) continue
+        const slot = this._slotsMy.find(s => !s.card)
+        if (!slot) break
+        const [card] = this.myDeck.splice(i, 1)
+        this._summonCreatureToSlot(card, slot)
+        summoned += 1
+      }
+      this._renderDeckPile()
+      return summoned > 0
+    }
+
+    if (action.type === 'summon_token') {
+      const token = applySummonToken({ token: action.token })
+      return token ? this._summonTokenToFirstEmptyZone(token) : false
+    }
+
+    if (action.type === 'choose_enemy_creature_prevent_attack_next_turn') {
+      const targetSlot = this._slotsOpp.find(slot => slot.card)
+      if (!targetSlot?.card) return false
+      targetSlot.card.cannotAttackUntilTurn = this._turnNumber + 1
+      return true
+    }
+
+    this._logAction('Efeito de criatura registrado para implementação de escolha/resposta.')
+    return false
+  }
+
+  _sendFieldCreatureToDiscard(slot, owner, reason = 'efeito') {
+    if (!slot?.card) return false
+    const card = slot.card
+    const discard = owner === 'my' ? this.myDiscard : this.oppDiscard
+
+    discard.push(card)
+    for (const attachment of slot.attachments ?? []) {
+      if (attachment.card) discard.push(attachment.card)
+      attachment.object?.destroy(true)
+    }
+    slot.cardObject?.destroy(true)
+    slot.card = null
+    slot.cardObject = null
+    slot.attachments = []
+
+    if (owner === 'my') {
+      this._renderDiscardPile()
+      this._playDiscardSmoke()
+    } else {
+      this._renderOpponentDiscardPile()
+    }
+
+    this._resolveCreatureSentToDiscard(card, owner)
+    this._logAction(`${card.name} foi enviada ao descarte por ${reason}.`)
+    return true
+  }
+
+  _addPermanentMarker(creature, stats = [], value = 0) {
+    if (!creature) return false
+    const amount = Number(value) || 0
+    if (!amount) return false
+    const list = Array.isArray(stats) ? stats : [stats]
+    creature.permanentModifiers = [...(creature.permanentModifiers ?? []), {
+      attack: list.includes('attack') ? amount : 0,
+      defense: list.includes('defense') ? amount : 0,
+    }]
+    return true
+  }
+
+  _matchesCardRule(card, rule = {}) {
+    if (!card) return false
+    const name = String(card.name ?? card.nome ?? '').toLowerCase()
+    if (rule.name && name !== String(rule.name).toLowerCase()) return false
+    if (rule.name_includes && !name.includes(String(rule.name_includes).toLowerCase())) return false
+    if (rule.race && card.raca !== rule.race) return false
+    if (rule.element && (card.element ?? card.elemento) !== rule.element) return false
+    if (rule.card_type && card.card_type !== rule.card_type) return false
+    return true
   }
 
   _processDelayedEffects(trigger) {
@@ -2050,16 +2399,19 @@ export default class GameScene extends Scene {
     }
   }
 
-  _dealDamageToCreature(slot, value) {
+  _dealDamageToCreature(slot, value, ownerSlots = this._slotsMy) {
     const damage = Number(value) || 0
     if (!slot?.card || damage <= 0) return
 
     slot.card.damageTaken = (slot.card.damageTaken ?? 0) + damage
     recalculateCreatureStats(slot.card, slot.attachments.map(entry => entry.card), {
-      yourField: this._slotsMy,
+      yourField: ownerSlots,
     })
     this._refreshFieldStatsOverlay(slot)
     this._toast(`${slot.card.name} recebeu ${damage} de dano.`)
+    if ((slot.card.currentStats?.defense ?? 1) <= 0) {
+      this._destroyCreatureInBattle(slot, ownerSlots === this._slotsMy ? 'my' : 'opp')
+    }
   }
 
   _activatableAbilities(cardObject) {
@@ -2112,6 +2464,7 @@ export default class GameScene extends Scene {
     const slot = cardObject.getData('slot')
     const card = cardObject.getData('cardData')
     const sourceState = cardObject.getData('abilityState')
+    const previousElement = slot?.card?.element
 
     const applied = activateAbility(ability, {
       creature: slot.card,
@@ -2130,6 +2483,7 @@ export default class GameScene extends Scene {
       this._elementChoiceMenu.destroy(true)
       this._elementChoiceMenu = null
     }
+    this._resolveCreatureElementChanged(slot, previousElement, element)
     this._recalculateAllFieldCreatures()
     this._toast(`Elemento alterado para ${ELEMENT_LABEL[element] ?? element}.`)
   }
@@ -2151,6 +2505,8 @@ export default class GameScene extends Scene {
 
     this._pendingSummonCard = null
     this._clearSummonZones()
+    this._resolveCreatureEnterField(slot)
+    this._recalculateAllFieldCreatures()
     this._playSummonImpact(creature, slot)
 
     this._sendAction('play_card', {
@@ -2162,7 +2518,10 @@ export default class GameScene extends Scene {
 
   _summonCreatureToSlot(cardData, slot, options = {}) {
     const cardObject = this._createCardObject(cardData, slot.x, slot.y, false)
-    return this._placeCreatureObjectInSlot(cardData, cardObject, slot, options)
+    const creature = this._placeCreatureObjectInSlot(cardData, cardObject, slot, options)
+    this._resolveCreatureEnterField(slot)
+    this._recalculateAllFieldCreatures()
+    return creature
   }
 
   _placeCreatureObjectInSlot(cardData, cardObject, slot, options = {}) {
@@ -2176,6 +2535,8 @@ export default class GameScene extends Scene {
     cardObject.setPosition(slot.x, slot.y)
     cardObject.setDepth(8)
     cardObject.setData('source', 'field')
+    cardObject.setData('slot', slot)
+    cardObject.setData('abilityState', { usedAbilities: {} })
     cardObject.removeAllListeners('pointerdown')
     cardObject.setInteractive({ useHandCursor: true })
     cardObject.on('pointerdown', () => this._handleCardClick(cardObject))
