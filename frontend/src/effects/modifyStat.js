@@ -4,6 +4,7 @@ export function applyModifyStat(effect, context) {
 
   const stat = effect.stat
   if (!['attack', 'defense'].includes(stat)) return
+  if (effect.condition && !matchesEffectCondition(effect.condition, context)) return
 
   let value = Number(effect.value) || 0
   for (const conditional of effect.conditionals ?? []) {
@@ -14,6 +15,22 @@ export function applyModifyStat(effect, context) {
   value += valueFromCardCount(effect.value_per_card, context)
 
   creature.currentStats[stat] += value
+}
+
+function matchesEffectCondition(condition, context) {
+  if (!condition) return true
+
+  if (condition.zone === 'your_field' && condition.count_same_element) {
+    const creature = context.creature
+    const needed = Number(condition.count_same_element) || 0
+    const count = (context.yourField ?? []).filter(slot => (
+      slot.card?.card_type === 'criatura' && slot.card.element === creature?.element
+    )).length
+
+    if (count < needed) return false
+  }
+
+  return true
 }
 
 function valueFromCardCount(rule, context) {

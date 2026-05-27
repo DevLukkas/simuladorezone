@@ -22,6 +22,13 @@ export const comandos = [
     raridade: 'comum',
     img: '21.png',
     edicao: 'Abismos & Profundezas',
+    effects: [
+      {
+        type: 'prevent_attack',
+        target: 'enemy_creature',
+        duration: 'until_end_of_turn',
+      },
+    ],
   },
   {
     id: 22,
@@ -31,6 +38,12 @@ export const comandos = [
     raridade: 'lendaria',
     img: '22.png',
     edicao: 'Abismos & Profundezas',
+    effects: [
+      {
+        type: 'discard_hand_then_draw',
+        target: 'self',
+      },
+    ],
   },
    {
     id: 23,
@@ -40,15 +53,31 @@ export const comandos = [
     raridade: 'comum',
     img: '23.png',
     edicao: 'Abismos & Profundezas',
+    effects: [
+      {
+        type: 'force_attack',
+        target: 'enemy_creature',
+        secondaryTarget: 'your_creature',
+        duration: 'until_next_owner_turn',
+      },
+    ],
   },
   {
     id: 24,
-    nome: 'Olo do Antigo Oráculo',
+    nome: 'Olho do Antigo Oráculo',
     tipo: 'Comando',
     efeito: 'Seu oponente revela duas cartas aleatoras da sua mão, você escolhe uma para ser embaralha de volta em seu baralho.',
     raridade: 'comum',
     img: '24.png',
     edicao: 'Abismos & Profundezas',
+    effects: [
+      {
+        type: 'reveal_random_hand_then_shuffle_one',
+        target: 'opponent',
+        reveal: 2,
+        choose: 1,
+      },
+    ],
   },
   {
     id: 25,
@@ -58,6 +87,19 @@ export const comandos = [
     raridade: 'rara',
     img: '25.png',
     edicao: 'Abismos & Profundezas',
+    effects: [
+      {
+        type: 'sacrifice_then_summon_from_deck',
+        target: 'your_creature',
+        summon: {
+          count: 2,
+          card_type: 'criatura',
+          race: 'Espectro',
+          max_attack: 2,
+          can_attack_this_turn: false,
+        },
+      },
+    ],
   },
   {
     id: 26,
@@ -67,6 +109,19 @@ export const comandos = [
     raridade: 'comum',
     img: '26.png',
     edicao: 'Abismos & Profundezas',
+    effects: [
+      {
+        type: 'temporary_modify_stat',
+        target: 'your_creature',
+        stats: ['attack', 'defense'],
+        duration: 'until_end_of_turn',
+        value_per_card: {
+          zone: 'your_discard',
+          name_includes: 'Esdras',
+          value: 1,
+        },
+      },
+    ],
   },
   {
     id: 27,
@@ -76,5 +131,12 @@ export const comandos = [
     raridade: 'comum',
     img: '27.png',
     edicao: 'Abismos & Profundezas',
+    effects: [
+      {
+        type: 'prevent_attack_target',
+        target: 'your_creature',
+        duration: 'until_end_of_turn',
+      },
+    ],
   },
 ]

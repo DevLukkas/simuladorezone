@@ -1,4 +1,5 @@
 import { applyChangeElement } from './changeElement.js'
+import { applyDelayedEffect } from './delayedEffect.js'
 import { applyModifyStat } from './modifyStat.js'
 import { applySummonToken } from './summonToken.js'
 
@@ -11,12 +12,15 @@ const ABILITY_HANDLERS = {
 }
 
 const TRIGGER_HANDLERS = {
+  delayed_effect: applyDelayedEffect,
   summon_token: applySummonToken,
 }
 
 export function createCreatureInstance(card) {
   return {
     ...card,
+    element: card.element ?? card.elemento ?? 'neutro',
+    rarity: card.rarity ?? card.raridade,
     baseStats: {
       attack: card.attack ?? 0,
       defense: card.defense ?? 0,
@@ -25,7 +29,9 @@ export function createCreatureInstance(card) {
       attack: card.attack ?? 0,
       defense: card.defense ?? 0,
     },
+    damageTaken: card.damageTaken ?? 0,
     attachedCards: [],
+    tempModifiers: card.tempModifiers ?? [],
   }
 }
 
@@ -44,6 +50,18 @@ export function recalculateCreatureStats(creature, attachedCards = [], gameConte
       if (handler) handler(effect, { ...gameContext, creature, source: card })
     }
   }
+
+  for (const modifier of creature.permanentModifiers ?? []) {
+    if (modifier.attack) creature.currentStats.attack += modifier.attack
+    if (modifier.defense) creature.currentStats.defense += modifier.defense
+  }
+
+  for (const modifier of creature.tempModifiers ?? []) {
+    if (modifier.attack) creature.currentStats.attack += modifier.attack
+    if (modifier.defense) creature.currentStats.defense += modifier.defense
+  }
+
+  creature.currentStats.defense -= creature.damageTaken ?? 0
 
   return creature
 }

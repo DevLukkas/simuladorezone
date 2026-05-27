@@ -123,4 +123,89 @@ export const itens = [
       },
     ],
   },
+
+   {
+    id: 18,
+    nome: 'Mapa do Tesouro',
+    tipo: 'Item',
+    efeito: 'Quando a criatura anexada causar dano ao jogador oponente, você pode comprar uma carta e depois descartar uma carta.',
+    raridade: 'comum',
+    img: '18.png',
+    edicao: 'Matilhas & Predadores',
+    triggeredAbilities: [
+      {
+        id: 'mapa_tesouro_draw_discard',
+        trigger: 'attached_creature_deals_player_damage',
+        optional: true,
+        action: {
+          type: 'draw_then_discard',
+          draw: 1,
+          discard: 1,
+        },
+      },
+    ],
+  },
+
+     {
+    id: 19,
+    nome: 'Manopla do Poder',
+    tipo: 'Item',
+    efeito: 'A criatura anexada recebe +3 ATQ. No final do próximo turno, ela recebe 1 de dano direto.',
+    raridade: 'comum',
+    img: '19.png',
+    edicao: 'Matilhas & Predadores',
+    effects: [
+      {
+        type: 'modify_stat',
+        target: 'attached_creature',
+        stat: 'attack',
+        value: 3,
+      },
+    ],
+    onAttach: [
+      {
+        type: 'delayed_effect',
+        trigger: 'end_of_next_turn',
+        target: 'attached_creature',
+        effect: {
+          type: 'deal_damage',
+          value: 1,
+        },
+      },
+    ],
+  },
+
+  {
+    id: 20,
+    nome: 'Pote da Sereia',
+    tipo: 'Item',
+    efeito: 'Ao ser anexado , escolha um elemento. A criatura anexada se torna do elemento escolhido, enquanto anexada. Se houver tres ou mais criajturas do mesmo elemento do seu lado do campo, a criatura anexada recebe +2 de Vida.',
+    raridade: 'comum',
+    img: '20.png',
+    edicao: 'Abismos & Profundezas',
+    onAttach: [
+      {
+        type: 'change_element',
+        target: 'attached_creature',
+        choose: ['fogo', 'agua', 'terra', 'vento', 'neutro', 'vazio', 'cosmico'],
+        duration: 'while_attached',
+      },
+    ],
+    effects: [
+      {
+        type: 'modify_stat',
+        target: 'attached_creature',
+        stat: 'defense',
+        value: 2,
+        condition: {
+          zone: 'your_field',
+          count_same_element: 3,
+        },
+      },
+    ],
+  },
+
+  
+
+
 ]
