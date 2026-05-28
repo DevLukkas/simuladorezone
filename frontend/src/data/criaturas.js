@@ -118,7 +118,7 @@ export const criaturas = [
     raca: 'Acquarium',
     ataque: 2,
     vida: 2,
-    efeito: 'Ao entrar em campo, você pode descartar uma carta de nome Tridente. Se fizer isso, busque uma carte de nome Atlantis no seu baralho e adicione-a à sua mão.',
+    efeito: 'Ao entrar em campo, você pode descartar uma carta de nome Tridente. Se fizer isso, busque uma carta de nome Atlantis no seu baralho e adicione-a à sua mão.',
     elemento: 'agua',
     raridade: 'comum',
     img: '05.png',
@@ -126,6 +126,7 @@ export const criaturas = [
     onEnter: [
       {
         type: 'discard_hand_card_then_search_deck',
+        optional: true,
         discard: { name_includes: 'Tridente' },
         search: { name_includes: 'Atlantis' },
       },

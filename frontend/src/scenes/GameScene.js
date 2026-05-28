@@ -16,6 +16,20 @@ import {
   recalculateCreatureStats,
   resolveTriggerEffects,
 } from '../effects/index.js'
+import { createEffectQueueRunner } from '../game/effectResolver.js'
+import {
+  canCreatureAttack,
+  canNormalSummon,
+  canUseMainAction,
+  pointsForRarity,
+} from '../game/gameRules.js'
+import { aiChooseFirstCard, aiChooseFirstEmptySlot, aiChooseFirstSlot, aiDiscardRandom } from '../game/soloAi.js'
+import {
+  attachmentTargets,
+  commandTargetSlots,
+  effectNeedsCreatureTarget,
+  matchesCardRule,
+} from '../game/targeting.js'
 import { clearScene, saveScene, restoreSceneData } from '../utils/session.js'
 
 const LOCAL_DECK_KEY = 'ezone_deck_builder_draft'
@@ -110,6 +124,16 @@ export default class GameScene extends Scene {
     this._pendingAbilityEffect = null
     this._pendingAbilitySourceSlot = null
     this._pendingAbilitySource = null
+    this._pendingHandAbilityCard = null
+    this._pendingHandAbility = null
+    this._pendingSpecialSummon = null
+    this._pendingSlotChoice = null
+    this._effectQueue = []
+    this._isResolvingEffect = false
+    this._effectQueueRunner = null
+    this._battleAttackButtons = []
+    this._commandResponseHighlights = []
+    this._commandResponseTimer = null
     this._pendingAttackSlot = null
     this._mustDiscardBeforeDraw = false
     this._turnFuseStarted = false
@@ -138,7 +162,10 @@ export default class GameScene extends Scene {
     this._turnFuseText = null
     this._turnBanner = null
     this._phaseButton = null
+    this._phaseButtonGlow = null
     this._toastText = null
+    this._directDamageTextMy = null
+    this._directDamageTextOpp = null
     this._actionLogPanel = null
     this._deckPileContainer = null
     this._oppDeckPileContainer = null
@@ -149,6 +176,7 @@ export default class GameScene extends Scene {
     this._discardViewer = null
     this._replaceAttachmentMenu = null
     this._elementChoiceMenu = null
+    this._effectChoiceModal = null
   }
 
   init(data = {}) {
@@ -186,6 +214,13 @@ export default class GameScene extends Scene {
 
   create() {
     saveScene('GameScene', { room: this.room, role: this.role })
+    this._effectQueueRunner = createEffectQueueRunner({
+      resolveJob: job => this._runEffectResolution(job),
+      onError: error => {
+        console.error('Erro ao resolver efeito:', error)
+        this._toast('Erro ao resolver efeito.')
+      },
+    })
 
     const { width, height } = this.cameras.main
 
@@ -247,6 +282,7 @@ export default class GameScene extends Scene {
     this._renderOpponentDeckPile()
     this._renderOpponentDiscardPile()
     this._renderScenarioZone()
+    this.input.on('pointerdown', this._handleBoardPointerDown, this)
     this._dealStartingHand()
   }
 
@@ -261,12 +297,18 @@ export default class GameScene extends Scene {
     this.add.text(leftX, y, 'JOGADOR 1', {
       fontSize: '14px', color: '#ffffff', fontStyle: 'bold',
     }).setOrigin(0.5)
+    this._directDamageTextMy = this.add.text(leftX + 82, y, 'Dano: 0/5', {
+      fontSize: '11px', color: '#d8ff66',
+    }).setOrigin(0, 0.5)
     this.add.text(width / 2, y, 'x', {
       fontSize: '16px', color: '#cccccc', fontStyle: 'bold',
     }).setOrigin(0.5)
     this.add.text(rightX, y, 'JOGADOR 2', {
       fontSize: '14px', color: '#ffffff', fontStyle: 'bold',
     }).setOrigin(0.5)
+    this._directDamageTextOpp = this.add.text(rightX + 82, y, 'Dano: 0/5', {
+      fontSize: '11px', color: '#ff9999',
+    }).setOrigin(0, 0.5)
 
     this._scoreDotsMy = this._addScoreDots(leftX, y + 22)
     this._scoreDotsOpp = this._addScoreDots(rightX, y + 22)
@@ -274,6 +316,7 @@ export default class GameScene extends Scene {
     this._roundText = this.add.text(width / 2, y + 32, '[Turno: 1]', {
       fontSize: '13px', color: '#8fb8ff',
     }).setOrigin(0.5)
+    this._updateDirectDamageHeader()
   }
 
   _buildTurnFuse(width, height) {
@@ -282,7 +325,7 @@ export default class GameScene extends Scene {
     if (this._turnFuseText) this._turnFuseText.destroy()
 
     this._turnFuseGraphics = this.add.graphics().setDepth(4)
-    this._turnFuseText = this.add.text(width / 2, height / 2 - 24, '45', {
+    this._turnFuseText = this.add.text(width / 2, height / 2 - 24, '60', {
       fontSize: '17px',
       color: '#d8ff66',
       fontStyle: 'bold',
@@ -292,6 +335,7 @@ export default class GameScene extends Scene {
 
     const startTime = this.time.now
     const duration = 60000
+    let expired = false
     const drawFuse = () => {
       const elapsed = Math.min(duration, this.time.now - startTime)
       const progress = elapsed / duration
@@ -329,12 +373,17 @@ export default class GameScene extends Scene {
       this._turnFuseGraphics.fillCircle(burnX, y, 7)
       this._turnFuseText.setText(String(remaining))
       this._turnFuseText.setStyle({ color: progress > 0.78 ? '#ff4422' : '#d8ff66' })
+
+      if (!expired && elapsed >= duration) {
+        expired = true
+        this._handleTurnFuseExpired()
+      }
     }
 
     drawFuse()
     this._turnFuseTimer = this.time.addEvent({
       delay: 100,
-      repeat: 450,
+      loop: true,
       callback: drawFuse,
     })
   }
@@ -343,6 +392,22 @@ export default class GameScene extends Scene {
     const { width, height } = this.cameras.main
     this._turnFuseStarted = true
     this._buildTurnFuse(width, height)
+  }
+
+  _stopTurnFuse() {
+    if (this._turnFuseTimer) {
+      this._turnFuseTimer.remove(false)
+      this._turnFuseTimer = null
+    }
+    this._turnFuseStarted = false
+  }
+
+  _handleTurnFuseExpired() {
+    if (this._gameOver || this._currentPhase === 'setup') return
+    this._stopTurnFuse()
+    this._toast('Tempo esgotado. Turno encerrado.')
+    this._logAction('Tempo esgotado. Turno encerrado automaticamente.')
+    this._endTurn()
   }
 
   _addScoreDots(x, y) {
@@ -453,6 +518,11 @@ export default class GameScene extends Scene {
   }
 
   _handleSlotClick(side, slotIndex) {
+    if (this._pendingSlotChoice) {
+      this._selectGenericSlotChoice(side, slotIndex)
+      return
+    }
+
     if (this._pendingCommandCard) {
       this._selectCommandTarget(side, slotIndex)
       return
@@ -460,6 +530,11 @@ export default class GameScene extends Scene {
 
     if (this._pendingAbilityEffect) {
       this._selectAbilityTarget(side, slotIndex)
+      return
+    }
+
+    if (this._pendingSpecialSummon) {
+      this._selectSpecialSummonTarget(side, slotIndex)
       return
     }
 
@@ -600,8 +675,9 @@ export default class GameScene extends Scene {
 
     this._deckPileContainer.add([badge, countText, label])
     this._deckPileContainer.setSize(cardW + 16, cardH + 16)
-    this._deckPileContainer.setInteractive({ useHandCursor: true })
-    this._deckPileContainer.on('pointerdown', () => this._toggleDeckActions())
+    // Menu manual do baralho desativado por enquanto. Reative estas linhas para testes manuais:
+    // this._deckPileContainer.setInteractive({ useHandCursor: true })
+    // this._deckPileContainer.on('pointerdown', () => this._toggleDeckActions())
   }
 
   _renderOpponentDeckPile() {
@@ -732,8 +808,8 @@ export default class GameScene extends Scene {
 
     const cards = owner === 'my' ? this.myDiscard : this.oppDiscard
     const { width, height } = this.cameras.main
-    const panelW = 360
-    const panelH = 420
+    const panelW = 640
+    const panelH = 520
     this._discardViewer = this.add.container(width / 2, height / 2).setDepth(130)
 
     const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.55).setInteractive()
@@ -762,20 +838,60 @@ export default class GameScene extends Scene {
       return
     }
 
-    cards.slice().reverse().slice(0, 14).forEach((card, i) => {
-      const line = this.add.text(-panelW / 2 + 22, -panelH / 2 + 54 + i * 24, `${cards.length - i}. ${card.name ?? card.nome}`, {
-        fontSize: '12px',
-        color: '#d7e7df',
-      }).setOrigin(0, 0)
-      this._discardViewer.add(line)
+    const visible = cards.slice().reverse().slice(0, 18)
+    const cols = 6
+    const cardW = 74
+    const cardH = 104
+    const gapX = 24
+    const gapY = 30
+    const totalW = cols * cardW + (cols - 1) * gapX
+    const startX = -totalW / 2 + cardW / 2
+    const startY = -panelH / 2 + 88
+
+    visible.forEach((card, i) => {
+      const col = i % cols
+      const row = Math.floor(i / cols)
+      const thumb = this._createCardThumbnail(
+        card,
+        startX + col * (cardW + gapX),
+        startY + row * (cardH + gapY),
+        cardW,
+        cardH,
+        0x884444
+      )
+      this._discardViewer.add(thumb)
     })
   }
 
-  _playDiscardSmoke() {
-    if (!this._discardPileContainer) return
+  _createCardThumbnail(card, x, y, w = 78, h = 109, borderColor = 0x4caf50) {
+    const container = this.add.container(x, y)
+    const key = `card_${card.id}`
+    if (this.textures.exists(key)) {
+      container.add(this.add.image(0, 0, key).setDisplaySize(w, h))
+    } else {
+      const bg = this.add.rectangle(0, 0, w, h, card.color ?? 0x1a1a2e)
+      const name = this.add.text(0, -h / 2 + 10, card.name ?? card.nome ?? 'Carta', {
+        fontSize: '8px',
+        color: '#ffffff',
+        wordWrap: { width: w - 8 },
+        align: 'center',
+      }).setOrigin(0.5, 0)
+      container.add([bg, name])
+    }
 
-    const baseX = this._discardPileContainer.x
-    const baseY = this._discardPileContainer.y - 34
+    const border = this.add.rectangle(0, 0, w, h, 0x000000, 0)
+      .setStrokeStyle(1.5, borderColor)
+    container.add(border)
+    container.setSize(w, h)
+    return container
+  }
+
+  _playDiscardSmoke(owner = 'my') {
+    const pile = owner === 'opp' ? this._oppDiscardPileContainer : this._discardPileContainer
+    if (!pile) return
+
+    const baseX = pile.x
+    const baseY = pile.y - 34
     for (let i = 0; i < 14; i++) {
       const puff = this.add.circle(
         baseX + this._randInt(-24, 24),
@@ -800,6 +916,85 @@ export default class GameScene extends Scene {
 
   _randInt(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min
+  }
+
+  _discardTarget(owner = 'my') {
+    const pile = owner === 'opp' ? this._oppDiscardPileContainer : this._discardPileContainer
+    if (pile) return { x: pile.x, y: pile.y }
+
+    const { width, height } = this.cameras.main
+    return owner === 'opp'
+      ? { x: 238, y: 256 }
+      : { x: width - 238, y: height - 228 }
+  }
+
+  _refreshDiscardForOwner(owner = 'my') {
+    if (owner === 'opp') {
+      this._renderOpponentDiscardPile()
+      this._playDiscardSmoke('opp')
+      return
+    }
+
+    this._renderDiscardPile()
+    this._playDiscardSmoke('my')
+  }
+
+  _animateFieldObjectToDiscard(cardObject, owner = 'my', options = {}) {
+    if (!cardObject) {
+      this._refreshDiscardForOwner(owner)
+      return
+    }
+
+    const target = this._discardTarget(owner)
+    cardObject.disableInteractive?.()
+    cardObject.removeAllListeners?.()
+    cardObject.setDepth(options.depth ?? 96)
+
+    this.tweens.add({
+      targets: cardObject,
+      x: target.x,
+      y: target.y,
+      scale: options.scale ?? 0.72,
+      angle: options.angle ?? cardObject.angle + this._randInt(-8, 8),
+      alpha: 0.94,
+      delay: options.delay ?? 0,
+      duration: options.duration ?? 460,
+      ease: 'Cubic.easeInOut',
+      onComplete: () => {
+        cardObject.destroy(true)
+        this._refreshDiscardForOwner(owner)
+        options.onComplete?.()
+      },
+    })
+  }
+
+  _animateCardPreviewToDiscard(card, from, owner = 'my', options = {}) {
+    this._animateCardPreviewTo(card, from, this._discardTarget(owner), {
+      startScale: options.startScale ?? 0.82,
+      endScale: options.endScale ?? 0.72,
+      depth: options.depth ?? 96,
+      duration: options.duration ?? 460,
+      ease: 'Cubic.easeInOut',
+      onComplete: () => {
+        this._refreshDiscardForOwner(owner)
+        options.onComplete?.()
+      },
+    })
+  }
+
+  _animateFieldObjectVanish(cardObject, options = {}) {
+    if (!cardObject) return
+    cardObject.disableInteractive?.()
+    cardObject.removeAllListeners?.()
+    cardObject.setDepth(options.depth ?? 94)
+    this.tweens.add({
+      targets: cardObject,
+      scale: options.scale ?? 0.42,
+      alpha: 0,
+      duration: options.duration ?? 320,
+      ease: 'Sine.easeIn',
+      onComplete: () => cardObject.destroy(true),
+    })
   }
 
   _renderOpponentHand() {
@@ -905,8 +1100,13 @@ export default class GameScene extends Scene {
     this._clearCardActionMenu()
     this._clearSummonZones()
     this._clearAttachmentTargets()
+    this._clearSpecialSummonTargets()
+    this._clearGenericSlotChoice()
     this._pendingSummonCard = null
     this._pendingAttachmentCard = null
+    this._pendingHandAbilityCard = null
+    this._pendingHandAbility = null
+    this._pendingSpecialSummon = null
     this._handContainers.forEach(card => card.destroy(true))
     this._handContainers = []
 
@@ -944,6 +1144,7 @@ export default class GameScene extends Scene {
     this._magnifierButton.add([bg, icon])
     this._magnifierButton.setSize(36, 36)
     this._magnifierButton.setInteractive({ useHandCursor: true })
+    this._magnifierButton.setData('floatingMenuControl', true)
     this._magnifierButton.on('pointerdown', (pointer, localX, localY, event) => {
       event?.stopPropagation()
       this._openCardInspectPanel(cardData)
@@ -952,6 +1153,33 @@ export default class GameScene extends Scene {
   }
 
   _handleCardClick(cardObject) {
+    if (cardObject.getData('source') === 'field' && this._pendingSlotChoice) {
+      const mySlot = this._slotsMy.find(s => s.cardObject === cardObject)
+      if (mySlot) {
+        this._selectGenericSlotChoice('my', this._slotsMy.indexOf(mySlot))
+        return
+      }
+      const oppSlot = this._slotsOpp.find(s => s.cardObject === cardObject)
+      if (oppSlot) {
+        this._selectGenericSlotChoice('opp', this._slotsOpp.indexOf(oppSlot))
+        return
+      }
+    }
+
+    if (cardObject.getData('source') === 'field' && this._pendingAttackSlot) {
+      const oppSlot = this._slotsOpp.find(s => s.cardObject === cardObject)
+      if (oppSlot) {
+        this._selectAttackTarget('opp', this._slotsOpp.indexOf(oppSlot))
+        return
+      }
+    }
+
+    if (cardObject.getData('source') === 'field' && this._pendingSpecialSummon) {
+      const slot = this._slotsMy.find(s => s.cardObject === cardObject)
+      if (slot) this._selectSpecialSummonTarget('my', this._slotsMy.indexOf(slot))
+      return
+    }
+
     if (cardObject.getData('source') === 'field' && this._pendingCommandCard) {
       const slot = this._slotsMy.find(s => s.cardObject === cardObject)
       if (slot) this._selectCommandTarget('my', this._slotsMy.indexOf(slot))
@@ -974,8 +1202,11 @@ export default class GameScene extends Scene {
   _showCardActions(cardObject) {
     this._clearCardActionMenu()
     this._clearMagnifier()
+    this._clearAttachmentReplaceChoice()
     this._clearSummonZones()
     this._clearAttachmentTargets()
+    this._clearSpecialSummonTargets()
+    this._clearGenericSlotChoice()
     this._clearCommandTargets()
     this._clearAbilityTargets()
     this._pendingAttachmentCard = null
@@ -984,11 +1215,16 @@ export default class GameScene extends Scene {
     this._pendingAbilityEffect = null
     this._pendingAbilitySourceSlot = null
     this._pendingAbilitySource = null
+    this._pendingHandAbilityCard = null
+    this._pendingHandAbility = null
+    this._pendingSpecialSummon = null
+    this._pendingSlotChoice = null
     this._pendingAttackSlot = null
     this._clearAttackTargets()
 
     const card = cardObject.getData('cardData')
     const source = cardObject.getData('source')
+    const isMyFieldCard = source === 'field' && this._slotsMy.some(slot => slot.cardObject === cardObject)
     const actions = [
       { label: 'LUPA', color: '#22405f', fn: () => this._openCardInspectPanel(card) },
     ]
@@ -996,7 +1232,11 @@ export default class GameScene extends Scene {
       if (this._mustDiscardBeforeDraw && this.myHand.length >= MAX_HAND_SIZE) {
         actions.push({ label: 'DESCARTAR', color: '#7a2323', fn: () => this._discardFromHand(cardObject) })
       }
-      if (card.card_type === 'criatura' && this._canUseMainAction('summon')) {
+      const handAbilities = this._handCreatureAbilities(cardObject)
+      if (handAbilities.length) {
+        actions.unshift({ label: 'ATIVAR', color: '#8a4a12', fn: () => this._activateHandCreatureAbility(cardObject) })
+      }
+      if (card.card_type === 'criatura' && this._canUseMainAction('summon') && this._canNormalSummonCard(card)) {
         actions.unshift({ label: 'INVOCAR', color: '#1b5e20', fn: () => this._startSummonSelection(cardObject) })
       } else if (card.card_type === 'comando') {
         actions.unshift({ label: 'ATIVAR', color: '#8a4a12', fn: () => this._activateCommand(cardObject) })
@@ -1005,7 +1245,7 @@ export default class GameScene extends Scene {
       } else if (this._isAttachmentCard(card) && this._canUseMainAction('attach') && this._attachmentTargets(card).length) {
         actions.unshift({ label: 'ANEXAR', color: '#6a3d9a', fn: () => this._startAttachmentSelection(cardObject) })
       }
-    } else if (source === 'field') {
+    } else if (source === 'field' && isMyFieldCard) {
       if (this._fieldCreatureAbilities(cardObject).length) {
         actions.unshift({ label: 'ATIVAR', color: '#8a4a12', fn: () => this._activateFieldCreatureAbility(cardObject) })
       }
@@ -1024,6 +1264,7 @@ export default class GameScene extends Scene {
         backgroundColor: action.color,
         padding: { x: 10, y: 6 },
       }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+      btn.setData('floatingMenuControl', true)
       btn.on('pointerover', () => btn.setStyle({ backgroundColor: '#2f6f8f' }))
       btn.on('pointerout',  () => btn.setStyle({ backgroundColor: action.color }))
       btn.on('pointerdown', () => {
@@ -1043,22 +1284,23 @@ export default class GameScene extends Scene {
   }
 
   _canUseMainAction(type) {
-    if (!this._isMyMainPhase()) return false
-    if (type === 'summon') return !this._turnActions.summoned
-    if (type === 'attach') return !this._turnActions.attached
-    if (type === 'scenario') return true
-    return true
+    return canUseMainAction({
+      activePlayer: this._activePlayer,
+      currentPhase: this._currentPhase,
+      gameOver: this._gameOver,
+      turnActions: this._turnActions,
+    }, type)
   }
 
   _canAttackWith(cardObject) {
-    if (!this._isMyBattlePhase()) return false
     const slot = this._slotsMy.find(s => s.cardObject === cardObject)
-    const creature = slot?.card
-    if (!creature) return false
-    if (creature.hasAttackedTurn === this._turnNumber) return false
-    if ((creature.canAttackFromTurn ?? 1) > this._turnNumber) return false
-    if ((creature.cannotAttackUntilTurn ?? 0) >= this._turnNumber) return false
-    return true
+    return canCreatureAttack({
+      activePlayer: this._activePlayer,
+      currentPhase: this._currentPhase,
+      gameOver: this._gameOver,
+      turnNumber: this._turnNumber,
+      actor: 'my',
+    }, slot?.card)
   }
 
   _startAttack(cardObject) {
@@ -1074,9 +1316,83 @@ export default class GameScene extends Scene {
       return
     }
 
+    this._clearBattleAttackButtons()
     this._pendingAttackSlot = slot
     this._highlightAttackTargets(enemyCreatures)
     this._toast('Escolha a criatura inimiga alvo.')
+  }
+
+  _renderBattleAttackButtons() {
+    this._clearBattleAttackButtons()
+    if (!this._isMyBattlePhase()) return
+
+    let attackCount = 0
+    this._slotsMy.forEach(slot => {
+      if (!slot.cardObject || !this._canAttackWith(slot.cardObject)) return
+      attackCount += 1
+
+      const btn = this.add.container(slot.x, slot.y - slot.h / 2 - 18).setDepth(42)
+      const bg = this.add.rectangle(0, 0, 92, 28, 0x8a2418, 0.95)
+        .setStrokeStyle(1, 0xffc0a8)
+      const label = this.add.text(0, 0, '⚔ ATACAR', {
+        fontSize: '11px',
+        color: '#ffffff',
+        fontStyle: 'bold',
+      }).setOrigin(0.5)
+      btn.add([bg, label])
+      btn.setSize(92, 28)
+      btn.setInteractive({ useHandCursor: true })
+      btn.on('pointerover', () => bg.setFillStyle(0xb83222, 0.98))
+      btn.on('pointerout', () => bg.setFillStyle(0x8a2418, 0.95))
+      btn.on('pointerdown', () => this._startAttack(slot.cardObject))
+      this._battleAttackButtons.push(btn)
+    })
+
+    this._updatePhaseButtonGlow(attackCount === 0)
+  }
+
+  _clearBattleAttackButtons() {
+    this._battleAttackButtons?.forEach(button => button.destroy(true))
+    this._battleAttackButtons = []
+    this._updatePhaseButtonGlow(false)
+  }
+
+  _updatePhaseButtonGlow(shouldGlow) {
+    if (!this._phaseButton) return
+
+    if (!shouldGlow) {
+      if (this._phaseButtonGlow) {
+        this.tweens.killTweensOf(this._phaseButtonGlow)
+        this._phaseButtonGlow.destroy()
+        this._phaseButtonGlow = null
+      }
+      this.tweens.killTweensOf(this._phaseButton)
+      this._phaseButton.setAlpha(1).setScale(1)
+      return
+    }
+
+    if (this._phaseButtonGlow) return
+
+    const bounds = this._phaseButton.getBounds()
+    this._phaseButtonGlow = this.add.rectangle(
+      bounds.centerX,
+      bounds.centerY,
+      bounds.width + 18,
+      bounds.height + 14,
+      0x000000,
+      0
+    ).setStrokeStyle(3, 0xffdd44).setDepth(this._phaseButton.depth - 1)
+
+    this.tweens.add({
+      targets: [this._phaseButtonGlow, this._phaseButton],
+      scaleX: 1.08,
+      scaleY: 1.08,
+      alpha: 0.48,
+      duration: 520,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    })
   }
 
   _highlightAttackTargets(targets) {
@@ -1116,6 +1432,12 @@ export default class GameScene extends Scene {
     this._resolveCreatureAttack(this._pendingAttackSlot, targetSlot)
     this._pendingAttackSlot = null
     this._clearAttackTargets()
+    this._renderBattleAttackButtons()
+  }
+
+  _updateDirectDamageHeader() {
+    if (this._directDamageTextMy) this._directDamageTextMy.setText(`Dano: ${this._directDamage.my}/5`)
+    if (this._directDamageTextOpp) this._directDamageTextOpp.setText(`Dano: ${this._directDamage.opp}/5`)
   }
 
   _resolveDirectAttack(attackerSlot) {
@@ -1129,16 +1451,43 @@ export default class GameScene extends Scene {
       this._directDamage.opp -= 5
       this._addScore('my', 1)
     }
+    this._updateDirectDamageHeader()
 
     this._toast(`${attacker.name} causou ${damage} de dano direto.`)
     this._logAction(`${attacker.name} causou ${damage} de dano direto.`)
+    this._renderBattleAttackButtons()
+  }
+
+  _resolveOpponentDirectAttack(attackerSlot) {
+    const attacker = attackerSlot.card
+    const damage = attacker.currentStats?.attack ?? attacker.attack ?? 0
+    attacker.hasAttackedTurn = this._turnNumber
+    this._directDamage.my += damage
+    this._recordDamage(attacker, null, damage)
+
+    while (this._directDamage.my >= 5) {
+      this._directDamage.my -= 5
+      this._addScore('opp', 1)
+    }
+    this._updateDirectDamageHeader()
+
+    this._toast(`${attacker.name} causou ${damage} de dano direto.`)
+    this._logAction(`${attacker.name} causou ${damage} de dano direto ao jogador.`)
   }
 
   _resolveCreatureAttack(attackerSlot, defenderSlot) {
+    this._resolveCreatureBattle(attackerSlot, this._slotsMy, defenderSlot, this._slotsOpp)
+  }
+
+  _resolveOpponentCreatureAttack(attackerSlot, defenderSlot) {
+    this._resolveCreatureBattle(attackerSlot, this._slotsOpp, defenderSlot, this._slotsMy)
+  }
+
+  _resolveCreatureBattle(attackerSlot, attackerSlots, defenderSlot, defenderSlots) {
     const attacker = attackerSlot.card
     const defender = defenderSlot.card
-    const atkDamage = this._combatDamageAfterReduction(defenderSlot, this._slotsOpp, attacker.currentStats?.attack ?? attacker.attack ?? 0)
-    const defDamage = this._combatDamageAfterReduction(attackerSlot, this._slotsMy, defender.currentStats?.attack ?? defender.attack ?? 0)
+    const atkDamage = this._combatDamageAfterReduction(defenderSlot, defenderSlots, attacker.currentStats?.attack ?? attacker.attack ?? 0)
+    const defDamage = this._combatDamageAfterReduction(attackerSlot, attackerSlots, defender.currentStats?.attack ?? defender.attack ?? 0)
 
     attacker.hasAttackedTurn = this._turnNumber
     defender.damageTaken = (defender.damageTaken ?? 0) + atkDamage
@@ -1146,10 +1495,11 @@ export default class GameScene extends Scene {
     this._recordDamage(attacker, defender, atkDamage)
     this._recordDamage(defender, attacker, defDamage)
 
-    this._refreshBattleDamage(attackerSlot, this._slotsMy, defenderSlot)
-    this._refreshBattleDamage(defenderSlot, this._slotsOpp, attackerSlot)
+    this._refreshBattleDamage(attackerSlot, attackerSlots, defenderSlot)
+    this._refreshBattleDamage(defenderSlot, defenderSlots, attackerSlot)
     this._toast(`${attacker.name} atacou ${defender.name}.`)
     this._logAction(`${attacker.name} atacou ${defender.name}.`)
+    if (attackerSlots === this._slotsMy) this._renderBattleAttackButtons()
   }
 
   _refreshBattleDamage(slot, ownerSlots, destroyerSlot = null) {
@@ -1165,29 +1515,85 @@ export default class GameScene extends Scene {
 
   _destroyCreatureInBattle(slot, owner, destroyerSlot = null) {
     const card = slot.card
+    const cardObject = slot.cardObject
+    const attachments = [...(slot.attachments ?? [])]
+    this._playBattleDestroyEffect(slot.x, slot.y)
     const pointsTo = owner === 'my' ? 'opp' : 'my'
     this._addScore(pointsTo, this._pointsForRarity(card))
     this._resolveDestroyedByCreatureTriggers(card, destroyerSlot)
 
     const discard = owner === 'my' ? this.myDiscard : this.oppDiscard
-    discard.push(card)
-    for (const attachment of slot.attachments ?? []) {
-      if (attachment.card) discard.push(attachment.card)
-      attachment.object?.destroy(true)
+    if (!card.isToken) {
+      discard.push(card)
+      this._animateFieldObjectToDiscard(cardObject, owner)
+    } else {
+      this._animateFieldObjectVanish(cardObject)
     }
-    slot.cardObject?.destroy(true)
+    attachments.forEach((attachment, index) => {
+      if (attachment.card) discard.push(attachment.card)
+      this._animateFieldObjectToDiscard(attachment.object, owner, { delay: 80 + index * 70, scale: 0.58 })
+    })
     slot.card = null
     slot.cardObject = null
     slot.attachments = []
-    if (owner === 'my') {
-      this._renderDiscardPile()
-      this._playDiscardSmoke()
-    } else {
-      this._renderOpponentDiscardPile()
-    }
-    this._resolveCreatureSentToDiscard(card, owner)
+    if (!card.isToken) this._resolveCreatureSentToDiscard(card, owner)
     this._recalculateAllFieldCreatures()
-    this._logAction(`${card.name} foi destruida em batalha.`)
+    this._logAction(card.isToken ? `${card.name} desapareceu em batalha.` : `${card.name} foi destruida em batalha.`)
+  }
+
+  _playBattleDestroyEffect(x, y) {
+    const fx = this.add.container(x, y).setDepth(120)
+    const stain = this.add.circle(0, 2, 28, 0x7a0000, 0.62)
+    const skull = this.add.text(0, -8, '☠', {
+      fontSize: '42px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      stroke: '#2a0000',
+      strokeThickness: 4,
+    }).setOrigin(0.5)
+    const splash = this.add.circle(0, 8, 12, 0xbb0000, 0.72)
+    fx.add([stain, splash, skull])
+
+    const drops = [
+      { x: -22, y: 2, tx: -48, ty: 28, r: 5 },
+      { x: 22, y: 4, tx: 46, ty: 24, r: 4 },
+      { x: -8, y: 20, tx: -16, ty: 52, r: 4 },
+      { x: 14, y: 20, tx: 22, ty: 50, r: 3 },
+      { x: 0, y: -16, tx: 4, ty: -40, r: 3 },
+    ]
+
+    drops.forEach(drop => {
+      const blood = this.add.circle(drop.x, drop.y, drop.r, 0xb10000, 0.9)
+      fx.add(blood)
+      this.tweens.add({
+        targets: blood,
+        x: drop.tx,
+        y: drop.ty,
+        alpha: 0,
+        scale: 0.35,
+        duration: 620,
+        ease: 'Quad.easeOut',
+      })
+    })
+
+    this.tweens.add({
+      targets: skull,
+      y: -22,
+      scale: 1.18,
+      duration: 180,
+      yoyo: true,
+      ease: 'Back.easeOut',
+    })
+
+    this.tweens.add({
+      targets: fx,
+      alpha: 0,
+      scale: 1.22,
+      delay: 520,
+      duration: 420,
+      ease: 'Sine.easeIn',
+      onComplete: () => fx.destroy(true),
+    })
   }
 
   _combatDamageAfterReduction(targetSlot, ownerSlots, incoming) {
@@ -1210,10 +1616,7 @@ export default class GameScene extends Scene {
   }
 
   _pointsForRarity(card) {
-    const rarity = card?.raridade ?? card?.rarity
-    if (['lendaria', 'lendario', 'legendary'].includes(rarity)) return 2
-    if (['rara', 'raro', 'rare'].includes(rarity)) return 1
-    return 0
+    return pointsForRarity(card)
   }
 
   _addScore(player, amount) {
@@ -1253,8 +1656,40 @@ export default class GameScene extends Scene {
   }
 
   _renderScoreDots() {
-    this._scoreDotsMy?.forEach((dot, i) => dot.setFillStyle(i < this._score.my ? 0x4caf50 : 0x777777))
-    this._scoreDotsOpp?.forEach((dot, i) => dot.setFillStyle(i < this._score.opp ? 0xdd4444 : 0x777777))
+    this._scoreDotsMy?.forEach((dot, i) => {
+      dot.setFillStyle(i < this._score.my ? 0x4caf50 : 0x777777)
+      dot.setStrokeStyle(i < this._score.my ? 2 : 1, i < this._score.my ? 0xd8ff66 : 0xaaaaaa)
+    })
+    this._scoreDotsOpp?.forEach((dot, i) => {
+      dot.setFillStyle(i < this._score.opp ? 0xdd4444 : 0x777777)
+      dot.setStrokeStyle(i < this._score.opp ? 2 : 1, i < this._score.opp ? 0xffcccc : 0xaaaaaa)
+    })
+    this._pulseLatestScoreDot('my')
+    this._pulseLatestScoreDot('opp')
+  }
+
+  _pulseLatestScoreDot(player) {
+    const score = this._score[player]
+    if (!score) return
+    const dots = player === 'my' ? this._scoreDotsMy : this._scoreDotsOpp
+    const dot = dots?.[score - 1]
+    if (!dot) return
+
+    const glow = this.add.circle(dot.x, dot.y, 12, player === 'my' ? 0xd8ff66 : 0xff5555, 0.28)
+      .setDepth(dot.depth - 1)
+    this.tweens.add({
+      targets: [dot, glow],
+      scaleX: 1.7,
+      scaleY: 1.7,
+      alpha: 0,
+      duration: 520,
+      ease: 'Cubic.easeOut',
+      onComplete: () => {
+        dot.setScale(1)
+        dot.setAlpha(1)
+        glow.destroy()
+      },
+    })
   }
 
   _finishGame(winner) {
@@ -1293,6 +1728,30 @@ export default class GameScene extends Scene {
     }
   }
 
+  _clearAttachmentReplaceChoice() {
+    if (this._replaceAttachmentMenu) {
+      this._replaceAttachmentMenu.destroy(true)
+      this._replaceAttachmentMenu = null
+    }
+  }
+
+  _isFloatingMenuPointerTarget(gameObject) {
+    return Boolean(
+      gameObject?.getData?.('floatingMenuControl')
+      || gameObject?.getData?.('cardData')
+      || gameObject === this._magnifierButton
+    )
+  }
+
+  _handleBoardPointerDown(pointer, currentlyOver = []) {
+    const targets = Array.isArray(currentlyOver) ? currentlyOver : []
+    if (targets.some(target => this._isFloatingMenuPointerTarget(target))) return
+
+    this._clearCardActionMenu()
+    this._clearMagnifier()
+    this._clearAttachmentReplaceChoice()
+  }
+
   _startSummonSelection(cardObject) {
     if (!this._canUseMainAction('summon')) {
       this._toast('Você já invocou neste turno.')
@@ -1310,6 +1769,247 @@ export default class GameScene extends Scene {
     this._pendingSummonCard = cardObject
     this._highlightSummonZones()
     this._toast('Escolha uma zona vazia para invocar.')
+  }
+
+  _canNormalSummonCard(card) {
+    return canNormalSummon(card)
+  }
+
+  _handCreatureAbilities(cardObject) {
+    const card = cardObject.getData('cardData')
+    if (card?.card_type !== 'criatura') return []
+    const sourceIndex = this._handContainers.indexOf(cardObject)
+
+    return (card.activatedAbilities ?? []).filter(ability => {
+      if (ability.source !== 'hand') return false
+      if (ability.action?.type === 'special_summon_over_your_creature') {
+        return this._hasSpecialSummonCandidate(sourceIndex, ability.action.filter ?? {})
+          && this._slotsMy.some(slot => slot.card)
+      }
+      return false
+    })
+  }
+
+  _hasSpecialSummonCandidate(sourceIndex, filter) {
+    if (sourceIndex < 0) return false
+    return this.myHand.some((card, index) => (
+      index !== sourceIndex
+      && card.card_type === 'criatura'
+      && this._matchesCardRule(card, filter)
+    ))
+  }
+
+  _activateHandCreatureAbility(cardObject) {
+    const ability = this._handCreatureAbilities(cardObject)[0]
+    const sourceCard = cardObject.getData('cardData')
+    if (!ability) {
+      this._toast('Habilidade indisponível.')
+      return
+    }
+
+    if (ability.action?.type === 'special_summon_over_your_creature') {
+      const targets = this._slotsMy.filter(slot => slot.card)
+      if (!targets.length) {
+        this._toast('Você precisa de uma criatura em campo.')
+        return
+      }
+      this._pendingHandAbilityCard = cardObject
+      this._pendingHandAbility = ability
+      this._pendingSpecialSummon = {
+        sourceCard,
+        sourceIndex: this._handContainers.indexOf(cardObject),
+        ability,
+      }
+      this._requestCreatureSlotChoice({
+        title: 'Escolha a criatura em campo para receber a invocação especial.',
+        side: 'my',
+        slots: targets,
+        color: 0xff66aa,
+        onSelect: targetSlot => this._openSpecialSummonCandidateChoiceForTarget(targetSlot),
+      })
+    }
+  }
+
+  _openSpecialSummonCandidateChoiceForTarget(targetSlot) {
+    if (!this._pendingSpecialSummon) return
+
+    const sourceIndex = this._pendingSpecialSummon.sourceIndex
+    const filter = this._pendingSpecialSummon.ability.action?.filter ?? {}
+    if (sourceIndex < 0) {
+      this._toast('Não foi possível localizar a carta na mão.')
+      this._clearSpecialSummonState()
+      return
+    }
+
+    const candidates = this.myHand
+      .map((card, index) => ({ card, index }))
+      .filter(entry => (
+        entry.index !== sourceIndex
+        && entry.card.card_type === 'criatura'
+        && this._matchesCardRule(entry.card, filter)
+      ))
+
+    this._requestCardChoice({
+      title: 'Escolha a criatura para invocar',
+      cards: candidates,
+      emptyMessage: 'Não há criatura Esdras válida na mão.',
+      accent: 0xff66aa,
+      buttonColor: '#6a2448',
+      maxVisible: 8,
+      labelForCard: card => card.name,
+      onSelect: entry => this._completeSpecialSummon(targetSlot, entry.index),
+      onEmpty: () => this._clearSpecialSummonState(),
+    })
+  }
+
+  _highlightSpecialSummonTargets(targets) {
+    this._clearSpecialSummonTargets()
+    targets.forEach(slot => {
+      const highlight = this.add.rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
+        .setStrokeStyle(3, 0xff66aa)
+        .setDepth(7)
+      slot.specialHighlight = highlight
+      this.tweens.add({
+        targets: highlight,
+        scaleX: 1.08,
+        scaleY: 1.08,
+        alpha: 0.35,
+        duration: 380,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      })
+    })
+  }
+
+  _clearSpecialSummonTargets() {
+    this._slotsMy?.forEach(slot => {
+      if (!slot.specialHighlight) return
+      this.tweens.killTweensOf(slot.specialHighlight)
+      slot.specialHighlight.destroy()
+      slot.specialHighlight = null
+    })
+  }
+
+  _selectSpecialSummonTarget(side, slotIndex) {
+    if (!this._pendingSpecialSummon || side !== 'my') return
+    const targetSlot = this._slotsMy[slotIndex]
+    if (!targetSlot?.card) return
+
+    const sourceIndex = this._pendingSpecialSummon.sourceIndex
+    const filter = this._pendingSpecialSummon.ability.action?.filter ?? {}
+    if (sourceIndex < 0) {
+      this._toast('Não foi possível localizar a carta na mão.')
+      this._clearSpecialSummonState()
+      return
+    }
+
+    const candidates = this.myHand
+      .map((card, index) => ({ card, index }))
+      .filter(entry => (
+        entry.index !== sourceIndex
+        && entry.card.card_type === 'criatura'
+        && this._matchesCardRule(entry.card, filter)
+      ))
+
+    if (!candidates.length) {
+      this._toast('Não há criatura Esdras válida na mão.')
+      this._clearSpecialSummonState()
+      return
+    }
+
+    this._clearSpecialSummonTargets()
+    this._openSpecialSummonCandidateChoice(targetSlot, candidates)
+  }
+
+  _openSpecialSummonCandidateChoice(targetSlot, candidates) {
+    this._closeEffectChoiceModal()
+    const { width, height } = this.cameras.main
+    const panelW = 500
+    const visible = candidates.slice(0, 8)
+    const panelH = 150 + visible.length * 32
+    this._effectChoiceModal = this.add.container(width / 2, height / 2).setDepth(132)
+
+    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.58).setInteractive()
+    const panel = this.add.rectangle(0, 0, panelW, panelH, 0x071018, 0.97).setStrokeStyle(2, 0xff66aa)
+    const title = this.add.text(0, -panelH / 2 + 22, 'Escolha a criatura para invocar', {
+      fontSize: '15px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    this._effectChoiceModal.add([overlay, panel, title])
+
+    visible.forEach((entry, i) => {
+      const btn = this.add.text(0, -panelH / 2 + 60 + i * 32, entry.card.name, {
+        fontSize: '12px',
+        color: '#ffffff',
+        backgroundColor: '#6a2448',
+        padding: { x: 10, y: 7 },
+        fixedWidth: panelW - 54,
+        align: 'center',
+      }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+      btn.on('pointerdown', () => this._completeSpecialSummon(targetSlot, entry.index))
+      this._effectChoiceModal.add(btn)
+    })
+  }
+
+  _completeSpecialSummon(targetSlot, summonIndex) {
+    const sourceObject = this._pendingHandAbilityCard
+    const sourceCard = this._pendingSpecialSummon?.sourceCard
+    const sourceIndex = this._pendingSpecialSummon?.sourceIndex
+    if (!sourceCard || sourceIndex == null || sourceIndex < 0 || summonIndex < 0) {
+      this._toast('Não foi possível resolver a invocação especial.')
+      this._clearSpecialSummonState()
+      this._closeEffectChoiceModal()
+      return
+    }
+
+    if (!targetSlot?.card) {
+      this._toast('O alvo não está mais em campo.')
+      this._clearSpecialSummonState()
+      this._closeEffectChoiceModal()
+      return
+    }
+
+    const summonCard = this.myHand[summonIndex]
+    if (!summonCard || summonIndex === sourceIndex) {
+      this._toast('Criatura inválida para invocação especial.')
+      this._clearSpecialSummonState()
+      this._closeEffectChoiceModal()
+      return
+    }
+
+    const removedSource = this.myHand.splice(sourceIndex, 1)[0]
+    this.myDiscard.push(removedSource ?? sourceCard)
+    sourceObject?.destroy(true)
+    this._handContainers = this._handContainers.filter(object => object !== sourceObject)
+
+    const adjustedSummonIndex = summonIndex > sourceIndex ? summonIndex - 1 : summonIndex
+    const [selectedSummonCard] = this.myHand.splice(adjustedSummonIndex, 1)
+    if (!selectedSummonCard) {
+      this._toast('Não foi possível encontrar a criatura escolhida.')
+      this._clearSpecialSummonState()
+      this._closeEffectChoiceModal()
+      return
+    }
+
+    this._sendFieldCreatureToDiscard(targetSlot, 'my', 'invocação especial')
+    this._summonCreatureToSlot(selectedSummonCard, targetSlot, { canAttackFromTurn: this._turnNumber + 1 })
+
+    this._renderHand(this.myHand)
+    this._renderDiscardPile()
+    this._playDiscardSmoke()
+    this._closeEffectChoiceModal()
+    this._clearSpecialSummonState()
+    this._toast(`${sourceCard.name} foi descartada para invocar ${selectedSummonCard.name}.`)
+    this._logAction(`${sourceCard.name} ativou invocação especial de ${selectedSummonCard.name}.`)
+  }
+
+  _clearSpecialSummonState() {
+    this._pendingHandAbilityCard = null
+    this._pendingHandAbility = null
+    this._pendingSpecialSummon = null
+    this._clearSpecialSummonTargets()
   }
 
   _highlightSummonZones() {
@@ -1360,13 +2060,7 @@ export default class GameScene extends Scene {
   }
 
   _attachmentTargets(card) {
-    if (!this._isAttachmentCard(card)) return []
-
-    return this._slotsMy.filter(slot => {
-      if (!slot.card || slot.card.card_type !== 'criatura') return false
-      if (card.card_type === 'item') return true
-      return slot.card.element && card.element && slot.card.element === card.element
-    })
+    return attachmentTargets(card, this._slotsMy)
   }
 
   _startAttachmentSelection(cardObject) {
@@ -1381,9 +2075,32 @@ export default class GameScene extends Scene {
       return
     }
 
+    this._enqueueEffectResolution({ type: 'attachment', cardObject })
+  }
+
+  async _resolveAttachmentQueued(cardObject) {
+    if (!this._canUseMainAction('attach')) {
+      this._toast('Você já anexou neste turno.')
+      return
+    }
+
+    const card = cardObject.getData('cardData')
+    const targets = this._attachmentTargets(card)
+    if (!targets.length) {
+      this._toast('Não há criaturas válidas para anexar.')
+      return
+    }
+
+    const targetSlot = await this._requestCreatureSlotChoiceAsync({
+      title: 'Escolha uma criatura para anexar.',
+      side: 'my',
+      slots: targets,
+      color: card.card_type === 'habilidade' ? 0x44aaff : 0xbb77ff,
+    })
+    if (!targetSlot) return
+
     this._pendingAttachmentCard = cardObject
-    this._highlightAttachmentTargets(targets)
-    this._toast('Escolha uma criatura para anexar.')
+    this._animateAttachmentToSlot(targetSlot, cardObject, card)
   }
 
   _highlightAttachmentTargets(targets) {
@@ -1445,38 +2162,110 @@ export default class GameScene extends Scene {
     })
   }
 
+  _enqueueEffectResolution(job) {
+    if (this._effectQueueRunner) {
+      this._effectQueueRunner.enqueue(job)
+      return
+    }
+    this._effectQueue.push(job)
+    this._processEffectQueue()
+  }
+
+  async _processEffectQueue() {
+    if (this._isResolvingEffect) return
+    this._isResolvingEffect = true
+
+    while (this._effectQueue.length) {
+      const job = this._effectQueue.shift()
+      try {
+        await this._runEffectResolution(job)
+      } catch (error) {
+        console.error('Erro ao resolver efeito:', error)
+        this._toast('Erro ao resolver efeito.')
+      }
+    }
+
+    this._isResolvingEffect = false
+  }
+
+  async _runEffectResolution(job) {
+    if (job.type === 'command') {
+      await this._resolveCommandQueued(job.cardObject)
+      return
+    }
+
+    if (job.type === 'attachment') {
+      await this._resolveAttachmentQueued(job.cardObject)
+    }
+  }
+
   _activateCommand(cardObject) {
+    this._enqueueEffectResolution({ type: 'command', cardObject })
+  }
+
+  async _resolveCommandQueued(cardObject) {
     const card = cardObject.getData('cardData')
-    const effect = (card.effects ?? [])[0]
-    if (!effect) {
+    const effects = card.effects ?? []
+    if (!effects.length) {
       this._toast('Este comando ainda não tem efeito configurado.')
       return
     }
 
-    if (this._commandNeedsTarget(effect)) {
-      const targets = this._commandTargetSlots(effect)
-      if (!targets.length) {
-        this._toast('Não há alvo válido para este comando.')
-        return
-      }
-
-      this._pendingCommandCard = cardObject
-      this._pendingCommandEffect = effect
-      this._highlightCommandTargets(targets)
-      this._toast('Escolha o alvo do comando.')
+    const discardHandEffect = effects.find(effect => effect.type === 'discard_hand_then_draw')
+    if (discardHandEffect) {
+      this._resolveDiscardHandThenDrawCommand(cardObject, discardHandEffect)
+      this._toast(`${card.name} resolvido.`)
+      this._logAction(`${card.name} foi ativado.`)
       return
     }
 
-    this._resolveCommand(cardObject, null)
+    if (!this._payEffectCosts(card, effects)) {
+      this._toast('Não foi possível pagar o custo.')
+      return
+    }
+
+    let resolved = false
+    for (const effect of effects) {
+      const targetSlot = await this._chooseTargetForEffect(effect, 'comando')
+      if (targetSlot === false) return
+      resolved = this._applyCommandEffect(effect, targetSlot, card) || resolved
+    }
+
+    this._finishCommand(cardObject)
+    this._toast(resolved ? `${card.name} resolvido.` : `${card.name} foi para o descarte.`)
+    this._logAction(`${card.name} foi ativado.`)
+  }
+
+  _payEffectCosts() {
+    return true
+  }
+
+  async _chooseTargetForEffect(effect, sourceLabel = 'efeito') {
+    if (!this._commandNeedsTarget(effect)) return null
+
+    const targets = this._commandTargetSlots(effect)
+    if (!targets.length) {
+      this._toast(`Não há alvo válido para este ${sourceLabel}.`)
+      return false
+    }
+
+    const side = effect.target === 'enemy_creature' ? 'opp' : 'my'
+    const slot = await this._requestCreatureSlotChoiceAsync({
+      title: `Escolha o alvo do ${sourceLabel}.`,
+      side,
+      slots: targets,
+      color: 0xffcc44,
+    })
+
+    return slot ?? false
   }
 
   _commandNeedsTarget(effect) {
-    return ['enemy_creature', 'your_creature'].includes(effect.target)
+    return effectNeedsCreatureTarget(effect)
   }
 
   _commandTargetSlots(effect) {
-    const slots = effect.target === 'enemy_creature' ? this._slotsOpp : this._slotsMy
-    return slots.filter(slot => slot.card)
+    return commandTargetSlots(effect, this._slotsMy, this._slotsOpp)
   }
 
   _highlightCommandTargets(targets) {
@@ -1697,15 +2486,61 @@ export default class GameScene extends Scene {
     })
   }
 
+  _animateExistingCardTo(cardObject, x, y, options = {}) {
+    cardObject.disableInteractive()
+    cardObject.setDepth(options.depth ?? 92)
+
+    this.tweens.add({
+      targets: cardObject,
+      x,
+      y,
+      scale: options.scale ?? cardObject.scale,
+      angle: options.angle ?? 0,
+      duration: options.duration ?? 360,
+      ease: options.ease ?? 'Cubic.easeInOut',
+      onComplete: () => {
+        cardObject.setAlpha(1)
+        options.onComplete?.()
+      },
+    })
+  }
+
+  _animateCardPreviewTo(card, from, to, options = {}) {
+    const preview = this._createCardObject(card, from.x, from.y, false)
+    preview.setDepth(options.depth ?? 92)
+    preview.setScale(options.startScale ?? 0.72)
+    preview.setAlpha(options.alpha ?? 0.92)
+
+    this.tweens.add({
+      targets: preview,
+      x: to.x,
+      y: to.y,
+      scale: options.endScale ?? 1,
+      alpha: 1,
+      duration: options.duration ?? 360,
+      ease: options.ease ?? 'Cubic.easeInOut',
+      onComplete: () => {
+        preview.destroy(true)
+        options.onComplete?.()
+      },
+    })
+  }
+
   _sacrificeThenSummonFromDeck(targetSlot, summonRule) {
     if (!targetSlot?.card || !summonRule) return false
 
-    this.myDiscard.push(targetSlot.card)
-    for (const attachment of targetSlot.attachments ?? []) {
-      if (attachment.card) this.myDiscard.push(attachment.card)
-      if (attachment.object) attachment.object.destroy(true)
+    const sacrificedObject = targetSlot.cardObject
+    const attachments = [...(targetSlot.attachments ?? [])]
+    if (!targetSlot.card.isToken) {
+      this.myDiscard.push(targetSlot.card)
+      this._animateFieldObjectToDiscard(sacrificedObject, 'my')
+    } else {
+      this._animateFieldObjectVanish(sacrificedObject)
     }
-    if (targetSlot.cardObject) targetSlot.cardObject.destroy(true)
+    attachments.forEach((attachment, index) => {
+      if (attachment.card) this.myDiscard.push(attachment.card)
+      this._animateFieldObjectToDiscard(attachment.object, 'my', { delay: 80 + index * 70, scale: 0.58 })
+    })
     targetSlot.card = null
     targetSlot.cardObject = null
     targetSlot.attachments = []
@@ -1726,8 +2561,6 @@ export default class GameScene extends Scene {
     }
 
     this._renderDeckPile()
-    this._renderDiscardPile()
-    this._playDiscardSmoke()
     return true
   }
 
@@ -1769,9 +2602,12 @@ export default class GameScene extends Scene {
   _activateScenario(cardObject) {
     const card = cardObject.getData('cardData')
     if (this._myScenario) {
-      this.myDiscard.push(this._myScenario)
-      this._renderDiscardPile()
-      this._playDiscardSmoke()
+      const oldScenario = this._myScenario
+      const from = this._scenarioContainer
+        ? { x: this._scenarioContainer.x, y: this._scenarioContainer.y - 8 }
+        : { x: 320, y: this.cameras.main.height / 2 }
+      this.myDiscard.push(oldScenario)
+      this._animateCardPreviewToDiscard(oldScenario, from, 'my')
     }
 
     this._myScenario = card
@@ -1816,8 +2652,19 @@ export default class GameScene extends Scene {
     const attachment = attachmentObject.getData('cardData')
     if (!this._attachmentTargets(attachment).includes(slot)) return false
 
-    this._placeAttachment(slot, attachmentObject, attachment)
+    this._animateAttachmentToSlot(slot, attachmentObject, attachment)
     return true
+  }
+
+  _animateAttachmentToSlot(slot, attachmentObject, attachment) {
+    const index = Math.min(slot.attachments.length, 1)
+    const xOffset = index === 0 ? -12 : 12
+    this._animateExistingCardTo(attachmentObject, slot.x + xOffset, slot.y + 9, {
+      scale: 0.98,
+      depth: 92,
+      duration: 320,
+      onComplete: () => this._placeAttachment(slot, attachmentObject, attachment),
+    })
   }
 
   _placeAttachment(slot, attachmentObject, attachment) {
@@ -1840,6 +2687,7 @@ export default class GameScene extends Scene {
 
     slot.attachments.push({ card: attachment, object: attachmentObject })
     this._resolveOnAttachEffects(slot, attachment)
+    this._resolveAttachmentTriggeredAbilities(slot, attachment)
     this._recalculateAllFieldCreatures()
     this._handContainers = this._handContainers.filter(card => card !== attachmentObject)
     const handIndex = this.myHand.findIndex(card => card.id === attachment.id)
@@ -1852,9 +2700,29 @@ export default class GameScene extends Scene {
     this._logAction(`${attachment.name} foi anexada a ${slot.card.name}.`)
   }
 
+  _placeOpponentAttachment(slot, attachment) {
+    if (!slot?.card || slot.attachments.length >= 2) return false
+
+    const index = slot.attachments.length
+    const xOffset = index === 0 ? -12 : 12
+    const attachmentObject = this._createCardObject(attachment, slot.x + xOffset, slot.y + 9, false)
+    attachmentObject.setScale(0.98)
+    attachmentObject.setDepth(6 + index)
+    attachmentObject.setData('source', 'attachment')
+    attachmentObject.setData('slot', slot)
+    attachmentObject.setData('abilityState', { usedAbilities: {} })
+    attachmentObject.setInteractive({ useHandCursor: true })
+    attachmentObject.on('pointerdown', () => this._showCardActions(attachmentObject))
+
+    slot.attachments.push({ card: attachment, object: attachmentObject })
+    this._recalculateAllFieldCreatures()
+    this._logAction(`Oponente anexou ${attachment.name} a ${slot.card.name}.`)
+    return true
+  }
+
   _openAttachmentReplaceChoice(slot, attachmentObject, attachment) {
     this._clearAttachmentTargets()
-    if (this._replaceAttachmentMenu) this._replaceAttachmentMenu.destroy(true)
+    this._clearAttachmentReplaceChoice()
 
     this._replaceAttachmentMenu = this.add.container(slot.x, slot.y - 92).setDepth(46)
     const bg = this.add.rectangle(0, 0, 260, 66, 0x071018, 0.92).setStrokeStyle(1, 0xbb77ff)
@@ -1873,9 +2741,9 @@ export default class GameScene extends Scene {
         fixedWidth: 104,
         align: 'center',
       }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+      btn.setData('floatingMenuControl', true)
       btn.on('pointerdown', () => {
-        this._replaceAttachmentMenu.destroy(true)
-        this._replaceAttachmentMenu = null
+        this._clearAttachmentReplaceChoice()
         this._discardAttachment(slot, index)
         this._placeAttachment(slot, attachmentObject, attachment)
       })
@@ -1887,9 +2755,7 @@ export default class GameScene extends Scene {
     const [entry] = slot.attachments.splice(index, 1)
     if (!entry) return
     this.myDiscard.push(entry.card)
-    entry.object?.destroy(true)
-    this._renderDiscardPile()
-    this._playDiscardSmoke()
+    this._animateFieldObjectToDiscard(entry.object, 'my', { scale: 0.58 })
   }
 
   _resolveOnAttachEffects(slot, attachment) {
@@ -1910,21 +2776,452 @@ export default class GameScene extends Scene {
     }
   }
 
-  _startOnAttachAbilityTargetSelection(sourceSlot, attachment, effect) {
-    const targets = effect.target === 'enemy_creature'
-      ? this._slotsOpp.filter(slot => slot.card)
-      : this._slotsMy.filter(slot => slot.card)
+  _resolveAttachmentTriggeredAbilities(slot, attachment) {
+    for (const ability of attachment.triggeredAbilities ?? []) {
+      if (ability.trigger !== 'attached_count_reaches') continue
 
-    if (!targets.length) {
-      this._toast('Não há alvo válido para esta habilidade.')
+      const targetName = ability.attachedName ?? attachment.name ?? attachment.nome
+      const count = (slot.attachments ?? []).filter(entry => (
+        String(entry.card?.name ?? entry.card?.nome ?? '').toLowerCase()
+          === String(targetName).toLowerCase()
+      )).length
+      if (count !== Number(ability.count)) continue
+
+      if (ability.action?.type === 'opponent_discard_random') {
+        this._discardRandomOpponentCards(ability.action.discard ?? 1)
+      }
+    }
+  }
+
+  _discardRandomOpponentCards(count = 1) {
+    const amount = Math.max(1, Number(count) || 1)
+    const discarded = aiDiscardRandom({
+      hand: this.oppHand,
+      discard: this.oppDiscard,
+    }, amount, (min, max) => this._randInt(min, max))
+
+    this.oppHandCount = this.oppHand.length
+    this._renderOpponentHand()
+    this._renderOpponentDiscardPile()
+
+    if (!discarded.length) {
+      this._toast('Oponente não tem cartas na mão para descartar.')
       return
     }
 
-    this._pendingAbilityEffect = effect
-    this._pendingAbilitySourceSlot = sourceSlot
-    this._pendingAbilitySource = attachment
-    this._highlightAbilityTargets(targets)
-    this._toast('Escolha o alvo da habilidade.')
+    this._toast('Oponente descartou uma carta aleatória.')
+    this._logAction(`Oponente descartou ${discarded.length} carta(s) aleatória(s).`)
+  }
+
+  _requestYesNoChoice({
+    title = 'Ativar efeito?',
+    message = '',
+    confirmLabel = 'SIM',
+    cancelLabel = 'NÃO',
+    onConfirm,
+    onCancel,
+  } = {}) {
+    this._closeEffectChoiceModal()
+    const { width, height } = this.cameras.main
+    this._effectChoiceModal = this.add.container(width / 2, height / 2).setDepth(132)
+
+    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.58).setInteractive()
+    const panel = this.add.rectangle(0, 0, 430, 180, 0x071018, 0.97).setStrokeStyle(2, 0x4caf50)
+    const titleText = this.add.text(0, -58, title, {
+      fontSize: '16px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const body = this.add.text(0, -22, message, {
+      fontSize: '12px',
+      color: '#d7e7df',
+      align: 'center',
+      wordWrap: { width: 370 },
+    }).setOrigin(0.5)
+    const yes = this.add.text(-76, 48, confirmLabel, {
+      fontSize: '13px',
+      color: '#ffffff',
+      backgroundColor: '#1b5e20',
+      padding: { x: 20, y: 8 },
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+    const no = this.add.text(76, 48, cancelLabel, {
+      fontSize: '13px',
+      color: '#ffffff',
+      backgroundColor: '#5a2525',
+      padding: { x: 20, y: 8 },
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+
+    yes.on('pointerdown', () => {
+      this._closeEffectChoiceModal()
+      onConfirm?.()
+    })
+    no.on('pointerdown', () => {
+      this._closeEffectChoiceModal()
+      onCancel?.()
+    })
+
+    this._effectChoiceModal.add([overlay, panel, titleText, body, yes, no])
+  }
+
+  _requestYesNoChoiceAsync(options = {}) {
+    return new Promise(resolve => {
+      this._requestYesNoChoice({
+        ...options,
+        onConfirm: () => {
+          options.onConfirm?.()
+          resolve(true)
+        },
+        onCancel: () => {
+          options.onCancel?.()
+          resolve(false)
+        },
+      })
+    })
+  }
+
+  _requestTimedYesNoChoiceAsync(options = {}) {
+    return new Promise(resolve => {
+      let remaining = options.seconds ?? 7
+      let settled = false
+      const finish = value => {
+        if (settled) return
+        settled = true
+        if (this._commandResponseTimer) {
+          this._commandResponseTimer.remove(false)
+          this._commandResponseTimer = null
+        }
+        this._closeEffectChoiceModal()
+        resolve(value)
+      }
+
+      this._closeEffectChoiceModal()
+      const { width, height } = this.cameras.main
+      this._effectChoiceModal = this.add.container(width / 2, height / 2).setDepth(132)
+
+      const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.48).setInteractive()
+      const panel = this.add.rectangle(0, 0, 460, 190, 0x071018, 0.97).setStrokeStyle(2, 0xffcc44)
+      const title = this.add.text(0, -62, options.title ?? 'Responder com comando?', {
+        fontSize: '16px',
+        color: '#ffffff',
+        fontStyle: 'bold',
+      }).setOrigin(0.5)
+      const body = this.add.text(0, -22, options.message ?? 'Você pode ativar uma carta de comando em resposta.', {
+        fontSize: '12px',
+        color: '#d7e7df',
+        align: 'center',
+        wordWrap: { width: 390 },
+      }).setOrigin(0.5)
+      const timer = this.add.text(0, 20, `${remaining}s`, {
+        fontSize: '15px',
+        color: '#ffdd66',
+        fontStyle: 'bold',
+      }).setOrigin(0.5)
+      const yes = this.add.text(-78, 58, 'SIM', {
+        fontSize: '13px',
+        color: '#ffffff',
+        backgroundColor: '#1b5e20',
+        padding: { x: 22, y: 8 },
+      }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+      const no = this.add.text(78, 58, 'NÃO', {
+        fontSize: '13px',
+        color: '#ffffff',
+        backgroundColor: '#5a2525',
+        padding: { x: 22, y: 8 },
+      }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+
+      yes.on('pointerdown', () => finish(true))
+      no.on('pointerdown', () => finish(false))
+      this._effectChoiceModal.add([overlay, panel, title, body, timer, yes, no])
+
+      this._commandResponseTimer = this.time.addEvent({
+        delay: 1000,
+        repeat: remaining - 1,
+        callback: () => {
+          remaining -= 1
+          timer.setText(`${remaining}s`)
+          if (remaining <= 0) finish(false)
+        },
+      })
+    })
+  }
+
+  _requestCardChoice({
+    title = 'Escolha uma carta',
+    cards = [],
+    emptyMessage = 'Nenhuma carta válida.',
+    accent = 0x4caf50,
+    buttonColor = '#16385c',
+    maxVisible = 10,
+    labelForCard = card => `${card.name ?? card.nome}`,
+    onSelect,
+    onEmpty,
+  } = {}) {
+    this._closeEffectChoiceModal()
+    if (!cards.length) {
+      this._toast(emptyMessage)
+      onEmpty?.()
+      return
+    }
+
+    const { width, height } = this.cameras.main
+    const visible = cards.slice(0, maxVisible)
+    const cardW = 78
+    const cardH = 109
+    const cols = Math.min(5, visible.length)
+    const rows = Math.ceil(visible.length / cols)
+    const gapX = 24
+    const gapY = 30
+    const panelW = Math.max(360, cols * cardW + Math.max(0, cols - 1) * gapX + 72)
+    const panelH = 110 + rows * cardH + Math.max(0, rows - 1) * gapY
+    this._effectChoiceModal = this.add.container(width / 2, height / 2).setDepth(132)
+
+    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.58).setInteractive()
+    const panel = this.add.rectangle(0, 0, panelW, panelH, 0x071018, 0.97).setStrokeStyle(2, accent)
+    const titleText = this.add.text(0, -panelH / 2 + 22, title, {
+      fontSize: '15px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    this._effectChoiceModal.add([overlay, panel, titleText])
+
+    const totalW = cols * cardW + Math.max(0, cols - 1) * gapX
+    const startX = -totalW / 2 + cardW / 2
+    const startY = -panelH / 2 + 82
+
+    visible.forEach((entry, i) => {
+      const card = entry.card ?? entry
+      const col = i % cols
+      const row = Math.floor(i / cols)
+      const thumb = this._createCardThumbnail(
+        card,
+        startX + col * (cardW + gapX),
+        startY + row * (cardH + gapY),
+        cardW,
+        cardH,
+        accent
+      )
+      thumb.setInteractive({ useHandCursor: true })
+      thumb.on('pointerover', () => thumb.setScale(1.05))
+      thumb.on('pointerout', () => thumb.setScale(1))
+      thumb.on('pointerdown', () => {
+        this._closeEffectChoiceModal()
+        onSelect?.(entry, i)
+      })
+      this._effectChoiceModal.add(thumb)
+    })
+  }
+
+  _requestCardChoiceAsync(options = {}) {
+    return new Promise(resolve => {
+      this._requestCardChoice({
+        ...options,
+        onSelect: (entry, index) => {
+          options.onSelect?.(entry, index)
+          resolve(entry)
+        },
+        onEmpty: () => {
+          options.onEmpty?.()
+          resolve(null)
+        },
+      })
+    })
+  }
+
+  _requestDeckCardChoice({ filter = {}, title = 'Escolha uma carta do baralho', onSelect, ...options } = {}) {
+    const cards = this.myDeck.filter(card => this._matchesCardRule(card, filter))
+    this._requestCardChoice({
+      title,
+      cards,
+      emptyMessage: 'Nenhuma carta válida encontrada no baralho.',
+      onSelect,
+      ...options,
+    })
+  }
+
+  _requestDiscardCardChoice({ filter = {}, title = 'Escolha uma carta do descarte', owner = 'my', onSelect, ...options } = {}) {
+    const discard = owner === 'opp' ? this.oppDiscard : this.myDiscard
+    const cards = discard.filter(card => this._matchesCardRule(card, filter))
+    this._requestCardChoice({
+      title,
+      cards,
+      emptyMessage: 'Nenhuma carta válida encontrada no descarte.',
+      onSelect,
+      ...options,
+    })
+  }
+
+  _requestCreatureSlotChoice({
+    title = 'Escolha uma criatura',
+    side = 'my',
+    slots = null,
+    color = 0x44aaff,
+    onSelect,
+    onEmpty,
+  } = {}) {
+    const availableSlots = slots ?? (side === 'opp' ? this._slotsOpp : this._slotsMy).filter(slot => slot.card)
+    if (!availableSlots.length) {
+      this._toast('Não há criatura válida para escolher.')
+      onEmpty?.()
+      return
+    }
+
+    this._clearGenericSlotChoice()
+    this._pendingSlotChoice = {
+      title,
+      slots: availableSlots,
+      onSelect,
+    }
+
+    availableSlots.forEach(slot => {
+      const highlight = this.add.rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
+        .setStrokeStyle(3, color)
+        .setDepth(7)
+      slot.choiceHighlight = highlight
+      this.tweens.add({
+        targets: highlight,
+        scaleX: 1.08,
+        scaleY: 1.08,
+        alpha: 0.35,
+        duration: 380,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      })
+    })
+
+    this._toast(title)
+  }
+
+  _requestCreatureSlotChoiceAsync(options = {}) {
+    return new Promise(resolve => {
+      this._requestCreatureSlotChoice({
+        ...options,
+        onSelect: (slot, meta) => {
+          options.onSelect?.(slot, meta)
+          resolve(slot)
+        },
+        onEmpty: () => {
+          options.onEmpty?.()
+          resolve(null)
+        },
+      })
+    })
+  }
+
+  _commandResponseCandidates() {
+    if (this._activePlayer !== 'opp') return []
+    return this._handContainers
+      .map(object => ({ object, card: object.getData('cardData') }))
+      .filter(entry => entry.card?.card_type === 'comando' && (entry.card.effects ?? []).length)
+  }
+
+  _highlightCommandResponseCards(candidates) {
+    this._clearCommandResponseHighlights()
+    candidates.forEach(({ object }) => {
+      const glow = this.add.rectangle(object.x, object.y, 92, 124, 0x000000, 0)
+        .setStrokeStyle(3, 0xffdd44)
+        .setDepth(44)
+      this.tweens.add({
+        targets: glow,
+        scaleX: 1.08,
+        scaleY: 1.08,
+        alpha: 0.25,
+        duration: 360,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      })
+      this._commandResponseHighlights.push(glow)
+    })
+  }
+
+  _clearCommandResponseHighlights() {
+    this._commandResponseHighlights?.forEach(glow => {
+      this.tweens.killTweensOf(glow)
+      glow.destroy()
+    })
+    this._commandResponseHighlights = []
+  }
+
+  async _offerCommandResponseWindow(actionLabel = 'ação do oponente') {
+    const candidates = this._commandResponseCandidates()
+    if (!candidates.length) return false
+
+    this._highlightCommandResponseCards(candidates)
+    const wantsResponse = await this._requestTimedYesNoChoiceAsync({
+      title: 'Responder com comando?',
+      message: `O oponente fez: ${actionLabel}. Você tem 7 segundos para responder.`,
+      seconds: 7,
+    })
+
+    if (!wantsResponse) {
+      this._clearCommandResponseHighlights()
+      return false
+    }
+
+    const selected = candidates.length === 1
+      ? candidates[0]
+      : await this._requestCardChoiceAsync({
+          title: 'Escolha o comando para responder',
+          cards: candidates,
+          emptyMessage: 'Nenhum comando disponível.',
+          accent: 0xffcc44,
+          buttonColor: '#8a4a12',
+          maxVisible: 7,
+          labelForCard: card => card.name,
+        })
+
+    this._clearCommandResponseHighlights()
+    if (!selected?.object) return false
+
+    await this._resolveCommandQueued(selected.object)
+    return true
+  }
+
+  _selectGenericSlotChoice(side, slotIndex) {
+    if (!this._pendingSlotChoice) return
+    const slot = side === 'opp' ? this._slotsOpp[slotIndex] : this._slotsMy[slotIndex]
+    if (!slot || !this._pendingSlotChoice.slots.includes(slot)) return
+
+    const onSelect = this._pendingSlotChoice.onSelect
+    this._clearGenericSlotChoice()
+    onSelect?.(slot, { side, slotIndex })
+  }
+
+  _clearGenericSlotChoice() {
+    ;[...(this._slotsMy ?? []), ...(this._slotsOpp ?? [])].forEach(slot => {
+      if (!slot.choiceHighlight) return
+      this.tweens.killTweensOf(slot.choiceHighlight)
+      slot.choiceHighlight.destroy()
+      slot.choiceHighlight = null
+    })
+    this._pendingSlotChoice = null
+  }
+
+  _startOnAttachAbilityTargetSelection(sourceSlot, attachment, effect) {
+    const side = effect.target === 'enemy_creature' ? 'opp' : 'my'
+    const targets = (side === 'opp' ? this._slotsOpp : this._slotsMy).filter(slot => slot.card)
+
+    this._requestCreatureSlotChoice({
+      title: 'Escolha o alvo da habilidade.',
+      side,
+      slots: targets,
+      color: 0x44aaff,
+      onSelect: targetSlot => this._resolveTargetedAbilityEffect(sourceSlot, attachment, effect, targetSlot),
+    })
+  }
+
+  _resolveTargetedAbilityEffect(sourceSlot, attachment, effect, targetSlot) {
+    const applied = applyTargetedAbilityEffect(effect, {
+      source: attachment,
+      sourceSlot,
+      targetSlot,
+      yourField: this._slotsMy,
+      enemyField: this._slotsOpp,
+    })
+
+    this._recalculateAllFieldCreatures()
+    this._toast(applied ? 'Habilidade resolvida.' : 'Não foi possível resolver a habilidade.')
   }
 
   _highlightAbilityTargets(targets) {
@@ -2055,10 +3352,15 @@ export default class GameScene extends Scene {
   }
 
   _recalculateAllFieldCreatures() {
-    this._slotsMy.forEach(slot => {
+    this._recalculateFieldCreatures(this._slotsMy)
+    this._recalculateFieldCreatures(this._slotsOpp)
+  }
+
+  _recalculateFieldCreatures(slots) {
+    slots.forEach(slot => {
       if (!slot.card) return
       recalculateCreatureStats(slot.card, slot.attachments.map(entry => entry.card), {
-        yourField: this._slotsMy,
+        yourField: slots,
       })
       this._refreshFieldStatsOverlay(slot)
     })
@@ -2159,7 +3461,11 @@ export default class GameScene extends Scene {
 
     for (const effect of card.onEnter ?? []) {
       if (effect.type === 'discard_hand_card_then_search_deck') {
-        this._resolveDiscardHandCardThenSearch(effect)
+        if (effect.optional) {
+          this._openOptionalDiscardSearchPrompt(effect)
+        } else {
+          this._resolveDiscardHandCardThenSearch(effect)
+        }
       } else if (effect.type === 'mill_then_gain_defense_per_discard_element') {
         this._resolveMillThenGainDefense(card, effect)
       } else if (effect.type === 'shuffle_discard_creature_then_debuff_enemy') {
@@ -2188,6 +3494,75 @@ export default class GameScene extends Scene {
     this._renderDeckPile()
     this._renderDiscardPile()
     this._playDiscardSmoke()
+  }
+
+  _openOptionalDiscardSearchPrompt(effect) {
+    const discardCards = this.myHand.filter(card => this._matchesCardRule(card, effect.discard ?? {}))
+    if (!discardCards.length) return
+
+    this._requestYesNoChoice({
+      title: 'Ativar efeito?',
+      message: 'Descartar uma carta com Tridente para buscar uma carta com Atlantis no baralho.',
+      onConfirm: () => this._openDiscardCardChoice(effect, discardCards),
+      onCancel: () => this._toast('Efeito não ativado.'),
+    })
+  }
+
+  _openDiscardCardChoice(effect, discardCards) {
+    this._requestCardChoice({
+      title: 'Escolha o Tridente para descartar',
+      cards: discardCards,
+      emptyMessage: 'Você não tem Tridente na mão.',
+      accent: 0x4caf50,
+      buttonColor: '#16385c',
+      maxVisible: 6,
+      labelForCard: card => card.name,
+      onSelect: card => this._payAtlasDiscardAndChooseSearch(effect, card),
+    })
+  }
+
+  _payAtlasDiscardAndChooseSearch(effect, discardCard) {
+    const discardIndex = this.myHand.findIndex(card => card === discardCard)
+    if (discardIndex === -1) {
+      this._closeEffectChoiceModal()
+      return
+    }
+
+    const [discarded] = this.myHand.splice(discardIndex, 1)
+    this.myDiscard.push(discarded)
+    this._renderHand(this.myHand)
+    this._renderDiscardPile()
+    this._playDiscardSmoke()
+    this._openDeckSearchChoice(effect)
+  }
+
+  _openDeckSearchChoice(effect) {
+    this._requestDeckCardChoice({
+      title: 'Escolha uma carta Atlantis',
+      filter: effect.search ?? {},
+      emptyMessage: 'Nenhuma carta com Atlantis encontrada no baralho.',
+      accent: 0x4caf50,
+      buttonColor: '#16385c',
+      maxVisible: 10,
+      labelForCard: card => `${card.name} (${card.card_type})`,
+      onSelect: card => {
+        const deckIndex = this.myDeck.findIndex(deckCard => deckCard === card)
+        if (deckIndex !== -1) {
+          const [found] = this.myDeck.splice(deckIndex, 1)
+          this.myHand.push(found)
+          this._renderDeckPile()
+          this._renderHand(this.myHand)
+          this._toast(`${found.name} adicionada à mão.`)
+          this._logAction(`${found.name} foi buscada do baralho.`)
+        }
+      },
+    })
+  }
+
+  _closeEffectChoiceModal() {
+    if (!this._effectChoiceModal) return
+    this._effectChoiceModal.destroy(true)
+    this._effectChoiceModal = null
   }
 
   _resolveMillThenGainDefense(creature, effect) {
@@ -2326,27 +3701,26 @@ export default class GameScene extends Scene {
   _sendFieldCreatureToDiscard(slot, owner, reason = 'efeito') {
     if (!slot?.card) return false
     const card = slot.card
+    const cardObject = slot.cardObject
+    const attachments = [...(slot.attachments ?? [])]
     const discard = owner === 'my' ? this.myDiscard : this.oppDiscard
 
-    discard.push(card)
-    for (const attachment of slot.attachments ?? []) {
-      if (attachment.card) discard.push(attachment.card)
-      attachment.object?.destroy(true)
+    if (!card.isToken) {
+      discard.push(card)
+      this._animateFieldObjectToDiscard(cardObject, owner)
+    } else {
+      this._animateFieldObjectVanish(cardObject)
     }
-    slot.cardObject?.destroy(true)
+    attachments.forEach((attachment, index) => {
+      if (attachment.card) discard.push(attachment.card)
+      this._animateFieldObjectToDiscard(attachment.object, owner, { delay: 80 + index * 70, scale: 0.58 })
+    })
     slot.card = null
     slot.cardObject = null
     slot.attachments = []
 
-    if (owner === 'my') {
-      this._renderDiscardPile()
-      this._playDiscardSmoke()
-    } else {
-      this._renderOpponentDiscardPile()
-    }
-
-    this._resolveCreatureSentToDiscard(card, owner)
-    this._logAction(`${card.name} foi enviada ao descarte por ${reason}.`)
+    if (!card.isToken) this._resolveCreatureSentToDiscard(card, owner)
+    this._logAction(card.isToken ? `${card.name} desapareceu por ${reason}.` : `${card.name} foi enviada ao descarte por ${reason}.`)
     return true
   }
 
@@ -2363,14 +3737,7 @@ export default class GameScene extends Scene {
   }
 
   _matchesCardRule(card, rule = {}) {
-    if (!card) return false
-    const name = String(card.name ?? card.nome ?? '').toLowerCase()
-    if (rule.name && name !== String(rule.name).toLowerCase()) return false
-    if (rule.name_includes && !name.includes(String(rule.name_includes).toLowerCase())) return false
-    if (rule.race && card.raca !== rule.race) return false
-    if (rule.element && (card.element ?? card.elemento) !== rule.element) return false
-    if (rule.card_type && card.card_type !== rule.card_type) return false
-    return true
+    return matchesCardRule(card, rule)
   }
 
   _processDelayedEffects(trigger) {
@@ -2496,30 +3863,63 @@ export default class GameScene extends Scene {
 
     const cardObject = this._pendingSummonCard
     const cardData = cardObject.getData('cardData')
-    const creature = this._placeCreatureObjectInSlot(cardData, cardObject, slot)
-
-    this._handContainers = this._handContainers.filter(card => card !== cardObject)
-    const handIndex = this.myHand.findIndex(card => card.id === cardData.id)
-    if (handIndex !== -1) this.myHand.splice(handIndex, 1)
-    this._turnActions.summoned = true
-
     this._pendingSummonCard = null
     this._clearSummonZones()
-    this._resolveCreatureEnterField(slot)
-    this._recalculateAllFieldCreatures()
-    this._playSummonImpact(creature, slot)
 
-    this._sendAction('play_card', {
-      card_id: cardData.id,
-      slot: slotIndex,
+    this._animateExistingCardTo(cardObject, slot.x, slot.y, {
+      scale: 1,
+      depth: 92,
+      onComplete: () => {
+        const creature = this._placeCreatureObjectInSlot(cardData, cardObject, slot)
+
+        this._handContainers = this._handContainers.filter(card => card !== cardObject)
+        const handIndex = this.myHand.findIndex(card => card.id === cardData.id)
+        if (handIndex !== -1) this.myHand.splice(handIndex, 1)
+        this._turnActions.summoned = true
+
+        this._resolveCreatureEnterField(slot)
+        this._recalculateAllFieldCreatures()
+        this._playSummonImpact(creature, slot)
+
+        this._sendAction('play_card', {
+          card_id: cardData.id,
+          slot: slotIndex,
+        })
+        this._logAction(`${cardData.name} foi invocada.`)
+      },
     })
-    this._logAction(`${cardData.name} foi invocada.`)
   }
 
   _summonCreatureToSlot(cardData, slot, options = {}) {
     const cardObject = this._createCardObject(cardData, slot.x, slot.y, false)
     const creature = this._placeCreatureObjectInSlot(cardData, cardObject, slot, options)
     this._resolveCreatureEnterField(slot)
+    this._recalculateAllFieldCreatures()
+    return creature
+  }
+
+  _summonOpponentCreatureToSlot(cardData, slot, options = {}) {
+    const cardObject = this._createCardObject(cardData, slot.x, slot.y, false)
+    const creature = createCreatureInstance(cardData)
+    const hasAptidao = String(cardData.efeito ?? cardData.effect ?? '').toLowerCase().includes('aptidão')
+      || String(cardData.efeito ?? cardData.effect ?? '').toLowerCase().includes('aptidao')
+
+    creature.summonedTurn = this._turnNumber
+    creature.canAttackFromTurn = options.canAttackFromTurn ?? (hasAptidao ? this._turnNumber : this._turnNumber + 1)
+
+    cardObject.setPosition(slot.x, slot.y)
+    cardObject.setDepth(8)
+    cardObject.setData('source', 'field')
+    cardObject.setData('slot', slot)
+    cardObject.setData('abilityState', { usedAbilities: {} })
+    cardObject.removeAllListeners('pointerdown')
+    cardObject.setInteractive({ useHandCursor: true })
+    cardObject.on('pointerdown', () => this._handleCardClick(cardObject))
+
+    this._addFieldStatsOverlay(cardObject, creature)
+    slot.card = creature
+    slot.cardObject = cardObject
+    slot.attachments = slot.attachments ?? []
     this._recalculateAllFieldCreatures()
     return creature
   }
@@ -2802,6 +4202,7 @@ export default class GameScene extends Scene {
       this._currentPhase = 'battle'
       this._updateTurnUi()
       this._showTurnBanner('FASE DE BATALHA')
+      this._renderBattleAttackButtons()
       return
     }
 
@@ -2811,6 +4212,9 @@ export default class GameScene extends Scene {
   }
 
   _endTurn() {
+    if (this._gameOver) return
+    this._stopTurnFuse()
+    this._clearBattleAttackButtons()
     this._processDelayedEffects('end_of_next_turn')
     this._clearExpiredTemporaryEffects()
     this._sendAction('end_turn', {})
@@ -2864,13 +4268,109 @@ export default class GameScene extends Scene {
     this._logAction('Oponente comprou 1 carta.')
   }
 
-  _runSoloOpponentTurn() {
+  async _runSoloOpponentTurn() {
+    if (this._gameOver || this._activePlayer !== 'opp') return
+    await this._runSoloMainPhase()
+    await this._wait(700)
     if (this._gameOver || this._activePlayer !== 'opp') return
     this._currentPhase = 'battle'
     this._updateTurnUi()
-    this.time.delayedCall(700, () => {
-      if (!this._gameOver && this._activePlayer === 'opp') this._endTurn()
+    this._showTurnBanner('FASE DE BATALHA')
+    await this._runSoloBattlePhase()
+    await this._wait(900)
+    if (!this._gameOver && this._activePlayer === 'opp') this._endTurn()
+  }
+
+  async _runSoloMainPhase() {
+    if (this._gameOver || this._activePlayer !== 'opp') return
+    if (this._soloSummonCreature()) {
+      await this._wait(460)
+      await this._offerCommandResponseWindow('invocou uma criatura')
+    }
+    if (this._soloAttachCard()) {
+      await this._wait(420)
+      await this._offerCommandResponseWindow('anexou uma carta')
+    }
+    this.oppHandCount = this.oppHand.length
+    this._renderOpponentHand()
+    this._renderOpponentDeckPile()
+    this._renderOpponentDiscardPile()
+  }
+
+  _soloSummonCreature() {
+    if (this._turnActions.summoned) return false
+    const emptySlot = aiChooseFirstEmptySlot(this._slotsOpp)
+    if (!emptySlot) return false
+
+    const handIndex = this.oppHand.findIndex(card => (
+      card.card_type === 'criatura' && this._canNormalSummonCard(card)
+    ))
+    if (handIndex === -1) return false
+
+    const [card] = this.oppHand.splice(handIndex, 1)
+    const from = this._opponentHandAnimationStart()
+    this._animateCardPreviewTo(card, from, { x: emptySlot.x, y: emptySlot.y }, {
+      onComplete: () => this._summonOpponentCreatureToSlot(card, emptySlot),
     })
+    this._turnActions.summoned = true
+    this._logAction(`Oponente invocou ${card.name}.`)
+    return true
+  }
+
+  _soloAttachCard() {
+    if (this._turnActions.attached) return false
+    const candidates = this.oppHand
+      .map((card, index) => ({ card, index }))
+      .filter(entry => this._isAttachmentCard(entry.card))
+
+    const play = aiChooseFirstCard(candidates.map(entry => {
+      const targets = attachmentTargets(entry.card, this._slotsOpp)
+      return targets.length ? { ...entry, target: targets[0] } : null
+    }).filter(Boolean))
+    if (!play) return false
+
+    const [attachment] = this.oppHand.splice(play.index, 1)
+    const from = this._opponentHandAnimationStart()
+    this._animateCardPreviewTo(attachment, from, { x: play.target.x, y: play.target.y + 9 }, {
+      endScale: 0.98,
+      duration: 320,
+      onComplete: () => this._placeOpponentAttachment(play.target, attachment),
+    })
+    this._turnActions.attached = true
+    return true
+  }
+
+  _opponentHandAnimationStart() {
+    return this._oppHandContainer
+      ? { x: this.cameras.main.width / 2, y: 130 }
+      : { x: this.cameras.main.width / 2, y: 130 }
+  }
+
+  async _runSoloBattlePhase() {
+    const attackers = this._slotsOpp.filter(slot => canCreatureAttack({
+      activePlayer: this._activePlayer,
+      currentPhase: 'battle',
+      gameOver: this._gameOver,
+      turnNumber: this._turnNumber,
+      actor: 'opp',
+    }, slot.card))
+
+    for (const attackerSlot of attackers) {
+      await this._wait(260)
+      if (this._gameOver || this._activePlayer !== 'opp' || !attackerSlot.card) continue
+      const target = aiChooseFirstSlot(this._slotsMy.filter(slot => slot.card))
+      if (target) {
+        this._resolveOpponentCreatureAttack(attackerSlot, target)
+        await this._offerCommandResponseWindow('atacou uma criatura')
+      } else {
+        this._resolveOpponentDirectAttack(attackerSlot)
+        await this._offerCommandResponseWindow('atacou diretamente')
+      }
+    }
+  }
+
+  _wait(ms) {
+    return new Promise(resolve => this.time.delayedCall(ms, resolve))
   }
 
   _mulliganHand() {
@@ -3192,10 +4692,7 @@ export default class GameScene extends Scene {
   }
 
   _surrender() {
-    if (this._turnFuseTimer) {
-      this._turnFuseTimer.remove(false)
-      this._turnFuseTimer = null
-    }
+    this._stopTurnFuse()
     clearScene()
     this.scene.start('MenuScene')
   }
