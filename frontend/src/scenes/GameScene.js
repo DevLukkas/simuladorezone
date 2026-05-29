@@ -1311,15 +1311,25 @@ export default class GameScene extends Scene {
     }
 
     const enemyCreatures = this._slotsOpp.filter(s => s.card)
+    const validTargets = enemyCreatures.filter(s => this._canBeAttackTarget(s))
     if (!enemyCreatures.length) {
       this._resolveDirectAttack(slot)
+      return
+    }
+    if (!validTargets.length) {
+      this._toast('Não há alvos válidos para atacar.')
       return
     }
 
     this._clearBattleAttackButtons()
     this._pendingAttackSlot = slot
-    this._highlightAttackTargets(enemyCreatures)
+    this._highlightAttackTargets(validTargets)
     this._toast('Escolha a criatura inimiga alvo.')
+  }
+
+  _canBeAttackTarget(slot) {
+    if (!slot?.card) return false
+    return (slot.card.cannotBeAttackTargetUntilTurn ?? 0) < this._turnNumber
   }
 
   _renderBattleAttackButtons() {
@@ -1428,6 +1438,10 @@ export default class GameScene extends Scene {
     if (!this._pendingAttackSlot || side !== 'opp') return
     const targetSlot = this._slotsOpp[slotIndex]
     if (!targetSlot?.card) return
+    if (!this._canBeAttackTarget(targetSlot)) {
+      this._toast(`${targetSlot.card.name} não pode ser alvo de ataques neste turno.`)
+      return
+    }
 
     this._resolveCreatureAttack(this._pendingAttackSlot, targetSlot)
     this._pendingAttackSlot = null
@@ -1444,6 +1458,7 @@ export default class GameScene extends Scene {
     const attacker = attackerSlot.card
     const damage = attacker.currentStats?.attack ?? attacker.attack ?? 0
     attacker.hasAttackedTurn = this._turnNumber
+    this._resolveAttachedCreatureAttackTriggers(attackerSlot, 'my')
     this._directDamage.opp += damage
     this._recordDamage(attacker, null, damage)
 
@@ -1462,6 +1477,7 @@ export default class GameScene extends Scene {
     const attacker = attackerSlot.card
     const damage = attacker.currentStats?.attack ?? attacker.attack ?? 0
     attacker.hasAttackedTurn = this._turnNumber
+    this._resolveAttachedCreatureAttackTriggers(attackerSlot, 'opp')
     this._directDamage.my += damage
     this._recordDamage(attacker, null, damage)
 
@@ -1490,6 +1506,7 @@ export default class GameScene extends Scene {
     const defDamage = this._combatDamageAfterReduction(attackerSlot, attackerSlots, defender.currentStats?.attack ?? defender.attack ?? 0)
 
     attacker.hasAttackedTurn = this._turnNumber
+    const attackTriggerAttachments = [...(attackerSlot.attachments ?? [])]
     defender.damageTaken = (defender.damageTaken ?? 0) + atkDamage
     attacker.damageTaken = (attacker.damageTaken ?? 0) + defDamage
     this._recordDamage(attacker, defender, atkDamage)
@@ -1497,6 +1514,11 @@ export default class GameScene extends Scene {
 
     this._refreshBattleDamage(attackerSlot, attackerSlots, defenderSlot)
     this._refreshBattleDamage(defenderSlot, defenderSlots, attackerSlot)
+    this._resolveAttachedCreatureAttackTriggers(
+      attackerSlot,
+      attackerSlots === this._slotsMy ? 'my' : 'opp',
+      attackTriggerAttachments
+    )
     this._toast(`${attacker.name} atacou ${defender.name}.`)
     this._logAction(`${attacker.name} atacou ${defender.name}.`)
     if (attackerSlots === this._slotsMy) this._renderBattleAttackButtons()
@@ -1701,6 +1723,7 @@ export default class GameScene extends Scene {
       clearScene()
       this.scene.start('StatusGameScene', {
         result: winner === 'my' ? 'victory' : 'defeat',
+        winnerName: winner === 'my' ? 'Jogador 1' : 'Jogador 2',
         score: this._score,
         logs: this._actionLogs,
         stats: this._matchStats,
@@ -2791,6 +2814,57 @@ export default class GameScene extends Scene {
         this._discardRandomOpponentCards(ability.action.discard ?? 1)
       }
     }
+  }
+
+  _resolveAttachedCreatureAttackTriggers(attackerSlot, owner = 'my', attachments = null) {
+    const activeAttachments = attachments ?? attackerSlot?.attachments ?? []
+    if (!attackerSlot?.card && !activeAttachments.length) return
+    if (!activeAttachments.length) return
+
+    for (const attachment of activeAttachments) {
+      for (const ability of attachment.card?.triggeredAbilities ?? []) {
+        if (ability.trigger !== 'attached_creature_attacks') continue
+        this._resolveAttachedCreatureAttackAction(attackerSlot, owner, attachment.card, ability.action)
+      }
+    }
+  }
+
+  _resolveAttachedCreatureAttackAction(attackerSlot, owner, attachment, action) {
+    if (!action) return false
+
+    if (
+      action.type !== 'choose_enemy_creature_then_prevent_attack'
+      && action.type !== 'choose_enemy_creature_prevent_attack_next_turn'
+    ) {
+      return false
+    }
+
+    const enemySlots = owner === 'my'
+      ? this._slotsOpp.filter(slot => slot.card)
+      : this._slotsMy.filter(slot => slot.card)
+
+    if (!enemySlots.length) return false
+
+    const applyPreventAttack = targetSlot => {
+      if (!targetSlot?.card) return
+      targetSlot.card.cannotAttackUntilTurn = this._turnNumber + 1
+      this._toast(`${targetSlot.card.name} não poderá atacar no próximo turno.`)
+      this._logAction(`${attachment.name} impediu ${targetSlot.card.name} de atacar no próximo turno.`)
+    }
+
+    if (owner === 'opp') {
+      applyPreventAttack(enemySlots[0])
+      return true
+    }
+
+    this._requestCreatureSlotChoice({
+      title: `${attachment.name}: escolha uma criatura inimiga.`,
+      side: 'opp',
+      slots: enemySlots,
+      color: 0x66ddff,
+      onSelect: applyPreventAttack,
+    })
+    return true
   }
 
   _discardRandomOpponentCards(count = 1) {
@@ -4358,13 +4432,16 @@ export default class GameScene extends Scene {
     for (const attackerSlot of attackers) {
       await this._wait(260)
       if (this._gameOver || this._activePlayer !== 'opp' || !attackerSlot.card) continue
-      const target = aiChooseFirstSlot(this._slotsMy.filter(slot => slot.card))
+      const yourCreatures = this._slotsMy.filter(slot => slot.card)
+      const target = aiChooseFirstSlot(yourCreatures.filter(slot => this._canBeAttackTarget(slot)))
       if (target) {
         this._resolveOpponentCreatureAttack(attackerSlot, target)
         await this._offerCommandResponseWindow('atacou uma criatura')
-      } else {
+      } else if (!yourCreatures.length) {
         this._resolveOpponentDirectAttack(attackerSlot)
         await this._offerCommandResponseWindow('atacou diretamente')
+      } else {
+        this._logAction(`${attackerSlot.card.name} não encontrou alvo válido para atacar.`)
       }
     }
   }

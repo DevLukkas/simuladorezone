@@ -1,116 +1,527 @@
 import { Scene } from 'phaser'
-import { login, register } from '../api/gameApi.js'
+import { login, logout, me, register } from '../api/gameApi.js'
+import { criaturas } from '../data/criaturas.js'
+import { habilidades } from '../data/habilidades.js'
+import { itens } from '../data/itens.js'
+import { comandos } from '../data/comandos.js'
+import { cenarios } from '../data/cenarios.js'
 import { saveScene } from '../utils/session.js'
 
-/**
- * MenuScene — Login / Registro e navegação principal.
- */
+const CARD_BACK_KEY = 'menu_card_back'
+
+function normalize(cards, cardType) {
+  return cards.map(card => ({
+    ...card,
+    name: card.nome ?? card.name,
+    card_type: cardType,
+  }))
+}
+
+const MENU_CARDS = [
+  ...normalize(criaturas, 'criatura'),
+  ...normalize(habilidades, 'habilidade'),
+  ...normalize(itens.map(card => ({ ...card, elemento: 'neutro' })), 'item'),
+  ...normalize(comandos, 'comando'),
+  ...normalize(cenarios, 'cenario'),
+].slice(0, 28)
+
 export default class MenuScene extends Scene {
   constructor() {
     super({ key: 'MenuScene' })
   }
 
+  preload() {
+    if (!this.textures.exists(CARD_BACK_KEY)) {
+      this.load.image(CARD_BACK_KEY, '/assets/img/cover.png')
+    }
+
+    MENU_CARDS.forEach(card => {
+      const key = `menu_card_${card.id}`
+      const file = `/assets/cards/${String(card.id).padStart(2, '0')}.png`
+      if (!this.textures.exists(key)) this.load.image(key, file)
+    })
+  }
+
   create() {
     saveScene('MenuScene')
+    this._loginHtmlElements = []
+    this._modalHtmlElements = []
+    this._loginContainer = null
+    this._menuContainer = null
+    this._registerModal = null
+    this._toastText = null
+    this._cardRainTimer = null
+
+    this.events.once('shutdown', () => this._cleanupScene())
+
     const { width, height } = this.cameras.main
+    this._buildBackground(width, height)
+    this._startCardRain(width, height)
+    this._buildBrand(width, height)
 
-    // Fundo
-    this.add.rectangle(0, 0, width, height, 0x0d1117).setOrigin(0)
-
-    // Título
-    this.add
-      .text(width / 2, height * 0.18, 'Elemental Zone - TCG', {
-        fontSize: '42px',
-        color: '#4caf50',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5)
-
-    this.add
-      .text(width / 2, height * 0.26, 'Batalha de Cartas Elementais', {
-        fontSize: '18px',
-        color: '#aaaaaa',
-      })
-      .setOrigin(0.5)
-
-    // Verifica se já está logado
     const token = localStorage.getItem('auth_token')
     if (token) {
-      this._showMainMenu()
+      this._loadSession()
     } else {
       this._showLoginForm()
     }
   }
 
-  _showLoginForm() {
-    const { width, height } = this.cameras.main
+  _buildBackground(width, height) {
+    const bg = this.add.graphics()
+    const steps = 44
+    for (let i = 0; i < steps; i++) {
+      const t = i / (steps - 1)
+      const r = Math.round(3 + 20 * t)
+      const g = Math.round(13 + 72 * t)
+      const b = Math.round(32 + 104 * t)
+      bg.fillStyle((r << 16) | (g << 8) | b, 1)
+      bg.fillRect((width / steps) * i - height * 0.35, 0, width / steps + height * 0.7, height)
+      bg.rotation = -0.1
+    }
 
-    // Container agrupa todos os elementos do formulário para destruir de uma vez
-    this._loginContainer = this.add.container(0, 0)
+    const shine = this.add.rectangle(-width * 0.16, height / 2, width * 0.24, height * 1.45, 0x7eeaff, 0.12)
+      .setAngle(-27)
+      .setBlendMode('ADD')
+    this.tweens.add({
+      targets: shine,
+      x: width * 1.18,
+      duration: 4600,
+      repeat: -1,
+      yoyo: true,
+      ease: 'Sine.easeInOut',
+    })
 
-    const btnLogin = this.add
-      .text(width / 2, height * 0.45, ' Acessar ', {
-        fontSize: '24px',
-        fontWeight: '900',
-        color: '#ffffff',
-        backgroundColor: 'GoldenRod',
-        padding: { x: 20, y: 10 },
-      })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true })
+    this.add.rectangle(width / 2, height / 2, width, height, 0x010813, 0.48)
+  }
 
-    const versionText = this.add
-      .text(width / 2, height * 0.9, 'v0.1.0 — Em desenvolvimento', {
-        fontSize: '12px',
-        color: '#555555',
-      })
-      .setOrigin(0.5)
+  _buildBrand(width, height) {
+    this.add.text(width / 2, height * 0.135, 'EZone TCG', {
+      fontSize: '50px',
+      color: '#bff5ff',
+      fontStyle: 'bold',
+      stroke: '#06111f',
+      strokeThickness: 7,
+    }).setOrigin(0.5)
 
-    this._loginContainer.add([btnLogin, versionText])
+    this.add.text(width / 2, height * 0.19, 'SIMULATOR', {
+      fontSize: '15px',
+      color: '#8fe8ff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+  }
 
-    btnLogin.on('pointerover', () => btnLogin.setStyle({ color: '#4caf50' }))
-    btnLogin.on('pointerout', () => btnLogin.setStyle({ color: '#ffffff' }))
-    btnLogin.on('pointerdown', () => {
-      // Dev mode: grava token fictício para manter sessão entre cenas
-      localStorage.setItem('auth_token', 'dev_token')
-      // Destrói todo o formulário antes de mostrar o menu
-      this._loginContainer.destroy(true)
-      this._loginContainer = null
-      this._showMainMenu()
+  _startCardRain(width, height) {
+    const spawn = () => this._spawnFallingCard(width, height)
+    spawn()
+    this._cardRainTimer = this.time.addEvent({
+      delay: this._randInt(2000, 4000),
+      loop: true,
+      callback: () => {
+        spawn()
+        this._cardRainTimer.delay = this._randInt(2000, 4000)
+      },
     })
   }
 
-  _showMainMenu() {
+  _spawnFallingCard(width, height) {
+    const faceUp = Math.random() > 0.45
+    const card = MENU_CARDS[this._randInt(0, MENU_CARDS.length - 1)]
+    const key = faceUp && card ? `menu_card_${card.id}` : CARD_BACK_KEY
+    if (!this.textures.exists(key)) return
+
+    const x = this._randInt(80, width - 80)
+    const startY = -120
+    const endY = height + 140
+    const cardObject = this.add.image(x, startY, key)
+      .setDisplaySize(76, 106)
+      .setAlpha(0.2)
+      .setDepth(1)
+      .setAngle(this._randInt(-22, 22))
+
+    this.tweens.add({
+      targets: cardObject,
+      y: endY,
+      x: x + this._randInt(-120, 120),
+      angle: cardObject.angle + this._randInt(-130, 130),
+      alpha: 0.34,
+      duration: this._randInt(5200, 7600),
+      ease: 'Sine.easeIn',
+      onComplete: () => cardObject.destroy(),
+    })
+  }
+
+  async _loadSession() {
+    try {
+      const response = await me()
+      this._saveAuth(response.data)
+      this._showMainMenu()
+    } catch {
+      localStorage.removeItem('auth_token')
+      localStorage.removeItem('auth_user')
+      this._showLoginForm()
+    }
+  }
+
+  _showLoginForm() {
+    this._clearLoginForm()
     const { width, height } = this.cameras.main
-    const btnStyle = {
-      fontSize: '22px',
+    this._loginContainer = this.add.container(0, 0).setDepth(10)
+
+    const panelX = width / 2
+    const panelY = height * 0.53
+    const panel = this.add.rectangle(panelX, panelY, 440, 290, 0x06111f, 0.88)
+      .setStrokeStyle(2, 0x64e8ff)
+    const topLine = this.add.rectangle(panelX, panelY - 143, 390, 2, 0x9df7ff, 0.9)
+    const title = this.add.text(panelX, panelY - 106, 'Entrar na Conta', {
+      fontSize: '21px',
       color: '#ffffff',
-      backgroundColor: '#1b3a4b',
-      padding: { x: 30, y: 12 },
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const subtitle = this.add.text(panelX, panelY - 78, 'Acesse seu jogador para salvar decks e partidas.', {
+      fontSize: '12px',
+      color: '#9fd6e8',
+    }).setOrigin(0.5)
+
+    const email = this._addHtmlInput(panelX - 150, panelY - 28, 300, 38, 'E-mail', 'email', this._loginHtmlElements, 24)
+    const password = this._addHtmlInput(panelX - 150, panelY + 28, 300, 38, 'Senha', 'password', this._loginHtmlElements, 24)
+
+    const btnLogin = this._addButton(panelX, panelY + 88, 'ENTRAR', '#17313f', () => {
+      this._submitLogin(email.value, password.value)
+    })
+    const btnRegister = this.add.text(panelX, panelY + 128, 'Criar nova conta', {
+      fontSize: '13px',
+      color: '#8fe8ff',
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+    btnRegister.on('pointerover', () => btnRegister.setStyle({ color: '#ffffff' }))
+    btnRegister.on('pointerout', () => btnRegister.setStyle({ color: '#8fe8ff' }))
+    btnRegister.on('pointerdown', () => this._openRegisterModal())
+
+    const versionText = this.add.text(width / 2, height * 0.91, 'v0.1.0 - Em desenvolvimento', {
+      fontSize: '12px',
+      color: '#7f8f99',
+    }).setOrigin(0.5)
+
+    this._loginContainer.add([panel, topLine, title, subtitle, btnLogin, btnRegister, versionText])
+  }
+
+  async _submitLogin(email, password) {
+    if (!email || !password) {
+      this._toast('Informe e-mail e senha.')
+      return
     }
 
+    try {
+      const response = await login(email, password)
+      this._saveAuth(response.data)
+      this._clearLoginForm()
+      this._showMainMenu()
+      this._toast('Login realizado.')
+    } catch (error) {
+      this._toast(this._errorMessage(error, 'Não foi possível entrar.'))
+    }
+  }
+
+  _openRegisterModal() {
+    if (this._registerModal) return
+    this._setLoginInputsVisible(false)
+
+    const { width, height } = this.cameras.main
+    this._registerModal = this.add.container(0, 0).setDepth(50)
+    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.72)
+      .setOrigin(0)
+      .setInteractive()
+    const panel = this.add.rectangle(width / 2, height / 2, 500, 382, 0x06111f, 0.97)
+      .setStrokeStyle(2, 0x64e8ff)
+      .setInteractive()
+    const topLine = this.add.rectangle(width / 2, height / 2 - 188, 430, 2, 0x9df7ff, 0.9)
+    const title = this.add.text(width / 2, height / 2 - 148, 'Cadastrar Jogador', {
+      fontSize: '22px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const close = this.add.text(width / 2 + 215, height / 2 - 152, 'X', {
+      fontSize: '16px',
+      color: '#ff7777',
+      fontStyle: 'bold',
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+
+    this._modalHtmlElements = []
+    const name = this._addHtmlInput(width / 2 - 170, height / 2 - 86, 340, 38, 'Nome do jogador', 'text', this._modalHtmlElements, 60)
+    const email = this._addHtmlInput(width / 2 - 170, height / 2 - 28, 340, 38, 'E-mail', 'email', this._modalHtmlElements, 60)
+    const password = this._addHtmlInput(width / 2 - 170, height / 2 + 30, 340, 38, 'Senha (mín. 6)', 'password', this._modalHtmlElements, 60)
+
+    const submit = this._addButton(width / 2, height / 2 + 104, 'CRIAR CONTA', '#17313f', () => {
+      this._submitRegister(name.value, email.value, password.value)
+    })
+    const hint = this.add.text(width / 2, height / 2 + 146, 'A conta será vinculada aos seus decks salvos futuramente.', {
+      fontSize: '11px',
+      color: '#9fd6e8',
+    }).setOrigin(0.5)
+
+    close.on('pointerdown', () => this._closeRegisterModal())
+    overlay.on('pointerdown', () => this._closeRegisterModal())
+    this._registerModal.add([overlay, panel, topLine, title, close, submit, hint])
+  }
+
+  async _submitRegister(name, email, password) {
+    if (!name || !email || !password) {
+      this._toast('Preencha nome, e-mail e senha.')
+      return
+    }
+
+    try {
+      const response = await register(name, email, password)
+      this._saveAuth(response.data)
+      this._closeRegisterModal()
+      this._clearLoginForm()
+      this._showMainMenu()
+      this._toast('Conta criada.')
+    } catch (error) {
+      this._toast(this._errorMessage(error, 'Não foi possível cadastrar.'))
+    }
+  }
+
+  _showMainMenu() {
+    this._clearLoginForm()
+    if (this._menuContainer) this._menuContainer.destroy(true)
+
+    const { width, height } = this.cameras.main
+    this._menuContainer = this.add.container(0, 0).setDepth(10)
+    const user = this._authUser()
+
+    const panelY = height * 0.57
+    const panel = this.add.rectangle(width / 2, panelY, 520, 370, 0x06111f, 0.6)
+      .setStrokeStyle(1, 0x1e9cc1)
+    const topLine = this.add.rectangle(width / 2, panelY - 184, 470, 2, 0x9df7ff, 0.85)
+    const playerText = this.add.text(width / 2, height * 0.275, user?.name ?? 'Convidado', {
+      fontSize: '21px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      stroke: '#06111f',
+      strokeThickness: 4,
+    }).setOrigin(0.5)
+    this._menuContainer.add([panel, topLine, playerText])
+
     const buttons = [
-      { label: 'Partida Amistosa', scene: 'LobbyScene' },
-      { label: 'Marketplace Global', scene: 'LibraryScene' },
-      { label: 'Deck Builder', scene: 'DeckBuilderScene' },
-      { label: 'Perfil', scene: 'ProfileScene' },
+      { label: 'PARTIDA AMISTOSA', scene: 'LobbyScene', accent: 0x64e8ff },
+      { label: 'MARKETPLACE GLOBAL', scene: 'LibraryScene', accent: 0xffcc66 },
+      { label: 'DECK BUILDER', scene: 'DeckBuilderScene', accent: 0x8dff9d },
+      { label: 'PERFIL', scene: 'ProfileScene', accent: 0xb78dff },
     ]
 
     buttons.forEach((btn, i) => {
-      const b = this.add
-        .text(width / 2, height * 0.42 + i * 70, btn.label, btnStyle)
-        .setOrigin(0.5)
-        .setInteractive({ useHandCursor: true })
-
-      b.on('pointerover', () => b.setStyle({ color: '#4caf50' }))
-      b.on('pointerout', () => b.setStyle({ color: '#ffffff' }))
-      b.on('pointerdown', () => {
+      const b = this._addMainMenuButton(width / 2, height * 0.405 + i * 68, btn, () => {
         if (this.scene.get(btn.scene)) {
           this.scene.start(btn.scene)
         } else {
-          console.warn(`Cena ${btn.scene} ainda não implementada.`)
+          this._toast(`Cena ${btn.scene} ainda não implementada.`)
         }
       })
+      this._menuContainer.add(b)
     })
+
+    const logoutBtn = this.add.container(width / 2, height - 54)
+    const logoutBg = this.add.rectangle(0, 0, 178, 34, 0x180c10, 0.86)
+      .setStrokeStyle(1, 0x7a3333)
+    const logoutLabel = this.add.text(0, 0, 'SAIR DA CONTA', {
+      fontSize: '12px',
+      color: '#d8caca',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    logoutBtn.add([logoutBg, logoutLabel])
+    logoutBtn.setSize(178, 34).setInteractive({ useHandCursor: true })
+    logoutBtn.on('pointerover', () => {
+      logoutBg.setFillStyle(0x3a1218, 0.95)
+      logoutLabel.setColor('#ff9999')
+    })
+    logoutBtn.on('pointerout', () => {
+      logoutBg.setFillStyle(0x180c10, 0.86)
+      logoutLabel.setColor('#d8caca')
+    })
+    logoutBtn.on('pointerdown', () => this._logout())
+    this._menuContainer.add(logoutBtn)
+  }
+
+  _addMainMenuButton(x, y, config, onClick) {
+    const button = this.add.container(x, y)
+    const bg = this.add.rectangle(0, 0, 390, 48, 0x071523, 0.9)
+      .setStrokeStyle(1, config.accent)
+    const accent = this.add.rectangle(-190, 0, 4, 34, config.accent, 0.95)
+    const shine = this.add.rectangle(-35, 0, 72, 48, 0xffffff, 0.035)
+      .setAngle(-18)
+      .setBlendMode('ADD')
+    const label = this.add.text(0, 0, config.label, {
+      fontSize: '17px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const arrow = this.add.text(164, 0, '>', {
+      fontSize: '18px',
+      color: '#8fe8ff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+
+    button.add([bg, accent, shine, label, arrow])
+    button.setSize(390, 48).setInteractive({ useHandCursor: true })
+    button.on('pointerover', () => {
+      bg.setFillStyle(0x0b2740, 0.98)
+      shine.setAlpha(0.12)
+      label.setColor('#bff5ff')
+      this.tweens.add({ targets: button, scaleX: 1.035, scaleY: 1.035, duration: 120, ease: 'Sine.easeOut' })
+    })
+    button.on('pointerout', () => {
+      bg.setFillStyle(0x071523, 0.9)
+      shine.setAlpha(0.035)
+      label.setColor('#ffffff')
+      this.tweens.add({ targets: button, scaleX: 1, scaleY: 1, duration: 120, ease: 'Sine.easeOut' })
+    })
+    button.on('pointerdown', onClick)
+    return button
+  }
+
+  async _logout() {
+    try {
+      await logout()
+    } catch {
+      // Se o token já expirou, limpamos a sessão local mesmo assim.
+    }
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('auth_user')
+    if (this._menuContainer) {
+      this._menuContainer.destroy(true)
+      this._menuContainer = null
+    }
+    this._showLoginForm()
+  }
+
+  _addButton(x, y, label, color, onClick) {
+    const button = this.add.text(x, y, label, {
+      fontSize: '15px',
+      color: '#ffffff',
+      backgroundColor: color,
+      padding: { x: 20, y: 10 },
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+    button.on('pointerover', () => button.setStyle({ backgroundColor: '#2f6f8f' }))
+    button.on('pointerout', () => button.setStyle({ backgroundColor: color }))
+    button.on('pointerdown', onClick)
+    return button
+  }
+
+  _addHtmlInput(x, y, w, h, placeholder, type = 'text', bucket = this._loginHtmlElements, zIndex = 20) {
+    const canvas = this.sys.game.canvas.getBoundingClientRect()
+    const scaleX = canvas.width / this.scale.gameSize.width
+    const scaleY = canvas.height / this.scale.gameSize.height
+    const input = document.createElement('input')
+    input.type = type
+    input.placeholder = placeholder
+    input.style.cssText = [
+      'position: fixed',
+      'left: ' + (canvas.left + x * scaleX) + 'px',
+      'top: ' + (canvas.top + y * scaleY - (h * scaleY) / 2) + 'px',
+      'width: ' + (w * scaleX) + 'px',
+      'height: ' + (h * scaleY) + 'px',
+      'background: rgba(6, 17, 31, 0.96)',
+      'color: #fff',
+      'border: 1px solid #64e8ff',
+      'border-radius: 4px',
+      'box-sizing: border-box',
+      'padding: 0 12px',
+      'font-size: 13px',
+      'line-height: ' + (h * scaleY) + 'px',
+      'outline: none',
+      'z-index: ' + zIndex,
+      'box-shadow: 0 0 12px rgba(100, 232, 255, 0.12)',
+    ].join(';')
+    document.body.appendChild(input)
+    bucket.push(input)
+    return input
+  }
+
+  _setLoginInputsVisible(visible) {
+    this._loginHtmlElements.forEach(input => {
+      input.style.display = visible ? 'block' : 'none'
+    })
+  }
+
+  _clearLoginForm() {
+    if (this._loginContainer) {
+      this._loginContainer.destroy(true)
+      this._loginContainer = null
+    }
+    this._removeLoginHtmlElements()
+    this._removeModalHtmlElements()
+  }
+
+  _closeRegisterModal() {
+    if (this._registerModal) {
+      this._registerModal.destroy(true)
+      this._registerModal = null
+    }
+    this._removeModalHtmlElements()
+    this._setLoginInputsVisible(true)
+  }
+
+  _cleanupScene() {
+    if (this._cardRainTimer) {
+      this._cardRainTimer.remove(false)
+      this._cardRainTimer = null
+    }
+    this._removeLoginHtmlElements()
+    this._removeModalHtmlElements()
+  }
+
+  _removeLoginHtmlElements() {
+    this._loginHtmlElements?.forEach(el => el.remove())
+    this._loginHtmlElements = []
+  }
+
+  _removeModalHtmlElements() {
+    this._modalHtmlElements?.forEach(el => el.remove())
+    this._modalHtmlElements = []
+  }
+
+  _saveAuth(payload = {}) {
+    if (payload.token) localStorage.setItem('auth_token', payload.token)
+    if (payload.user) localStorage.setItem('auth_user', JSON.stringify(payload.user))
+  }
+
+  _authUser() {
+    try {
+      return JSON.parse(localStorage.getItem('auth_user'))
+    } catch {
+      return null
+    }
+  }
+
+  _errorMessage(error, fallback) {
+    const data = error?.response?.data
+    const errors = data?.errors
+    if (errors) {
+      const first = Object.values(errors)[0]
+      if (Array.isArray(first) && first[0]) return first[0]
+    }
+    return data?.message ?? fallback
+  }
+
+  _toast(message) {
+    const { width, height } = this.cameras.main
+    if (this._toastText) this._toastText.destroy()
+    this._toastText = this.add.text(width / 2, height - 110, message, {
+      fontSize: '14px',
+      color: '#ffffff',
+      backgroundColor: '#17313f',
+      padding: { x: 16, y: 8 },
+    }).setOrigin(0.5).setDepth(90)
+    this.time.delayedCall(2600, () => {
+      if (this._toastText) {
+        this._toastText.destroy()
+        this._toastText = null
+      }
+    })
+  }
+
+  _randInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min
   }
 }

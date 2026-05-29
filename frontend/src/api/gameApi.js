@@ -7,6 +7,7 @@ export const login = (email, password) =>
 export const register = (name, email, password) =>
   api.post('/auth/register', { name, email, password })
 
+export const me = () => api.get('/auth/me')
 export const logout = () => api.post('/auth/logout')
 
 // --- Cartas ---

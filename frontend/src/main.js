@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import BootScene from './scenes/BootScene.js'
 import MenuScene from './scenes/MenuScene.js'
 import LobbyScene from './scenes/LobbyScene.js'
+import LibraryScene from './scenes/LibraryScene.js'
 import GameScene from './scenes/GameScene.js'
 import DeckBuilderScene from './scenes/DeckBuilderScene.js'
 import StatusGameScene from './scenes/StatusGameScene.js'
@@ -12,7 +13,7 @@ const config = {
   height: 720,
   backgroundColor: '#FFFFFF',
   parent: 'game-container',
-  scene: [BootScene, MenuScene, LobbyScene, GameScene, DeckBuilderScene, StatusGameScene],
+  scene: [BootScene, MenuScene, LobbyScene, LibraryScene, GameScene, DeckBuilderScene, StatusGameScene],
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,

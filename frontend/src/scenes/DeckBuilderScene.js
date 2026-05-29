@@ -1,721 +1,729 @@
 import { Scene } from 'phaser'
 import { saveScene } from '../utils/session.js'
-import { criaturas }   from '../data/criaturas.js'
+import { criaturas } from '../data/criaturas.js'
 import { habilidades } from '../data/habilidades.js'
-import { itens }       from '../data/itens.js'
-import { comandos }    from '../data/comandos.js'
-import { cenarios }    from '../data/cenarios.js'
+import { itens } from '../data/itens.js'
+import { comandos } from '../data/comandos.js'
+import { cenarios } from '../data/cenarios.js'
 
-/**
- * DeckBuilderScene — editor de baralho estilo Duel Links / Duel Masters
- *
- * Layout (1280 × 720):
- * ┌────────────────────┬──────────────┬───────────────────────────┐
- * │  COLEÇÃO  (460px)  │ PREVIEW(220) │  BARALHO ATUAL  (600px)   │
- * │  [busca + filtros] │  [imagem]    │  [nome] [salvar] [limpar]  │
- * │  [grade de cartas] │  [stats]     │  [grade 10×4 de slots]    │
- * └────────────────────┴──────────────┴───────────────────────────┘
- */
+const LOCAL_DECK_KEY = 'ezone_deck_builder_draft'
+const MAX_DECK = 40
+const MAX_COPIES = 3
 
-// ── Cor padrão por tipo ─────────────────────────────────────────────────────
-const TYPE_DEFAULT_COLOR = {
-  criatura:   0x886633,
-  habilidade: 0x2255aa,
-  item:       0x668844,
-  comando:    0x773399,
-  cenario:    0x336655,
+const TYPE_LABEL = {
+  criatura: 'CRIATURA',
+  habilidade: 'HABILIDADE',
+  item: 'ITEM',
+  comando: 'COMANDO',
+  cenario: 'CENÁRIO',
 }
 
-// ── Normaliza um array de cartas para o formato interno da cena ─────────────
-function normalize(cards, card_type) {
-  return cards.map(c => ({
-    ...c,
-    name:      c.nome,
-    card_type,
-    attack:    c.ataque   ?? 0,
-    defense:   c.vida     ?? 0,
-    element:   c.elemento ?? null,
-    rarity:    c.raridade,
-    color:     TYPE_DEFAULT_COLOR[card_type],
+const TYPE_COLOR = {
+  criatura: '#ffdd77',
+  habilidade: '#64e8ff',
+  item: '#8dff9d',
+  comando: '#d58dff',
+  cenario: '#7dffc9',
+}
+
+const RARITY_COLOR = {
+  comum: 0x888888,
+  rara: 0xffdd77,
+  lendaria: 0xff44ff,
+}
+
+function normalize(cards, cardType) {
+  return cards.map(card => ({
+    ...card,
+    name: card.nome ?? card.name,
+    card_type: cardType,
+    attack: card.ataque ?? 0,
+    defense: card.vida ?? 0,
+    element: card.elemento ?? card.element ?? null,
+    rarity: card.raridade ?? card.rarity ?? 'comum',
   }))
 }
 
-// ── Coleção completa montada a partir dos arquivos de dados ─────────────────
 const ALL_CARDS = [
-  ...normalize(criaturas,   'criatura'),
+  ...normalize(criaturas, 'criatura'),
   ...normalize(habilidades, 'habilidade'),
-  ...normalize(itens.map(c => ({ ...c, elemento: 'neutro' })), 'item'),
-  ...normalize(comandos,    'comando'),
-  ...normalize(cenarios,    'cenario'),
+  ...normalize(itens.map(card => ({ ...card, elemento: 'neutro' })), 'item'),
+  ...normalize(comandos, 'comando'),
+  ...normalize(cenarios, 'cenario'),
 ]
-
-// Elementos: criaturas e habilidades têm elemento; itens = sempre neutro; comando/cenário = sem elemento
-const ELEMENT_LABEL = {
-  fogo: '🔥 Fogo', agua: '💧 Água', terra: '⛰ Terra',
-  vento: '🌬 Vento', neutro: '○ Neutro', vazio: '■ Vazio', cosmico: '★ Cósmico',
-}
-const ELEMENT_COLOR = {
-  fogo: 0xff4400, agua: 0x2299ff, terra: 0x886644,
-  vento: 0x88ddaa, neutro: 0x888888, vazio: 0x6633aa, cosmico: 0xcc55ff,
-}
-const ELEMENT_HEX = {
-  fogo: '#ff6633', agua: '#2299ff', terra: '#bb8855',
-  vento: '#88ddaa', neutro: '#888888', vazio: '#9955cc', cosmico: '#dd77ff',
-}
-
-const RARITY_COLOR = { comum: 0x888888, rara: 0xffcc00, lendaria: 0xff44ff }
-const RARITY_HEX   = { comum: '#888888', rara: '#ffcc00', lendaria: '#ff44ff' }
-
-const TYPE_LABEL = { criatura: 'CRIATURA', habilidade: 'HABILIDADE', comando: 'COMANDO', cenario: 'CENÁRIO', item: 'ITEM' }
-const TYPE_COLOR = { criatura: '#cc8844', habilidade: '#4488ff', comando: '#aa44cc', cenario: '#44aa88', item: '#44cc44' }
-const MAX_DECK     = 40
-const MAX_COPIES   = 3   // máximo de cópias por carta
-const LOCAL_DECK_KEY = 'ezone_deck_builder_draft'
 
 export default class DeckBuilderScene extends Scene {
   constructor() {
     super({ key: 'DeckBuilderScene' })
 
-    this._allCards    = []   // coleção completa
-    this._filtered    = []   // resultado do filtro atual
-    this._deck        = []   // [{ card, qty }]
-    this._deckName    = 'Novo Baralho'
-    this._filterType  = 'all'
-    this._searchText  = ''
-    this._collScroll  = 0    // índice do topo da grade de coleção
-    this._preview     = null // carta sendo pré-visualizada
-    this._htmlEls     = []
-
-    // layout fixo
-    this._L = {
-      collX: 0,   collW: 460,
-      prevX: 460, prevW: 220,
-      deckX: 680, deckW: 600,
-      topH:  60,  // altura da barra de topo
-    }
+    this._allCards = []
+    this._filtered = []
+    this._deck = []
+    this._deckName = 'Novo Baralho'
+    this._filterType = 'todos'
+    this._searchText = ''
+    this._scroll = 0
+    this._deckScroll = 0
+    this._htmlElements = []
   }
 
-  // ────────────────────────────────────────────────────────────────
   preload() {
-    // Carrega imagem de cada carta pelo id: 01.png, 02.png ...
     ALL_CARDS.forEach(card => {
-      const key  = `card_${card.id}`
+      const key = `deck_card_${card.id}`
       const file = `/assets/cards/${String(card.id).padStart(2, '0')}.png`
-      if (!this.textures.exists(key)) {
-        this.load.image(key, file)
-      }
+      if (!this.textures.exists(key)) this.load.image(key, file)
     })
   }
 
-  // ────────────────────────────────────────────────────────────────
   create() {
     saveScene('DeckBuilderScene')
-    this._allCards   = [...ALL_CARDS]
-    this._filtered   = [...ALL_CARDS]
-    this._loadLocalDeck()
 
     const { width, height } = this.cameras.main
-    this._W = width; this._H = height
 
-    // Fundo
-    this.add.rectangle(0, 0, width, height, 0x080d0a).setOrigin(0)
+    this._allCards = [...ALL_CARDS]
+    this._filtered = [...ALL_CARDS]
 
-    this._buildTopBar()
-    this._buildCollectionPanel()
-    this._buildPreviewPanel()
-    this._buildDeckPanel()
+    this._buildBackground(width, height)
+    this._buildHeader(width)
+    this._buildPanels(width, height)
+    this._loadLocalDeck()
+    this._renderCollection()
+    this._renderDeck()
+    this._showPreview(null)
 
-    this.events.on('shutdown', () => this._destroyHtml())
+ this.input.on('wheel', (pointer, gameObjects, deltaX, deltaY) => {
+  const l = this._layout
+
+  const insideCollection =
+    pointer.x >= l.collectionX &&
+    pointer.x <= l.collectionX + l.collectionW &&
+    pointer.y >= l.collectionY + 150 &&
+    pointer.y <= l.collectionY + l.collectionH - 45
+
+  const insideDeck =
+    pointer.x >= l.deckX &&
+    pointer.x <= l.deckX + l.deckW &&
+    pointer.y >= l.deckY + 120 &&
+    pointer.y <= l.deckY + l.deckH - 90
+
+  if (insideCollection) {
+    const maxScroll = Math.max(0, this._filtered.length - 15)
+
+    if (deltaY > 0) {
+      this._scroll = Math.min(maxScroll, this._scroll + 5)
+    } else {
+      this._scroll = Math.max(0, this._scroll - 5)
+    }
+
+    this._renderCollection()
+    return
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // BARRA SUPERIOR
-  // ══════════════════════════════════════════════════════════════
+  if (insideDeck) {
+    const visibleDeckSlots = 28
+    const maxDeckScroll = Math.max(0, MAX_DECK - visibleDeckSlots)
 
-  _buildTopBar() {
-    const { _W, _H } = this
-    const topH = this._L.topH
+    if (deltaY > 0) {
+      this._deckScroll = Math.min(maxDeckScroll, this._deckScroll + 7)
+    } else {
+      this._deckScroll = Math.max(0, this._deckScroll - 7)
+    }
 
-    this.add.rectangle(0, 0, _W, topH, 0x0d1a10).setOrigin(0)
-    this.add.rectangle(0, topH, _W, 2, 0x2a5a2a).setOrigin(0)
+    this._renderDeck()
+  }
+})
 
-    // Voltar
-    this.add.text(20, topH / 2, '← MENU', { fontSize: '14px', color: '#aaaaaa' })
-      .setOrigin(0, 0.5).setInteractive({ useHandCursor: true })
+    this.events.on('shutdown', () => this._removeHtmlElements())
+  }
+
+  _buildBackground(width, height) {
+    const bg = this.add.graphics()
+
+    for (let i = 0; i < 44; i++) {
+      const t = i / 43
+      const r = Math.round(4 + 18 * t)
+      const g = Math.round(14 + 74 * t)
+      const b = Math.round(36 + 108 * t)
+
+      bg.fillStyle((r << 16) | (g << 8) | b, 1)
+      bg.fillRect((width / 44) * i - height * 0.35, 0, width / 44 + height * 0.7, height)
+      bg.rotation = -0.1
+    }
+
+    this.add.rectangle(width / 2, height / 2, width, height, 0x010813, 0.48)
+  }
+
+  _buildHeader(width) {
+    this.add.text(30, 38, '< MENU', {
+      fontSize: '14px',
+      color: '#bff5ff',
+      fontStyle: 'bold',
+    })
+      .setOrigin(0, 0.5)
+      .setInteractive({ useHandCursor: true })
       .on('pointerover', function () { this.setStyle({ color: '#ffffff' }) })
-      .on('pointerout',  function () { this.setStyle({ color: '#aaaaaa' }) })
+      .on('pointerout', function () { this.setStyle({ color: '#bff5ff' }) })
       .on('pointerdown', () => this.scene.start('MenuScene'))
 
-    // Título
-    this.add.text(_W / 2, topH / 2, 'Biblioteca de Cartas', {
-      fontSize: '20px', color: '#4caf50', fontStyle: 'bold',
+    this.add.text(width / 2, 42, 'CONSTRUTOR DE BARALHOS', {
+      fontSize: '34px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      stroke: '#06111f',
+      strokeThickness: 5,
+    }).setOrigin(0.5)
+
+    // this.add.text(width / 2, 76, 'Monte, salve, importe e exporte decks do EZone TCG', {
+    //   fontSize: '13px',
+    //   color: '#8fe8ff',
+    // }).setOrigin(0.5)
+  }
+
+  _buildPanels(width, height) {
+    this._layout = {
+      collectionX: 40,
+      collectionY: 120,
+      collectionW: 430,
+      collectionH: height - 160,
+
+      previewX: 500,
+      previewY: 120,
+      previewW: 260,
+      previewH: height - 160,
+
+      deckX: 790,
+      deckY: 120,
+      deckW: width - 830,
+      deckH: height - 160,
+    }
+
+    const l = this._layout
+
+    this._drawPanel(l.collectionX, l.collectionY, l.collectionW, l.collectionH, 'COLEÇÃO')
+    this._drawPanel(l.previewX, l.previewY, l.previewW, l.previewH, 'DETALHES')
+    this._drawPanel(l.deckX, l.deckY, l.deckW, l.deckH, 'BARALHO ATUAL')
+
+    this._buildCollectionControls()
+    this._buildDeckControls()
+
+    this._collectionContainer = this.add.container(0, 0)
+    this._deckContainer = this.add.container(0, 0)
+    this._previewContainer = this.add.container(0, 0)
+  }
+
+  _drawPanel(x, y, w, h, title) {
+    this.add.rectangle(x + w / 2, y + h / 2, w, h, 0x06111f, 0.82)
+      .setStrokeStyle(1, 0x1e9cc1)
+
+    this.add.rectangle(x + w / 2, y + 28, w - 24, 38, 0x071523, 0.94)
+      .setStrokeStyle(1, 0x64e8ff)
+
+    this.add.text(x + w / 2, y + 28, title, {
+      fontSize: '13px',
+      color: '#9df7ff',
+      fontStyle: 'bold',
     }).setOrigin(0.5)
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // PAINEL DE COLEÇÃO (esquerda)
-  // ══════════════════════════════════════════════════════════════
+  _buildCollectionControls() {
+    const l = this._layout
 
-  _buildCollectionPanel() {
-    const { collX, collW, topH } = this._L
-    const panelH = this._H - topH
+    this._searchInput = this._addHtmlInput(
+      l.collectionX + 20,
+      l.collectionY + 72,
+      l.collectionW - 40,
+      'Buscar carta...'
+    )
 
-    // fundo
-    this.add.rectangle(collX, topH, collW, panelH, 0x0a1208).setOrigin(0)
-    this.add.rectangle(collX + collW, topH, 2, panelH, 0x1a3a1a).setOrigin(0)
-
-    // título painel
-    this.add.text(collX + collW / 2, topH + 22, 'COLEÇÃO', {
-      fontSize: '14px', color: '#4caf50', fontStyle: 'bold',
-    }).setOrigin(0.5)
-
-    // barra de busca via HTML
-    this._searchInput = this._addHtmlInput(collX + 12, topH + 48, collW - 24, 26, 'Buscar carta...')
     this._searchInput.addEventListener('input', () => {
       this._searchText = this._searchInput.value.trim().toLowerCase()
       this._applyFilter()
     })
 
-    // filtros de tipo
     const filters = [
-      { key: 'all',        label: 'TODOS'      },
-      { key: 'criatura',   label: 'CRIATURA'   },
-      { key: 'habilidade', label: 'HABILIDADE' },
-      { key: 'item',       label: 'ITEM'       },
-      { key: 'comando',    label: 'COMANDO'    },
-      { key: 'cenario',    label: 'CENÁRIO'    },
+      { key: 'todos', label: 'TODAS' },
+      { key: 'criatura', label: 'CRIATURA' },
+      { key: 'habilidade', label: 'HABIL.' },
+      { key: 'item', label: 'ITEM' },
+      { key: 'comando', label: 'COM.' },
+      { key: 'cenario', label: 'CEN.' },
     ]
-    const fw = (collW - 16) / filters.length
-    filters.forEach((f, i) => {
-      const active = this._filterType === f.key
-      const btn = this.add.text(
-        collX + 8 + i * fw + fw / 2,
-        topH + 82,
-        f.label,
-        {
-          fontSize: '11px',
-          color:           active ? '#ffffff' : '#888888',
-          backgroundColor: active ? '#1b5e20' : '#111a13',
-          padding: { x: 6, y: 4 },
+
+    this._filterButtons = []
+
+    filters.forEach((filter, i) => {
+      const x = l.collectionX + 38 + i * 68
+      const y = l.collectionY + 116
+
+      const btn = this._addSmallButton(
+        x,
+        y,
+        62,
+        filter.label,
+        filter.key === this._filterType ? 0x64e8ff : 0x1e9cc1,
+        () => {
+          this._filterType = filter.key
+          this._scroll = 0
+          this._refreshFilterButtons()
+          this._applyFilter()
         }
-      ).setOrigin(0.5).setInteractive({ useHandCursor: true })
-      btn.on('pointerdown', () => {
-        this._filterType = f.key
-        // rebuilda para atualizar estado dos filtros
-        this._collContainer.removeAll(true)
-        this._collScroll = 0
-        this._buildFilterButtons()
-        this._applyFilter()
-      })
-      this._filterBtns = this._filterBtns ?? []
-      this._filterBtns.push(btn)
-    })
-
-    // container de cards
-    this._collContainer = this.add.container(0, 0)
-    this._collStartY = topH + 106
-    this._collBounds = { x: collX, y: this._collStartY, w: collW, h: this._H - this._collStartY - 30 }
-
-    // Máscara para a grade de cartas
-    const maskShape = this.make.graphics()
-    maskShape.fillRect(
-      this._collBounds.x,
-      this._collBounds.y,
-      this._collBounds.w,
-      this._collBounds.h
-    )
-    this._collContainer.setMask(maskShape.createGeometryMask())
-
-    // scroll com roda do mouse
-    this.input.on('wheel', (pointer, objs, dx, dy) => {
-      if (pointer.x < this._L.collX + this._L.collW) {
-        this._collScroll = Math.max(
-          0,
-          Math.min(
-            this._collScroll + (dy > 0 ? 3 : -3),
-            Math.max(0, this._filtered.length - this._visibleRows() * this._cardsPerRow())
-          )
-        )
-        this._renderCollection()
-      }
-    })
-
-    this._renderCollection()
-  }
-
-  _buildFilterButtons() {
-    // remove botões de filtro antigos e recria
-    const { collX, collW, topH } = this._L
-    const filters = [
-      { key: 'all',        label: 'TODOS'      },
-      { key: 'criatura',   label: 'CRIATURA'   },
-      { key: 'habilidade', label: 'HABILIDADE' },
-      { key: 'item',       label: 'ITEM'       },
-      { key: 'comando',    label: 'COMANDO'    },
-      { key: 'cenario',    label: 'CENÁRIO'    },
-    ]
-    if (this._filterBtns) {
-      this._filterBtns.forEach(b => b.destroy())
-    }
-    this._filterBtns = []
-    const fw = (collW - 16) / filters.length
-    filters.forEach((f, i) => {
-      const active = this._filterType === f.key
-      const btn = this.add.text(
-        collX + 8 + i * fw + fw / 2,
-        topH + 82,
-        f.label,
-        {
-          fontSize: '11px',
-          color:           active ? '#ffffff' : '#888888',
-          backgroundColor: active ? '#1b5e20' : '#111a13',
-          padding: { x: 6, y: 4 },
-        }
-      ).setOrigin(0.5).setInteractive({ useHandCursor: true })
-      btn.on('pointerdown', () => {
-        this._filterType = f.key
-        this._collScroll  = 0
-        this._buildFilterButtons()
-        this._applyFilter()
-      })
-      this._filterBtns.push(btn)
-    })
-  }
-
-  _cardsPerRow()  { return 4 }
-  _visibleRows()  { return Math.floor(this._collBounds.h / 108) }
-
-  _applyFilter() {
-    const type = this._filterType
-    const text = this._searchText
-    this._filtered = this._allCards.filter(c => {
-      const matchType = type === 'all' || c.card_type === type
-      const matchText = !text || c.name.toLowerCase().includes(text)
-      return matchType && matchText
-    })
-    this._collScroll = 0
-    this._renderCollection()
-  }
-
-  _renderCollection() {
-    this._collContainer.removeAll(true)
-
-    const cw   = 90,  ch   = 100
-    const padX = 16,  padY = 8
-    const cols = this._cardsPerRow()
-    const { collX, collW } = this._L
-    const startX = collX + (collW - cols * cw - (cols - 1) * padX) / 2
-    const startY = this._collStartY
-
-    const startIdx = this._collScroll
-    const visible  = this._visibleRows() * cols + cols
-    const toRender = this._filtered.slice(startIdx, startIdx + visible)
-
-    toRender.forEach((card, i) => {
-      const col = i % cols
-      const row = Math.floor(i / cols)
-      const x   = startX + col * (cw + padX)
-      const y   = startY + row * (ch + padY)
-
-      const inDeck   = this._deckCount(card.id)
-      const maxed    = inDeck >= MAX_COPIES || this._deckTotal() >= MAX_DECK
-
-      // fundo / imagem da mini-carta
-      const key     = `card_${card.id}`
-      const hasImg  = this.textures.exists(key)
-      let bg
-      if (hasImg) {
-        bg = this.add.image(x + cw / 2, y + ch / 2, key)
-          .setDisplaySize(cw, ch)
-          .setAlpha(maxed ? 0.35 : 1)
-          .setInteractive({ useHandCursor: true })
-        // borda de raridade por cima
-        const border = this.add.rectangle(x + cw / 2, y + ch / 2, cw, ch)
-          .setStrokeStyle(1, RARITY_COLOR[card.rarity] ?? 0x555555)
-          .setFillStyle()
-        this._collContainer.add(border)
-      } else {
-        bg = this.add.rectangle(x + cw / 2, y + ch / 2, cw, ch, card.color ?? 0x223344, maxed ? 0.4 : 1)
-          .setStrokeStyle(1, RARITY_COLOR[card.rarity] ?? 0x555555)
-          .setInteractive({ useHandCursor: true })
-      }
-
-      bg.on('pointerover', () => {
-        hasImg ? bg.setAlpha(maxed ? 0.25 : 0.85) : bg.setStrokeStyle(2, 0xffffff)
-        this._showPreview(card)
-      })
-      bg.on('pointerout', () => {
-        hasImg ? bg.setAlpha(maxed ? 0.35 : 1) : bg.setStrokeStyle(1, RARITY_COLOR[card.rarity] ?? 0x555555)
-      })
-      bg.on('pointerdown', () => this._addCardToDeck(card))
-
-      // tipo
-      const typeLabel = this.add.text(x + cw / 2, y + 10, TYPE_LABEL[card.card_type] ?? '', {
-        fontSize: '8px', color: TYPE_COLOR[card.card_type] ?? '#ffffff', fontStyle: 'bold',
-      }).setOrigin(0.5)
-
-      // stats se criatura
-      const statsY = y + ch - 18
-      let statsEl = null
-      if (card.card_type === 'criatura') {
-        statsEl = this.add.text(x + cw / 2, statsY, `ATK ${card.attack}`, {
-          fontSize: '9px', color: '#ffcc44',
-        }).setOrigin(0.5)
-      }
-
-      // ponto de elemento (cartas que têm elemento)
-      if (card.element) {
-        const elDot = this.add.circle(x + 10, y + ch - 10, 5, ELEMENT_COLOR[card.element] ?? 0x888888)
-        this._collContainer.add(elDot)
-      }
-
-      // contador de cópias no deck
-      let countEl = null
-      if (inDeck > 0) {
-        const badgeBg = this.add.rectangle(x + cw - 10, y + 10, 18, 18, 0x000000, 0.8)
-        countEl = this.add.text(x + cw - 10, y + 10, String(inDeck), {
-          fontSize: '11px', color: '#4caf50', fontStyle: 'bold',
-        }).setOrigin(0.5)
-        this._collContainer.add([badgeBg, countEl])
-      }
-
-      const els = [bg, typeLabel]
-      if (statsEl) els.push(statsEl)
-      this._collContainer.add(els)
-    })
-
-    // contador total
-    if (this._collFooter) this._collFooter.destroy()
-    const { collX: cx, collW: cw2 } = this._L
-    this._collFooter = this.add.text(
-      cx + cw2 / 2, this._H - 16,
-      `${this._filtered.length} carta(s)`,
-      { fontSize: '12px', color: '#555555' }
-    ).setOrigin(0.5)
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // PAINEL DE PREVIEW (centro)
-  // ══════════════════════════════════════════════════════════════
-
-  _buildPreviewPanel() {
-    const { prevX, prevW, topH } = this._L
-    const panelH = this._H - topH
-
-    this.add.rectangle(prevX, topH, prevW, panelH, 0x080d0a).setOrigin(0)
-    this.add.rectangle(prevX + prevW, topH, 2, panelH, 0x1a3a1a).setOrigin(0)
-
-    this.add.text(prevX + prevW / 2, topH + 22, 'DETALHES', {
-      fontSize: '13px', color: '#4caf50', fontStyle: 'bold',
-    }).setOrigin(0.5)
-
-    this._previewContainer = this.add.container(0, 0)
-    this._showPreview(null)
-  }
-
-  _showPreview(card) {
-    if (!this._previewContainer) return
-    this._previewContainer.removeAll(true)
-    const { prevX, prevW, topH } = this._L
-    const cx = prevX + prevW / 2
-
-    if (!card) {
-      this._previewContainer.add(
-        this.add.text(cx, topH + 200, 'Passe o mouse\nsobre uma carta', {
-          fontSize: '13px', color: '#444444', align: 'center',
-        }).setOrigin(0.5)
       )
-      return
-    }
 
-    // Arte da carta (aumentada)
-    const cardH = 193, cardW = 150
-    const artY  = topH + 46
-    const artCX = cx, artCY = artY + cardH / 2
-    const imgKey = `card_${card.id}`
-    let bg
-    if (this.textures.exists(imgKey)) {
-      bg = this.add.image(artCX, artCY, imgKey).setDisplaySize(cardW, cardH)
-    } else {
-      bg = this.add.rectangle(artCX, artCY, cardW, cardH, card.color ?? 0x223344)
-    }
-    bg.setStrokeStyle && bg.setStrokeStyle(2, RARITY_COLOR[card.rarity] ?? 0x555555)
-
-    // Nome
-    const nameY = artY + cardH + 18
-    const nameT = this.add.text(cx, nameY, card.name, {
-      fontSize: '13px', color: '#ffffff', fontStyle: 'bold',
-      wordWrap: { width: prevW - 16 }, align: 'center',
-    }).setOrigin(0.5)
-
-    // Raridade
-    const rarityT = this.add.text(cx, nameY + 22, (card.rarity ?? 'comum').toUpperCase(), {
-      fontSize: '10px', color: RARITY_HEX[card.rarity] ?? '#888888', fontStyle: 'bold',
-    }).setOrigin(0.5)
-
-    // Elemento (se houver)
-    let elementT = null
-    if (card.element) {
-      elementT = this.add.text(cx, nameY + 40, ELEMENT_LABEL[card.element] ?? card.element, {
-        fontSize: '12px', color: ELEMENT_HEX[card.element] ?? '#aaaaaa', fontStyle: 'bold',
-      }).setOrigin(0.5)
-    }
-
-    // Cópias no deck
-    const copies  = this._deckCount(card.id)
-    const copyBaseY = card.element ? nameY + 60 : nameY + 42
-    const copyT = this.add.text(cx, copyBaseY, `No deck: ${copies}/${MAX_COPIES}`, {
-      fontSize: '11px', color: copies >= MAX_COPIES ? '#cc3333' : '#4caf50',
-    }).setOrigin(0.5)
-
-    // Divisor
-    const divider = this.add.rectangle(cx, copyBaseY + 16, prevW - 24, 1, 0x1a3a1a).setOrigin(0.5)
-
-    // Efeito da carta
-    const efeitoY = copyBaseY + 28
-    const efeitoTxt = card.efeito ?? card.effect ?? ''
-    const efeitoT = this.add.text(cx, efeitoY, efeitoTxt, {
-      fontSize: '10px', color: '#cccccc',
-      wordWrap: { width: prevW - 20 }, align: 'center',
-      lineSpacing: 3,
-    }).setOrigin(0.5, 0)
-
-
-
-
-    // ATK / Vida (apenas criaturas)
-    const statsBase = efeitoY + (efeitoT.height || 0) + 22
-    if (card.card_type === 'criatura') {
-      const statsDivider = this.add.rectangle(cx, statsBase - 20, prevW - 24, 1, 0x1a3a1a).setOrigin(0.5)
-      const atkT = this.add.text(cx - 36, statsBase, `ATK\n${card.attack}`, {
-        fontSize: '12px', color: '#ff8844', align: 'center',
-      }).setOrigin(0.5)
-      const defT = this.add.text(cx + 36, statsBase, `Vida\n${card.defense}`, {
-        fontSize: '12px', color: '#4488ff', align: 'center',
-      }).setOrigin(0.5)
-      this._previewContainer.add([statsDivider, atkT, defT])
-    }
-
-    const baseEls = [bg, nameT, rarityT, copyT, divider, efeitoT]
-    if (elementT) baseEls.push(elementT)
-    this._previewContainer.add(baseEls)
-
-    // atalho texto
-    const hintT = this.add.text(cx, this._H - 80, 'Clique na carta\npara adicionar\nao baralho', {
-      fontSize: '10px', color: '#334433', align: 'center',
-    }).setOrigin(0.5)
-    this._previewContainer.add(hintT)
+      btn._filterKey = filter.key
+      this._filterButtons.push(btn)
+    })
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // PAINEL DO BARALHO (direita)
-  // ══════════════════════════════════════════════════════════════
+  _refreshFilterButtons() {
+    this._filterButtons.forEach(btn => {
+      const bg = btn.getAt(0)
+      const stripe = btn.getAt(1)
+      const active = btn._filterKey === this._filterType
 
-  _buildDeckPanel() {
-    const { deckX, deckW, topH } = this._L
-    const panelH = this._H - topH
+      bg.setStrokeStyle(1, active ? 0x64e8ff : 0x1e9cc1)
+      stripe.setFillStyle(active ? 0x64e8ff : 0x1e9cc1, 0.95)
+    })
+  }
 
-    this.add.rectangle(deckX, topH, deckW, panelH, 0x090d08).setOrigin(0)
+  _buildDeckControls() {
+    const l = this._layout
+    const topY = l.deckY + 72
 
-    // cabeçalho do deck
-    const hdrY = topH + 22
-    this.add.text(deckX + 16, hdrY, 'BARALHO:', { fontSize: '13px', color: '#888888' }).setOrigin(0, 0.5)
+    this.add.text(l.deckX + 20, topY, 'Nome:', {
+      fontSize: '13px',
+      color: '#9df7ff',
+      fontStyle: 'bold',
+    }).setOrigin(0, 0.5)
 
-    // input nome do deck
-    this._deckNameInput = this._addHtmlInput(deckX + 95, hdrY, 200, 28, 'Nome do baralho')
+    this._deckNameInput = this._addHtmlInput(l.deckX + 72, topY, 210, 'Nome do baralho')
     this._deckNameInput.value = this._deckName
+
     this._deckNameInput.addEventListener('input', () => {
       this._deckName = this._deckNameInput.value
       this._saveLocalDeck()
     })
 
-    // contador
-    this._deckCountText = this.add.text(deckX + deckW - 80, hdrY, '0 / 40', {
-      fontSize: '13px', color: '#aaaaaa',
-    }).setOrigin(0, 0.5)
+    this._deckCounterText = this.add.text(l.deckX + l.deckW - 90, topY, `0 / ${MAX_DECK}`, {
+      fontSize: '15px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
 
-    // botões
-    const btnSave = this.add.text(deckX + deckW - 170, hdrY, 'SALVAR', {
-      fontSize: '12px', color: '#ffffff', backgroundColor: '#1b5e20', padding: { x: 10, y: 5 },
-    }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true })
-    btnSave.on('pointerover', () => btnSave.setStyle({ backgroundColor: '#2e7d32' }))
-    btnSave.on('pointerout',  () => btnSave.setStyle({ backgroundColor: '#1b5e20' }))
-    btnSave.on('pointerdown', () => this._saveDeck())
+    this._addNeonButton(l.deckX + 55, l.deckY + l.deckH - 38, 100, 'SALVAR', 0x8dff9d, () => this._saveDeck())
+    this._addNeonButton(l.deckX + 165, l.deckY + l.deckH - 38, 100, 'EXPORTAR', 0x64e8ff, () => this._exportDecklist())
+    this._addNeonButton(l.deckX + 275, l.deckY + l.deckH - 38, 100, 'IMPORTAR', 0xd58dff, () => this._fileInput?.click())
+    this._addNeonButton(l.deckX + 385, l.deckY + l.deckH - 38, 100, 'LIMPAR', 0xff7777, () => {
+      this._deck = []
+      this._refreshDeck()
+    })
 
-    const btnClear = this.add.text(deckX + deckW - 66, topH + 46, 'LIMPAR', {
-      fontSize: '11px', color: '#888888', backgroundColor: '#1a0808', padding: { x: 8, y: 4 },
-    }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true })
-    btnClear.on('pointerover', () => btnClear.setStyle({ color: '#ff6666' }))
-    btnClear.on('pointerout',  () => btnClear.setStyle({ color: '#888888' }))
-    btnClear.on('pointerdown', () => { this._deck = []; this._refreshDeck() })
+    this._fileInput = this._addHtmlFileInput('.txt')
+    this._fileInput.addEventListener('change', () => this._importDecklist(this._fileInput.files?.[0]))
+  }
 
-    const btnExport = this.add.text(deckX + 340, topH + 400, 'EXPORTAR DECKLIST', {
-      fontSize: '11px', color: '#ffffff', backgroundColor: '#14415f', padding: { x: 10, y: 6 },
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    btnExport.on('pointerover', () => btnExport.setStyle({ backgroundColor: '#1d5f88' }))
-    btnExport.on('pointerout',  () => btnExport.setStyle({ backgroundColor: '#14415f' }))
-    btnExport.on('pointerdown', () => this._exportDecklist())
+  _addNeonButton(x, y, w, label, accent, onClick) {
+    const btn = this.add.container(x, y)
 
-    const btnImport = this.add.text(deckX + 480, topH + 400, 'IMPORTAR DECKLIST', {
-      fontSize: '11px', color: '#ffffff', backgroundColor: '#4a2b61', padding: { x: 10, y: 6 },
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    btnImport.on('pointerover', () => btnImport.setStyle({ backgroundColor: '#68408a' }))
-    btnImport.on('pointerout',  () => btnImport.setStyle({ backgroundColor: '#4a2b61' }))
-    btnImport.on('pointerdown', () => this._deckFileInput?.click())
+    const bg = this.add.rectangle(0, 0, w, 38, 0x071523, 0.94)
+      .setStrokeStyle(1, accent)
 
-    this._deckFileInput = this._addHtmlFileInput('.txt')
-    this._deckFileInput.addEventListener('change', () => this._importDecklist(this._deckFileInput.files?.[0]))
+    const stripe = this.add.rectangle(-w / 2 + 4, 0, 4, 26, accent, 0.95)
 
-    // legenda de raridade
-    const legendY = topH + 46
-    const rarities = [
-      { key: 'common',    label: '● Comum',    color: '#888888' },
-      { key: 'uncommon',  label: '● Incomum',  color: '#44aaff' },
-      { key: 'rare',      label: '● Raro',     color: '#ffcc00' },
-      { key: 'legendary', label: '● Lendário', color: '#ff44ff' },
-    ]
-    rarities.forEach((r, i) => {
-      this.add.text(deckX + 16 + i * 120, legendY, r.label, {
-        fontSize: '10px', color: r.color,
+    const text = this.add.text(0, 0, label, {
+      fontSize: '13px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+
+    btn.add([bg, stripe, text])
+    btn.setSize(w, 38).setInteractive({ useHandCursor: true })
+
+    btn.on('pointerover', () => {
+      bg.setFillStyle(0x0b2740, 0.98)
+      this.tweens.add({
+        targets: btn,
+        scaleX: 1.035,
+        scaleY: 1.035,
+        duration: 120,
+        ease: 'Sine.easeOut',
       })
     })
 
-    this.add.rectangle(deckX, topH + 62, deckW, 1, 0x1a3a1a).setOrigin(0)
+    btn.on('pointerout', () => {
+      bg.setFillStyle(0x071523, 0.94)
+      this.tweens.add({
+        targets: btn,
+        scaleX: 1,
+        scaleY: 1,
+        duration: 120,
+        ease: 'Sine.easeOut',
+      })
+    })
 
-    // container de slots
-    this._deckContainer = this.add.container(0, 0)
-    this._deckSlotStartY = topH + 72
+    btn.on('pointerdown', onClick)
+    return btn
+  }
 
-    this._renderDeck()
+  _addSmallButton(x, y, w, label, accent, onClick) {
+    const btn = this.add.container(x, y)
+
+    const bg = this.add.rectangle(0, 0, w, 30, 0x071523, 0.94)
+      .setStrokeStyle(1, accent)
+
+    const stripe = this.add.rectangle(-w / 2 + 3, 0, 3, 20, accent, 0.95)
+
+    const text = this.add.text(2, 0, label, {
+      fontSize: '9px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+
+    btn.add([bg, stripe, text])
+    btn.setSize(w, 30).setInteractive({ useHandCursor: true })
+
+    btn.on('pointerover', () => bg.setFillStyle(0x0b2740, 0.98))
+    btn.on('pointerout', () => bg.setFillStyle(0x071523, 0.94))
+    btn.on('pointerdown', onClick)
+
+    return btn
+  }
+
+  _applyFilter() {
+    this._filtered = this._allCards.filter(card => {
+      const matchType = this._filterType === 'todos' || card.card_type === this._filterType
+      const matchText = !this._searchText || card.name.toLowerCase().includes(this._searchText)
+      return matchType && matchText
+    })
+
+    this._renderCollection()
+  }
+
+  _renderCollection() {
+  const l = this._layout
+  this._collectionContainer.removeAll(true)
+
+  const visibleCards = this._filtered.slice(this._scroll, this._scroll + 15)
+
+  const cols = 5
+  const cardW = 75
+  const cardH = 105
+  const gapX = 3
+  const gapY = 5
+
+  const totalW = cols * cardW + (cols - 1) * gapX
+  const startX = l.collectionX + l.collectionW / 2 - totalW / 2 + cardW / 2
+  const startY = l.collectionY + 195
+
+  visibleCards.forEach((card, i) => {
+    const col = i % cols
+    const row = Math.floor(i / cols)
+
+    const x = startX + col * (cardW + gapX)
+    const y = startY + row * (cardH + gapY)
+
+    this._collectionContainer.add(this._createCollectionCard(card, x, y, cardW, cardH))
+  })
+
+  if (this._collectionFooter) this._collectionFooter.destroy()
+
+  const totalPages = Math.max(1, Math.ceil(this._filtered.length / 15))
+  const currentPage = Math.floor(this._scroll / 15) + 1
+
+  this._collectionFooter = this.add.text(
+    l.collectionX + l.collectionW / 2,
+    l.collectionY + l.collectionH - 18,
+    `${this._filtered.length} carta(s) | Página ${currentPage}/${totalPages}`,
+    {
+      fontSize: '14px',
+      color: '#8fe8ff',
+    }
+  ).setOrigin(0.5)
+}
+
+_createCollectionCard(card, x, y, w, h) {
+  const tile = this.add.container(x, y)
+
+  const copies = this._deckCount(card.id)
+  const maxed = copies >= MAX_COPIES || this._deckTotal() >= MAX_DECK
+
+  const key = `deck_card_${card.id}`
+
+  const art = this.textures.exists(key)
+    ? this.add.image(0, 0, key).setDisplaySize(w, h).setAlpha(maxed ? 0.45 : 1)
+    : this.add.rectangle(0, 0, w, h, 0x0b1a2d, maxed ? 0.45 : 0.96)
+
+  tile.add(art)
+
+  if (copies > 0) {
+    const badge = this.add.rectangle(w / 2 - 9, -h / 2 + 10, 22, 22, 0x000000, 0.85)
+      .setStrokeStyle(1, 0x64e8ff)
+
+    const badgeText = this.add.text(w / 2 - 9, -h / 2 + 10, String(copies), {
+      fontSize: '12px',
+      color: '#8dff9d',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+
+    tile.add([badge, badgeText])
+  }
+
+  tile.setSize(w, h).setInteractive({ useHandCursor: true })
+
+  tile.on('pointerover', () => {
+    this._showPreview(card)
+
+    this.tweens.add({
+      targets: tile,
+      scaleX: 1.06,
+      scaleY: 1.06,
+      duration: 120,
+      ease: 'Sine.easeOut',
+    })
+  })
+
+  tile.on('pointerout', () => {
+    this.tweens.add({
+      targets: tile,
+      scaleX: 1,
+      scaleY: 1,
+      duration: 120,
+      ease: 'Sine.easeOut',
+    })
+  })
+
+  tile.on('pointerdown', () => this._addCardToDeck(card))
+
+  return tile
+}
+
+  _showPreview(card) {
+    const l = this._layout
+    this._previewContainer.removeAll(true)
+
+    const cx = l.previewX + l.previewW / 2
+
+    if (!card) {
+      this._previewContainer.add(
+        this.add.text(cx, l.previewY + 220, 'Passe o mouse\nsobre uma carta', {
+          fontSize: '14px',
+          color: '#8fe8ff',
+          align: 'center',
+        }).setOrigin(0.5)
+      )
+      return
+    }
+
+    const key = `deck_card_${card.id}`
+
+    const frame = this.add.rectangle(cx, l.previewY + 190, 178, 250, 0x06111f, 0.88)
+      .setStrokeStyle(2, RARITY_COLOR[card.rarity] ?? 0x64e8ff)
+
+    const art = this.textures.exists(key)
+      ? this.add.image(cx, l.previewY + 190, key).setDisplaySize(168, 238)
+      : this.add.rectangle(cx, l.previewY + 190, 168, 238, 0x0b1a2d, 0.96)
+
+    const name = this.add.text(cx, l.previewY + 335, card.name, {
+      fontSize: '15px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      align: 'center',
+      wordWrap: { width: l.previewW - 30 },
+    }).setOrigin(0.5)
+
+    const type = this.add.text(cx, l.previewY + 365, TYPE_LABEL[card.card_type] ?? '', {
+      fontSize: '12px',
+      color: TYPE_COLOR[card.card_type] ?? '#64e8ff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+
+    const effect = this.add.text(cx, l.previewY + 375, card.efeito ?? card.effect ?? 'Sem efeito descrito.', {
+      fontSize: '11px',
+      color: '#d8f8ff',
+      align: 'center',
+      wordWrap: { width: l.previewW - 36 },
+      lineSpacing: 3,
+    }).setOrigin(0.5, 0)
+
+    this._previewContainer.add([frame, art, name, type, effect])  
+
+    if (card.card_type === 'criatura') {
+      const stats = this.add.text(cx, l.previewY + l.previewH - 35, `ATQ ${card.attack}   VIDA ${card.defense}`, {
+        fontSize: '14px',
+        color: '#ffdd77',
+        fontStyle: 'bold',
+      }).setOrigin(0.5)
+
+      this._previewContainer.add(stats)
+    }
   }
 
   _renderDeck() {
+    const l = this._layout
     this._deckContainer.removeAll(true)
 
-    const { deckX, deckW } = this._L
-    const cols  = 10
-    const rows  = Math.ceil(MAX_DECK / cols)
-    const sw    = 48, sh = 64
-    const sidePad = 24
-    const gridH = 300
-    const padX = (deckW - sidePad * 2 - cols * sw) / (cols - 1)
-    const padY = (gridH - rows * sh) / (rows - 1)
-    const startX = deckX + sidePad
-    const startY = this._deckSlotStartY
+    const cols = 7
+    const visibleSlots = 28
 
-    // achata o deck em array de cartas individuais para exibir nos slots
-    const flat = []
-    for (const entry of this._deck) {
-      for (let q = 0; q < entry.qty; q++) flat.push(entry.card)
-    }
+    const cardW = 60
+    const cardH = 80
+    const gapX = 3
+    const gapY = 3
 
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const idx = row * cols + col
-        const x   = startX + col * (sw + padX) + sw / 2
-        const y   = startY + row * (sh + padY) + sh / 2
-        const card = flat[idx]
+    const totalW = cols * cardW + (cols - 1) * gapX
+    const startX = l.deckX + l.deckW / 2 - totalW / 2 + cardW / 2
+    const startY = l.deckY + 140
 
-        if (card) {
-          // slot preenchido
-          const slotKey = `card_${card.id}`
-          let bg
-          if (this.textures.exists(slotKey)) {
-            bg = this.add.image(x, y, slotKey).setDisplaySize(sw, sh)
-              .setInteractive({ useHandCursor: true })
-          } else {
-            bg = this.add.rectangle(x, y, sw, sh, card.color ?? 0x223344)
-              .setStrokeStyle(1, RARITY_COLOR[card.rarity] ?? 0x555555)
-              .setInteractive({ useHandCursor: true })
-          }
+    for (let i = 0; i < visibleSlots; i++) {
+      const slotIndex = this._deckScroll + i
 
-          bg.on('pointerover', () => {
-            bg.setStrokeStyle ? bg.setStrokeStyle(2, 0xff4444) : bg.setAlpha(0.7)
-            this._showPreview(card)
-          })
-          bg.on('pointerout', () => {
-            bg.setStrokeStyle ? bg.setStrokeStyle(1, RARITY_COLOR[card.rarity] ?? 0x555555) : bg.setAlpha(1)
-          })
-          bg.on('pointerdown', () => this._removeCardFromDeck(card))
+      if (slotIndex >= MAX_DECK) break
 
-          const nameT = this.add.text(x, y, card.name, {
-            fontSize: '7px', color: '#ffffff',
-            wordWrap: { width: sw - 4 }, align: 'center',
-          }).setOrigin(0.5)
+      const col = i % cols
+      const row = Math.floor(i / cols)
 
-          const typeT = this.add.text(x, y + sh / 2 - 9, TYPE_LABEL[card.card_type]?.slice(0, 3) ?? '', {
-            fontSize: '7px', color: TYPE_COLOR[card.card_type] ?? '#fff',
-          }).setOrigin(0.5)
+      const x = startX + col * (cardW + gapX)
+      const y = startY + row * (cardH + gapY)
 
-          this._deckContainer.add([bg, nameT, typeT])
-        } else {
-          // slot vazio
-          const empty = this.add.rectangle(x, y, sw, sh, 0x111811)
-            .setStrokeStyle(1, 0x1a2a1a)
-          this._deckContainer.add(empty)
-        }
+      const entry = this._deck[slotIndex]
+
+      if (entry) {
+        this._deckContainer.add(this._createDeckSlot(entry.card, entry.qty, x, y, cardW, cardH))
+      } else {
+        const empty = this.add.rectangle(x, y, cardW, cardH, 0x071523, 0.72)
+          .setStrokeStyle(1, 0x123c4a)
+
+        this._deckContainer.add(empty)
       }
     }
 
-    // atualiza contador
-    const total = flat.length
-    if (this._deckCountText) {
-      this._deckCountText.setText(`${total} / ${MAX_DECK}`)
-      this._deckCountText.setStyle({ color: total >= MAX_DECK ? '#ff4444' : '#aaaaaa' })
-    }
+    if (this._deckFooter) this._deckFooter.destroy()
 
+    const currentPage = Math.floor(this._deckScroll / 7) + 1
+    const totalPages = Math.max(1, Math.ceil(MAX_DECK / 7))
+
+    this._deckFooter = this.add.text(
+      l.deckX + l.deckW / 2,
+      l.deckY + l.deckH - 82,
+      `Slots ${this._deckScroll + 1}-${Math.min(this._deckScroll + visibleSlots, MAX_DECK)} de ${MAX_DECK} | Página ${currentPage}/${totalPages}`,
+      {
+        fontSize: '12px',
+        color: '#8fe8ff',
+      }
+    ).setOrigin(0.5)
+
+    this._deckCounterText.setText(`${this._deckTotal()} / ${MAX_DECK}`)
+    this._deckCounterText.setStyle({
+      color: this._deckTotal() >= MAX_DECK ? '#ff7777' : '#ffffff',
+    })
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // LÓGICA DO DECK
-  // ══════════════════════════════════════════════════════════════
+  _createDeckSlot(card, qty, x, y, w, h) {
+    const tile = this.add.container(x, y)
+
+    const key = `deck_card_${card.id}`
+
+    const art = this.textures.exists(key)
+      ? this.add.image(0, 0, key).setDisplaySize(w, h)
+      : this.add.rectangle(0, 0, w, h, 0x0b1a2d, 0.96)
+
+    tile.add(art)
+
+    const badge = this.add.rectangle(w / 2 - 10, -h / 2 + 10, 22, 22, 0x000000, 0.85)
+      .setStrokeStyle(1, 0x64e8ff)
+
+    const badgeText = this.add.text(w / 2 - 10, -h / 2 + 10, `x${qty}`, {
+      fontSize: '12px',
+      color: '#8dff9d',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+
+    tile.add([badge, badgeText])
+
+    tile.setSize(w, h).setInteractive({ useHandCursor: true })
+
+    tile.on('pointerover', () => {
+      this._showPreview(card)
+      this.tweens.add({
+        targets: tile,
+        scaleX: 1.04,
+        scaleY: 1.04,
+        duration: 120,
+        ease: 'Sine.easeOut',
+      })
+    })
+
+    tile.on('pointerout', () => {
+      this.tweens.add({
+        targets: tile,
+        scaleX: 1,
+        scaleY: 1,
+        duration: 120,
+        ease: 'Sine.easeOut',
+      })
+    })
+
+    tile.on('pointerdown', () => this._removeCardFromDeck(card))
+
+    return tile
+  }
 
   _deckTotal() {
-    return this._deck.reduce((s, e) => s + e.qty, 0)
+    return this._deck.reduce((sum, entry) => sum + entry.qty, 0)
   }
 
   _deckCount(cardId) {
-    return this._deck.find(e => e.card.id === cardId)?.qty ?? 0
+    return this._deck.find(entry => Number(entry.card.id) === Number(cardId))?.qty ?? 0
   }
 
   _addCardToDeck(card) {
-    if (this._deckTotal() >= MAX_DECK) return
-    const entry = this._deck.find(e => e.card.id === card.id)
+    if (this._deckTotal() >= MAX_DECK) {
+      this._toast('O baralho já está com 40 cartas.')
+      return
+    }
+
+    const entry = this._deck.find(item => Number(item.card.id) === Number(card.id))
+
     if (entry) {
-      if (entry.qty >= MAX_COPIES) return
+      if (entry.qty >= MAX_COPIES) {
+        this._toast('Máximo de 3 cópias dessa carta.')
+        return
+      }
+
       entry.qty++
     } else {
       this._deck.push({ card, qty: 1 })
     }
+
     this._refreshDeck()
   }
 
   _removeCardFromDeck(card) {
-    const idx = this._deck.findIndex(e => e.card.id === card.id)
-    if (idx === -1) return
-    this._deck[idx].qty--
-    if (this._deck[idx].qty <= 0) this._deck.splice(idx, 1)
+    const index = this._deck.findIndex(item => Number(item.card.id) === Number(card.id))
+    if (index === -1) return
+
+    this._deck[index].qty--
+
+    if (this._deck[index].qty <= 0) {
+      this._deck.splice(index, 1)
+    }
+
     this._refreshDeck()
   }
 
   _refreshDeck() {
     this._saveLocalDeck()
     this._renderDeck()
-    this._renderCollection()      // atualiza badges de cópia
-    this._showPreview(this._preview ?? null)
+    this._renderCollection()
   }
 
   _saveDeck() {
-    const name  = this._deckNameInput?.value?.trim() || 'Meu Baralho'
-    const total = this._deckTotal()
-    if (total === 0) {
-      this._toast('Adicione cartas ao baralho primeiro!')
+    if (this._deckTotal() <= 0) {
+      this._toast('Adicione cartas ao baralho primeiro.')
       return
     }
-    // TODO: chamar API /api/decks quando o backend estiver pronto
+
     this._saveLocalDeck()
-    console.log('Salvar deck local:', this._localDeckData())
-    this._toast(`"${name}" salvo localmente com ${total} carta(s) ✔`)
+    this._toast('Baralho salvo localmente.')
   }
 
   _localDeckData() {
@@ -731,8 +739,8 @@ export default class DeckBuilderScene extends Scene {
   _saveLocalDeck() {
     try {
       localStorage.setItem(LOCAL_DECK_KEY, JSON.stringify(this._localDeckData()))
-    } catch (err) {
-      console.warn('Não foi possível salvar o deck localmente:', err)
+    } catch (error) {
+      console.warn('Erro ao salvar deck:', error)
     }
   }
 
@@ -742,66 +750,111 @@ export default class DeckBuilderScene extends Scene {
       if (!raw) return
 
       const saved = JSON.parse(raw)
-      if (typeof saved?.name === 'string' && saved.name.trim()) {
-        this._deckName = saved.name.trim()
+
+      if (saved?.name) {
+        this._deckName = saved.name
+        if (this._deckNameInput) this._deckNameInput.value = saved.name
       }
+
       if (!Array.isArray(saved?.cards)) return
 
       const deck = []
       let total = 0
-      for (const item of saved.cards) {
-        if (total >= MAX_DECK) break
 
-        const id = Number(item?.id)
-        const qty = Math.min(Number(item?.qty), MAX_COPIES, MAX_DECK - total)
+      saved.cards.forEach(item => {
+        const id = Number(item.id)
+        const qty = Math.min(Number(item.qty), MAX_COPIES, MAX_DECK - total)
         const card = this._allCards.find(c => Number(c.id) === id)
-        if (!Number.isInteger(id) || !Number.isInteger(qty) || qty <= 0 || !card) continue
+
+        if (!card || qty <= 0) return
 
         deck.push({ card, qty })
         total += qty
-      }
+      })
+
       this._deck = deck
-    } catch (err) {
-      console.warn('Não foi possível carregar o deck local:', err)
+    } catch (error) {
+      console.warn('Erro ao carregar deck:', error)
     }
   }
 
   _decklistText() {
     const name = this._deckNameInput?.value?.trim() || this._deckName || 'Meu Baralho'
+
     const lines = [
       '# Ezone decklist',
       `# Nome: ${name}`,
       '# Formato: id;quantidade;nome',
       '',
     ]
-    for (const entry of this._deck) {
+
+    this._deck.forEach(entry => {
       lines.push(`${entry.card.id};${entry.qty};${entry.card.name}`)
-    }
+    })
+
     return lines.join('\n') + '\n'
   }
 
   _exportDecklist() {
     if (!this._deck.length) {
-      this._toast('Adicione cartas antes de exportar!')
+      this._toast('Adicione cartas antes de exportar.')
       return
     }
 
-    const name = this._deckNameInput?.value?.trim() || this._deckName || 'deck'
-    const safeName = name.normalize('NFD')
+    const name = this._deckNameInput?.value?.trim() || 'deck'
+
+    const safeName = name
+      .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9_-]+/gi, '-')
       .replace(/^-+|-+$/g, '')
       .toLowerCase() || 'deck'
-    const blob = new Blob([this._decklistText()], { type: 'text/plain;charset=utf-8' })
+
+    const blob = new Blob([this._decklistText()], {
+      type: 'text/plain;charset=utf-8',
+    })
+
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
+
     link.href = url
     link.download = `${safeName}.txt`
+
     document.body.appendChild(link)
     link.click()
     link.remove()
+
     URL.revokeObjectURL(url)
-    this._toast('Decklist exportada em TXT!')
+
+    this._toast('Decklist exportada.')
+  }
+
+  _importDecklist(file) {
+    if (!file) return
+
+    const reader = new FileReader()
+
+    reader.onload = () => {
+      const result = this._parseDecklist(String(reader.result ?? ''))
+
+      this._fileInput.value = ''
+
+      if (result.errors.length) {
+        this._toast(result.errors[0])
+        return
+      }
+
+      this._deck = result.deck
+      this._refreshDeck()
+      this._toast(`Deck importado com ${result.total} carta(s).`)
+    }
+
+    reader.onerror = () => {
+      this._fileInput.value = ''
+      this._toast('Erro ao ler arquivo.')
+    }
+
+    reader.readAsText(file)
   }
 
   _parseDecklist(text) {
@@ -812,120 +865,119 @@ export default class DeckBuilderScene extends Scene {
       const line = rawLine.trim()
       if (!line || line.startsWith('#')) return
 
-      let id
-      let qty
-      const parts = line.split(';').map(p => p.trim())
-      if (parts.length >= 2) {
-        id = Number(parts[0])
-        qty = Number(parts[1])
-      } else {
-        const match = line.match(/^(\d+)\s+(\d+)\b/)
-        if (match) {
-          id = Number(match[1])
-          qty = Number(match[2])
-        }
+      const parts = line.split(';').map(part => part.trim())
+
+      const id = Number(parts[0])
+      const qty = Number(parts[1])
+      const card = this._allCards.find(c => Number(c.id) === id)
+
+      if (!Number.isInteger(id) || !Number.isInteger(qty) || qty <= 0) {
+        errors.push(`Linha ${index + 1}: formato inválido.`)
+        return
       }
 
-      const card = this._allCards.find(c => Number(c.id) === id)
-      if (!Number.isInteger(id) || !Number.isInteger(qty) || qty <= 0) {
-        errors.push(`linha ${index + 1}: formato inválido`)
-      } else if (!card) {
-        errors.push(`linha ${index + 1}: carta ${id} não encontrada`)
-      } else {
-        entries.set(card.id, { card, qty: (entries.get(card.id)?.qty ?? 0) + qty })
+      if (!card) {
+        errors.push(`Linha ${index + 1}: carta ${id} não encontrada.`)
+        return
       }
+
+      entries.set(card.id, {
+        card,
+        qty: (entries.get(card.id)?.qty ?? 0) + qty,
+      })
     })
 
     const deck = [...entries.values()]
     const total = deck.reduce((sum, entry) => sum + entry.qty, 0)
+
     const overCopies = deck.find(entry => entry.qty > MAX_COPIES)
-    if (overCopies) errors.push(`${overCopies.card.name}: máximo de ${MAX_COPIES} cópias`)
-    if (total > MAX_DECK) errors.push(`deck com ${total} cartas; máximo é ${MAX_DECK}`)
+
+    if (overCopies) {
+      errors.push(`${overCopies.card.name}: máximo de ${MAX_COPIES} cópias.`)
+    }
+
+    if (total > MAX_DECK) {
+      errors.push(`Deck com ${total} cartas. Máximo permitido: ${MAX_DECK}.`)
+    }
+
+    if (!deck.length) {
+      errors.push('Decklist vazia ou inválida.')
+    }
 
     return { deck, total, errors }
   }
 
-  _importDecklist(file) {
-    if (!file) return
-
-    const reader = new FileReader()
-    reader.onload = () => {
-      const { deck, total, errors } = this._parseDecklist(String(reader.result ?? ''))
-      this._deckFileInput.value = ''
-
-      if (errors.length) {
-        this._toast(`Importação falhou: ${errors[0]}`)
-        return
-      }
-      if (!deck.length) {
-        this._toast('Decklist vazia ou inválida!')
-        return
-      }
-
-      this._deck = deck
-      this._refreshDeck()
-      this._toast(`Decklist importada com ${total} carta(s)!`)
-    }
-    reader.onerror = () => {
-      this._deckFileInput.value = ''
-      this._toast('Não foi possível ler o arquivo!')
-    }
-    reader.readAsText(file)
-  }
-
-  _toast(msg) {
+  _toast(message) {
     if (this._toastText) this._toastText.destroy()
-    this._toastText = this.add.text(this._W / 2, this._H - 30, msg, {
-      fontSize: '14px', color: '#ffffff', backgroundColor: '#1b5e20',
-      padding: { x: 20, y: 8 },
+
+    const { width, height } = this.cameras.main
+
+    this._toastText = this.add.text(width / 2, height - 28, message, {
+      fontSize: '14px',
+      color: '#ffffff',
+      backgroundColor: '#17313f',
+      padding: { x: 18, y: 8 },
     }).setOrigin(0.5).setDepth(20)
-    this.time.delayedCall(2500, () => { if (this._toastText) { this._toastText.destroy(); this._toastText = null } })
+
+    this.time.delayedCall(2500, () => {
+      if (this._toastText) {
+        this._toastText.destroy()
+        this._toastText = null
+      }
+    })
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // UTILITÁRIOS HTML
-  // ══════════════════════════════════════════════════════════════
-
-  _addHtmlInput(x, y, w, h, placeholder) {
+  _addHtmlInput(x, y, w, placeholder) {
     const canvas = this.sys.game.canvas.getBoundingClientRect()
-    const scaleX = canvas.width  / this.scale.gameSize.width
+    const scaleX = canvas.width / this.scale.gameSize.width
     const scaleY = canvas.height / this.scale.gameSize.height
 
     const input = document.createElement('input')
+
     input.type = 'text'
     input.placeholder = placeholder
+
+    const inputH = 34
+
     input.style.cssText = [
       'position: fixed',
-      'left: '   + (canvas.left + x * scaleX) + 'px',
-      'top: '    + (canvas.top  + y * scaleY - (h * scaleY) / 2) + 'px',
-      'width: '  + (w * scaleX) + 'px',
-      'height: ' + (h * scaleY) + 'px',
-      'background: #1e1e2e',
+      'left: ' + (canvas.left + x * scaleX) + 'px',
+      'top: ' + (canvas.top + y * scaleY - inputH / 2) + 'px',
+      'width: ' + (w * scaleX) + 'px',
+      'height: ' + inputH + 'px',
+      'background: rgba(6, 17, 31, 0.96)',
       'color: #fff',
-      'border: 1px solid #334455',
+      'border: 1px solid #64e8ff',
       'border-radius: 4px',
-      'padding: 0 8px',
-      'font-size: 12px',
+      'box-sizing: border-box',
+      'padding: 0 10px',
+      'font-size: 13px',
       'outline: none',
-      'z-index: 10',
+      'box-shadow: 0 0 12px rgba(100, 232, 255, 0.12)',
+      'z-index: 20',
     ].join(';')
+
     document.body.appendChild(input)
-    this._htmlEls.push(input)
+    this._htmlElements.push(input)
+
     return input
   }
 
   _addHtmlFileInput(accept) {
     const input = document.createElement('input')
+
     input.type = 'file'
     input.accept = accept
     input.style.display = 'none'
+
     document.body.appendChild(input)
-    this._htmlEls.push(input)
+    this._htmlElements.push(input)
+
     return input
   }
 
-  _destroyHtml() {
-    this._htmlEls.forEach(el => el.remove())
-    this._htmlEls = []
+  _removeHtmlElements() {
+    this._htmlElements.forEach(el => el.remove())
+    this._htmlElements = []
   }
 }

@@ -19,70 +19,54 @@ export default class LobbyScene extends Scene {
     saveScene('LobbyScene')
     const { width, height } = this.cameras.main
 
-    // Fundo
-    this.add.rectangle(0, 0, width, height, 0x0d1117).setOrigin(0)
-
-    // Título
-    this.add
-      .text(width / 2, 40, 'SALAS DE JOGO', {
-        fontSize: '28px',
-        color: '#4caf50',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5)
+    this._buildBackground(width, height)
 
     // Botão Voltar
     this.add
-      .text(30, 40, '← MENU', { fontSize: '15px', color: '#aaaaaa' })
+      .text(30, 38, '< MENU', { fontSize: '14px', color: '#bff5ff', fontStyle: 'bold' })
       .setOrigin(0, 0.5)
       .setInteractive({ useHandCursor: true })
       .on('pointerover', function () { this.setStyle({ color: '#ffffff' }) })
-      .on('pointerout',  function () { this.setStyle({ color: '#aaaaaa' }) })
+      .on('pointerout',  function () { this.setStyle({ color: '#bff5ff' }) })
       .on('pointerdown', () => this.scene.start('MenuScene'))
 
+    this.add.text(width / 2, 42, 'SALAS DE JOGO', {
+      fontSize: '34px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      stroke: '#06111f',
+      strokeThickness: 5,
+    }).setOrigin(0.5)
+    this.add.text(width / 2, 76, 'Crie, desafie ou entre em uma partida EZone TCG', {
+      fontSize: '13px',
+      color: '#8fe8ff',
+    }).setOrigin(0.5)
+
     // ── Barra de ações ──────────────────────────────────────────
-    const barY = 90
+    const barY = 116
+    this.add.rectangle(width / 2, barY, width - 110, 58, 0x06111f, 0.72)
+      .setStrokeStyle(1, 0x1e9cc1)
 
     // Botão CRIAR SALA
-    this.add
-      .text(80, barY, '[ + CRIAR SALA ]', {
-        fontSize: '16px',
-        color: '#ffffff',
-        backgroundColor: '#1b5e20',
-        padding: { x: 16, y: 8 },
-      })
-      .setOrigin(0, 0.5)
-      .setInteractive({ useHandCursor: true })
-      .on('pointerover', function () { this.setStyle({ backgroundColor: '#2e7d32' }) })
-      .on('pointerout',  function () { this.setStyle({ backgroundColor: '#1b5e20' }) })
-      .on('pointerdown', () => this._openCreateModal())
+    this._addNeonButton(156, barY, 210, '+ CRIAR SALA', 0x8dff9d, () => this._openCreateModal())
 
     // Separador vertical
-    this.add.line(0, 0, width / 2, barY - 18, width / 2, barY + 18, 0x334455).setOrigin(0)
+    this.add.line(0, 0, width / 2, barY - 22, width / 2, barY + 22, 0x1e9cc1).setOrigin(0)
 
     // Input código da sala
-    this._codeInput = this._addHtmlInput(width / 2 + 20, barY, 200, 'Código ex: EZ-AB12')
+    this._codeInput = this._addHtmlInput(width / 2 + 24, barY, 220, 'Código ex: EZ-AB12')
 
     // Botão Buscar
-    this.add
-      .text(width / 2 + 240, barY, 'BUSCAR', {
-        fontSize: '15px',
-        color: '#ffffff',
-        backgroundColor: '#0d47a1',
-        padding: { x: 14, y: 8 },
-      })
-      .setOrigin(0, 0.5)
-      .setInteractive({ useHandCursor: true })
-      .on('pointerover', function () { this.setStyle({ backgroundColor: '#1565c0' }) })
-      .on('pointerout',  function () { this.setStyle({ backgroundColor: '#0d47a1' }) })
-      .on('pointerdown', () => this._searchByCode())
+    this._addNeonButton(width / 2 + 360, barY, 150, 'BUSCAR', 0x64e8ff, () => this._searchByCode())
 
     // ── Cabeçalho da tabela ─────────────────────────────────────
-    const tableTop = 140
+    const tableTop = 178
     const cols = { id: 80, owner: 280, status: 560, action: 820 }
-    const headerStyle = { fontSize: '14px', color: '#4caf50', fontStyle: 'bold' }
+    const headerStyle = { fontSize: '13px', color: '#9df7ff', fontStyle: 'bold' }
 
-    this.add.rectangle(width / 2, tableTop, width - 60, 34, 0x1a2a1a).setOrigin(0.5)
+    this.add.rectangle(width / 2, tableTop, width - 90, 38, 0x06111f, 0.86)
+      .setStrokeStyle(1, 0x1e9cc1)
+      .setOrigin(0.5)
     this.add.text(cols.id,     tableTop, 'ID DA SALA',   headerStyle).setOrigin(0, 0.5)
     this.add.text(cols.owner,  tableTop, 'DONO DA SALA', headerStyle).setOrigin(0, 0.5)
     this.add.text(cols.status, tableTop, 'STATUS',       headerStyle).setOrigin(0, 0.5)
@@ -103,6 +87,44 @@ export default class LobbyScene extends Scene {
     echo.channel('rooms').listen('RoomUpdated', () => this._loadRooms())
 
     this.events.on('shutdown', () => this._removeHtmlElements())
+  }
+
+  _buildBackground(width, height) {
+    const bg = this.add.graphics()
+    for (let i = 0; i < 44; i++) {
+      const t = i / 43
+      const r = Math.round(4 + 18 * t)
+      const g = Math.round(14 + 74 * t)
+      const b = Math.round(36 + 108 * t)
+      bg.fillStyle((r << 16) | (g << 8) | b, 1)
+      bg.fillRect((width / 44) * i - height * 0.35, 0, width / 44 + height * 0.7, height)
+      bg.rotation = -0.1
+    }
+    this.add.rectangle(width / 2, height / 2, width, height, 0x010813, 0.48)
+  }
+
+  _addNeonButton(x, y, w, label, accent, onClick) {
+    const btn = this.add.container(x, y)
+    const bg = this.add.rectangle(0, 0, w, 38, 0x071523, 0.94)
+      .setStrokeStyle(1, accent)
+    const stripe = this.add.rectangle(-w / 2 + 4, 0, 4, 26, accent, 0.95)
+    const text = this.add.text(0, 0, label, {
+      fontSize: '13px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    btn.add([bg, stripe, text])
+    btn.setSize(w, 38).setInteractive({ useHandCursor: true })
+    btn.on('pointerover', () => {
+      bg.setFillStyle(0x0b2740, 0.98)
+      this.tweens.add({ targets: btn, scaleX: 1.035, scaleY: 1.035, duration: 120, ease: 'Sine.easeOut' })
+    })
+    btn.on('pointerout', () => {
+      bg.setFillStyle(0x071523, 0.94)
+      this.tweens.add({ targets: btn, scaleX: 1, scaleY: 1, duration: 120, ease: 'Sine.easeOut' })
+    })
+    btn.on('pointerdown', onClick)
+    return btn
   }
 
   // ── Carregar salas ──────────────────────────────────────────────
@@ -145,15 +167,16 @@ export default class LobbyScene extends Scene {
       const even = i % 2 === 0
 
       const bg = this.add
-        .rectangle(width / 2, y, width - 60, rowH - 4, even ? 0x111820 : 0x0d1117)
+        .rectangle(width / 2, y, width - 90, rowH - 4, even ? 0x071523 : 0x06111f, 0.78)
+        .setStrokeStyle(1, even ? 0x123c4a : 0x0f2c38)
         .setOrigin(0.5)
 
       const idText = this.add
-        .text(cols.id, y, room.room_code ?? '—', { fontSize: '15px', color: '#f0d060' })
+        .text(cols.id, y, room.room_code ?? '-', { fontSize: '15px', color: '#ffdd77', fontStyle: 'bold' })
         .setOrigin(0, 0.5)
 
       const ownerText = this.add
-        .text(cols.owner, y, room.host?.name ?? 'Desconhecido', { fontSize: '15px', color: '#cccccc' })
+        .text(cols.owner, y, room.host?.name ?? 'Desconhecido', { fontSize: '15px', color: '#ffffff' })
         .setOrigin(0, 0.5)
 
       const statusColor = room.status === 'waiting'     ? '#4caf50'
@@ -171,20 +194,20 @@ export default class LobbyScene extends Scene {
 
       if (room.status === 'waiting') {
         const btnDesafiar = this.add
-          .text(cols.action, y, 'Desafiar', {
-            fontSize: '13px', color: '#ffffff',
-            backgroundColor: '#0d47a1', padding: { x: 10, y: 5 },
+          .text(cols.action, y, 'DESAFIAR', {
+            fontSize: '12px', color: '#ffffff',
+            backgroundColor: '#17313f', padding: { x: 10, y: 5 },
           })
           .setOrigin(0, 0.5)
           .setInteractive({ useHandCursor: true })
-          .on('pointerover', function () { this.setStyle({ backgroundColor: '#1565c0' }) })
-          .on('pointerout',  function () { this.setStyle({ backgroundColor: '#0d47a1' }) })
+          .on('pointerover', function () { this.setStyle({ backgroundColor: '#2f6f8f' }) })
+          .on('pointerout',  function () { this.setStyle({ backgroundColor: '#17313f' }) })
           .on('pointerdown', () => this._joinRoom(room.room_code))
 
         const btnAssistir = this.add
-          .text(cols.action + 100, y, 'Assistir', {
-            fontSize: '13px', color: '#ffffff',
-            backgroundColor: '#4a4a00', padding: { x: 10, y: 5 },
+          .text(cols.action + 110, y, 'ASSISTIR', {
+            fontSize: '12px', color: '#ffffff',
+            backgroundColor: '#473a12', padding: { x: 10, y: 5 },
           })
           .setOrigin(0, 0.5)
           .setInteractive({ useHandCursor: true })
@@ -196,9 +219,9 @@ export default class LobbyScene extends Scene {
 
       } else if (room.status === 'in_progress') {
         const btnAssistir = this.add
-          .text(cols.action, y, 'Assistir', {
-            fontSize: '13px', color: '#ffffff',
-            backgroundColor: '#4a4a00', padding: { x: 10, y: 5 },
+          .text(cols.action, y, 'ASSISTIR', {
+            fontSize: '12px', color: '#ffffff',
+            backgroundColor: '#473a12', padding: { x: 10, y: 5 },
           })
           .setOrigin(0, 0.5)
           .setInteractive({ useHandCursor: true })
@@ -240,16 +263,16 @@ export default class LobbyScene extends Scene {
     overlay.on('pointerdown', () => this._closeModal())
 
     // Painel — interativo para bloquear cliques de passar ao overlay
-    const panel  = this.add.rectangle(mx, my, mw, mh, 0x0d1a10).setOrigin(0.5).setInteractive()
-    const border = this.add.rectangle(mx, my, mw, mh).setStrokeStyle(2, 0x2a5a2a).setOrigin(0.5).setFillStyle()
+    const panel  = this.add.rectangle(mx, my, mw, mh, 0x06111f, 0.97).setOrigin(0.5).setInteractive()
+    const border = this.add.rectangle(mx, my, mw, mh, 0x000000, 0).setStrokeStyle(2, 0x64e8ff).setOrigin(0.5)
     const title  = this.add.text(mx, my - mh / 2 + 30, 'CONFIGURAR SALA', {
-      fontSize: '20px', color: '#4caf50', fontStyle: 'bold',
+      fontSize: '20px', color: '#ffffff', fontStyle: 'bold',
     }).setOrigin(0.5)
-    const divTop = this.add.rectangle(mx, my - mh / 2 + 52, mw - 40, 1, 0x2a4a2a).setOrigin(0.5)
+    const divTop = this.add.rectangle(mx, my - mh / 2 + 52, mw - 40, 2, 0x9df7ff, 0.85).setOrigin(0.5)
 
     // Botão fechar
     const btnClose = this.add.text(mx + mw / 2 - 20, my - mh / 2 + 18, '✕', {
-      fontSize: '16px', color: '#aa4444',
+      fontSize: '16px', color: '#ff7777',
     }).setOrigin(0.5).setInteractive({ useHandCursor: true })
     btnClose.on('pointerover', () => btnClose.setStyle({ color: '#ff6666' }))
     btnClose.on('pointerout',  () => btnClose.setStyle({ color: '#aa4444' }))
@@ -444,13 +467,16 @@ export default class LobbyScene extends Scene {
       'top: '    + (canvas.top  + y * scaleY - inputH / 2) + 'px',
       'width: '  + (w * scaleX) + 'px',
       'height: ' + inputH + 'px',
-      'background: #1e1e2e',
+      'background: rgba(6, 17, 31, 0.96)',
       'color: #fff',
-      'border: 1px solid #334455',
+      'border: 1px solid #64e8ff',
       'border-radius: 4px',
+      'box-sizing: border-box',
       'padding: 0 10px',
       'font-size: 13px',
       'outline: none',
+      'box-shadow: 0 0 12px rgba(100, 232, 255, 0.12)',
+      'z-index: 20',
     ].join(';')
 
     document.body.appendChild(input)
