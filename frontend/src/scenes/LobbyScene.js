@@ -1,5 +1,5 @@
 import { Scene } from 'phaser'
-import { getRooms, createRoom, joinRoom } from '../api/gameApi.js'
+import { getRooms, getRoom, getRoomByCode, createRoom, joinRoom, readyRoom, deleteRoom } from '../api/gameApi.js'
 import echo from '../config/echo.js'
 import { saveScene } from '../utils/session.js'
 
@@ -83,8 +83,8 @@ export default class LobbyScene extends Scene {
 
     this._loadRooms()
 
-    echo.channel('rooms').listen('RoomCreated', () => this._loadRooms())
-    echo.channel('rooms').listen('RoomUpdated', () => this._loadRooms())
+    echo.channel('rooms').listen('RoomCreated', event => this._handleRoomRealtime(event?.room))
+    echo.channel('rooms').listen('RoomUpdated', event => this._handleRoomRealtime(event?.room))
 
     this.events.on('shutdown', () => this._removeHtmlElements())
   }
@@ -130,13 +130,17 @@ export default class LobbyScene extends Scene {
   // ── Carregar salas ──────────────────────────────────────────────
 
   async _loadRooms() {
+    let errorMessage = ''
     try {
       const res = await getRooms()
       this.rooms = res.data.data ?? res.data
-    } catch {
+    } catch (error) {
       this.rooms = []
+      console.error('Erro ao carregar salas:', error)
+      errorMessage = this._apiErrorMessage(error, 'Não foi possível carregar as salas.')
     }
     this._renderTable()
+    if (errorMessage) this._setFooterStatus(errorMessage, '#ff7777')
   }
 
   // ── Renderizar tabela ───────────────────────────────────────────
@@ -180,9 +184,11 @@ export default class LobbyScene extends Scene {
         .setOrigin(0, 0.5)
 
       const statusColor = room.status === 'waiting'     ? '#4caf50'
+        : room.status === 'starting'                    ? '#64e8ff'
         : room.status === 'in_progress'                 ? '#ff9800'
         : '#888888'
       const statusLabel = room.status === 'waiting'     ? 'Aguardando...'
+        : room.status === 'starting'                    ? 'Configurando'
         : room.status === 'in_progress'                 ? 'Em andamento'
         : 'Finalizada'
 
@@ -255,7 +261,21 @@ export default class LobbyScene extends Scene {
       () => chars[Math.floor(Math.random() * chars.length)]
     ).join('')
 
-    this._modalState = { mode: 'pvp', hostReady: false, roomCode: code, deck: this._savedDeckName(), mx, my, mw, mh }
+    this._modalState = {
+      mode: 'pvp',
+      hostReady: false,
+      roomCode: code,
+      deck: this._savedDeckName(),
+      mx,
+      my,
+      mw,
+      mh,
+      room: null,
+      role: 'host',
+      creatingRoom: false,
+      readySubmitting: false,
+      opponentName: '',
+    }
     this._modal = this.add.container(0, 0).setDepth(10)
 
     // Overlay escuro (clique fora fecha)
@@ -283,13 +303,65 @@ export default class LobbyScene extends Scene {
     this._modalBody = this.add.container(0, 0)
     this._modal.add(this._modalBody)
     this._buildModalBody()
+    this._ensureModalRoomCreated()
+    this._startModalRoomPolling()
+  }
+
+  _openJoinedRoomModal(room) {
+    if (this._modal) return
+
+    const { width, height } = this.cameras.main
+    const mw = 580, mh = 400
+    const mx = width / 2, my = height / 2
+
+    this._modalState = {
+      mode: room.game_state?.mode ?? 'pvp',
+      roomCode: room.room_code,
+      deck: this._savedDeckName(),
+      mx,
+      my,
+      mw,
+      mh,
+      room,
+      role: 'guest',
+      creatingRoom: false,
+      readySubmitting: false,
+      opponentName: room.guest?.name ?? '',
+    }
+    this._modal = this.add.container(0, 0).setDepth(10)
+
+    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.78).setOrigin(0).setInteractive()
+    overlay.on('pointerdown', () => this._closeModal())
+
+    const panel  = this.add.rectangle(mx, my, mw, mh, 0x06111f, 0.97).setOrigin(0.5).setInteractive()
+    const border = this.add.rectangle(mx, my, mw, mh, 0x000000, 0).setStrokeStyle(2, 0x64e8ff).setOrigin(0.5)
+    const title  = this.add.text(mx, my - mh / 2 + 30, 'CONFIGURAR SALA', {
+      fontSize: '20px', color: '#ffffff', fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const divTop = this.add.rectangle(mx, my - mh / 2 + 52, mw - 40, 2, 0x9df7ff, 0.85).setOrigin(0.5)
+    const btnClose = this.add.text(mx + mw / 2 - 20, my - mh / 2 + 18, '✕', {
+      fontSize: '16px', color: '#ff7777',
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+    btnClose.on('pointerover', () => btnClose.setStyle({ color: '#ff6666' }))
+    btnClose.on('pointerout',  () => btnClose.setStyle({ color: '#aa4444' }))
+    btnClose.on('pointerdown', () => this._closeModal())
+
+    this._modal.add([overlay, panel, border, title, divTop, btnClose])
+    this._modalBody = this.add.container(0, 0)
+    this._modal.add(this._modalBody)
+    this._buildModalBody()
+    this._startModalRoomPolling()
   }
 
   _buildModalBody() {
     this._modalBody.removeAll(true)
     if (this._modalInput) { this._modalInput.remove(); this._modalInput = null }
 
-    const { mode, hostReady, roomCode, deck, mx, my, mw, mh } = this._modalState
+    const { mode, roomCode, deck, mx, my, mw, mh, room, role, creatingRoom, opponentName, readySubmitting } = this._modalState
+    const roomState = room?.game_state ?? {}
+    const hostReady = Boolean(roomState.host_ready)
+    const guestReady = Boolean(roomState.guest_ready)
+    const myReady = role === 'guest' ? guestReady : hostReady
     const lx  = mx - mw / 2 + 36
 
     // ─ ID DA SALA ───────
@@ -308,7 +380,12 @@ export default class LobbyScene extends Scene {
       backgroundColor: pvpActive ? '#1b5e20' : '#1a1a2a',
       padding: { x: 14, y: 6 },
     }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true })
-    btnPVP.on('pointerdown', () => { this._modalState.mode = 'pvp';  this._buildModalBody() })
+    btnPVP.on('pointerdown', () => {
+      if (this._modalState.role === 'guest') return
+      this._modalState.mode = 'pvp'
+      this._buildModalBody()
+      this._ensureModalRoomCreated()
+    })
 
     const btnSOLO = this.add.text(lx + 162, modoY, ' SOLO ', {
       fontSize: '14px',
@@ -316,7 +393,12 @@ export default class LobbyScene extends Scene {
       backgroundColor: !pvpActive ? '#1b5e20' : '#1a1a2a',
       padding: { x: 14, y: 6 },
     }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true })
-    btnSOLO.on('pointerdown', () => { this._modalState.mode = 'solo'; this._buildModalBody() })
+    btnSOLO.on('pointerdown', () => {
+      if (this._modalState.role === 'guest') return
+      this._modalState.mode = 'solo'
+      this._cancelModalRoom()
+      this._buildModalBody()
+    })
 
     this._modalBody.add([
       this.add.text(lx, modoY, 'MODO:', { fontSize: '13px', color: '#888888' }).setOrigin(0, 0.5),
@@ -326,11 +408,15 @@ export default class LobbyScene extends Scene {
     // ─ HOST ───────
     const hostY = modoY + 62
     let hostName = 'Você'
-    try { hostName = JSON.parse(localStorage.getItem('ez_user'))?.name ?? 'Você' } catch {}
+    try {
+      hostName = JSON.parse(localStorage.getItem('auth_user'))?.name
+        ?? JSON.parse(localStorage.getItem('ez_user'))?.name
+        ?? 'Você'
+    } catch {}
     this._modalBody.add([
       this.add.circle(lx + 8, hostY, 7, hostReady ? 0x4caf50 : 0xcc3333),
       this.add.text(lx + 24, hostY, 'Jogador Host:', { fontSize: '12px', color: '#888888' }).setOrigin(0, 0.5),
-      this.add.text(lx + 130, hostY, hostName, { fontSize: '15px', color: '#ffffff' }).setOrigin(0, 0.5),
+      this.add.text(lx + 130, hostY, room?.host?.name ?? hostName, { fontSize: '15px', color: '#ffffff' }).setOrigin(0, 0.5),
     ])
 
     // ─ OPONENTE ───────
@@ -343,13 +429,14 @@ export default class LobbyScene extends Scene {
       ])
     } else {
       this._modalBody.add([
-        this.add.circle(lx + 8, oppY, 7, 0xcc3333),
+        this.add.circle(lx + 8, oppY, 7, guestReady ? 0x4caf50 : 0xcc3333),
         this.add.text(lx + 24, oppY, 'Oponente:', { fontSize: '12px', color: '#888888' }).setOrigin(0, 0.5),
       ])
-      this._modalInput = this._addHtmlInput(lx + 108, oppY, 238, 'Aguardando oponente...')
+      this._modalInput = this._addHtmlInput(lx + 108, oppY, 238, creatingRoom ? 'Criando sala...' : 'Aguardando oponente...')
       this._modalInput.readOnly = true
       this._modalInput.style.cursor  = 'default'
-      this._modalInput.style.color   = '#666666'
+      this._modalInput.style.color   = opponentName ? '#bfffbf' : '#666666'
+      this._modalInput.value = opponentName || ''
     }
 
     // divisor
@@ -369,47 +456,182 @@ export default class LobbyScene extends Scene {
     btnDeck.on('pointerout',  () => btnDeck.setStyle({ backgroundColor: '#1a2a3a' }))
     btnDeck.on('pointerdown', () => console.log('Seletor de deck — em breve'))
 
-    const btnPronto = this.add.text(mx + 110, btnY, hostReady ? '✔ PRONTO' : 'PRONTO', {
+    const btnPronto = this.add.text(mx + 110, btnY, myReady ? '✔ PRONTO' : (readySubmitting ? 'ENVIANDO...' : 'PRONTO'), {
       fontSize: '15px', color: '#ffffff',
-      backgroundColor: hostReady ? '#1b5e20' : '#0d47a1',
+      backgroundColor: myReady ? '#1b5e20' : '#0d47a1',
       padding: { x: 20, y: 9 },
     }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    btnPronto.on('pointerover', () => btnPronto.setStyle({ backgroundColor: hostReady ? '#2e7d32' : '#1565c0' }))
-    btnPronto.on('pointerout',  () => btnPronto.setStyle({ backgroundColor: hostReady ? '#1b5e20' : '#0d47a1' }))
+    btnPronto.on('pointerover', () => btnPronto.setStyle({ backgroundColor: myReady ? '#2e7d32' : '#1565c0' }))
+    btnPronto.on('pointerout',  () => btnPronto.setStyle({ backgroundColor: myReady ? '#1b5e20' : '#0d47a1' }))
     btnPronto.on('pointerdown', () => {
-      this._modalState.hostReady = true
-      if (this._modalState.mode === 'solo') {
-        const mode = this._modalState.mode
-        this._closeModal()
-        this._startGame(mode)
-      } else {
-        this._buildModalBody()
+      if (this._modalState.mode === 'pvp' && this._modalState.creatingRoom) {
+        this._setFooterStatus('Aguarde, a sala ainda está sendo criada.', '#ffdd77')
+        return
       }
+      this._markReady()
     })
 
     this._modalBody.add([btnDeck, btnPronto])
   }
 
-  _closeModal() {
+  _closeModal(options = {}) {
+    const cancelRoom = options.cancelRoom ?? true
+    this._stopModalRoomPolling()
+    if (cancelRoom) this._cancelModalRoom()
     if (this._modalInput) { this._modalInput.remove(); this._modalInput = null }
     if (this._modal)      { this._modal.destroy(true);  this._modal = null }
     this._modalState = null
   }
 
-  _startGame(mode = this._modalState?.mode ?? 'pvp') {
+  _startGame(mode = this._modalState?.mode ?? 'pvp', roomCode = this._modalState?.roomCode ?? null, existingRoom = null, role = 'host') {
     if (mode === 'solo') {
       this.scene.start('GameScene', { room: { room_code: 'LOCAL', mode }, role: 'host' })
       return
     }
 
-    createRoom({ mode })
+    const request = existingRoom
+      ? Promise.resolve({ data: { data: existingRoom } })
+      : createRoom({ mode, room_code: roomCode })
+
+    request
       .then(res => {
         const room = res.data.data ?? res.data
-        this.scene.start('GameScene', { room, role: 'host' })
+        this.scene.start('GameScene', { room, role })
       })
-      .catch(() => {
-        this.scene.start('GameScene', { room: { room_code: 'LOCAL' }, role: 'host' })
+      .catch(async error => {
+        console.error('Erro ao criar sala:', error)
+        await this._loadRooms()
+        this._setFooterStatus(this._apiErrorMessage(error, 'Não foi possível criar a sala.'), '#ff7777')
       })
+  }
+
+  async _ensureModalRoomCreated() {
+    if (!this._modalState || this._modalState.mode !== 'pvp') return
+    if (this._modalState.room || this._modalState.creatingRoom) return
+
+    this._modalState.creatingRoom = true
+    this._buildModalBody()
+
+    try {
+      const res = await createRoom({ mode: 'pvp', room_code: this._modalState.roomCode })
+      const room = res.data.data ?? res.data
+      if (!this._modalState || this._modalState.mode !== 'pvp') {
+        try { await deleteRoom(room.id) } catch {}
+        this._loadRooms()
+        return
+      }
+
+      this._modalState.room = room
+      this._modalState.roomCode = room.room_code ?? this._modalState.roomCode
+      this._modalState.creatingRoom = false
+      this._handleModalRoomUpdate(room)
+      this._loadRooms()
+    } catch (error) {
+      console.error('Erro ao criar sala no modal:', error)
+      if (!this._modalState) return
+      this._modalState.creatingRoom = false
+      this._buildModalBody()
+      this._setFooterStatus(this._apiErrorMessage(error, 'Não foi possível criar a sala.'), '#ff7777')
+    }
+  }
+
+  async _cancelModalRoom() {
+    const room = this._modalState?.room
+    if (this._modalState?.role !== 'host') return
+    if (!room?.id || !['waiting', 'starting'].includes(room.status)) return
+
+    this._modalState.room = null
+    try {
+      await deleteRoom(room.id)
+      this._loadRooms()
+    } catch (error) {
+      console.error('Erro ao cancelar sala:', error)
+    }
+  }
+
+  _handleRoomRealtime(room) {
+    this._loadRooms()
+    if (room) this._handleModalRoomUpdate(room)
+  }
+
+  _handleModalRoomUpdate(room) {
+    if (!this._modalState?.room) return
+    if (Number(room.id) !== Number(this._modalState.room.id)) return
+
+    this._modalState.room = room
+    this._modalState.opponentName = room.guest?.name ?? ''
+
+    if (room.status === 'in_progress') {
+      const role = this._modalState.role ?? 'guest'
+      this._closeModal({ cancelRoom: false })
+      this.scene.start('GameScene', { room, role })
+      return
+    }
+
+    if (this._modal) this._buildModalBody()
+  }
+
+  _startModalRoomPolling() {
+    this._stopModalRoomPolling()
+    this._modalRoomPolling = this.time.addEvent({
+      delay: 1600,
+      loop: true,
+      callback: async () => {
+        const roomId = this._modalState?.room?.id
+        if (!roomId) return
+
+        try {
+          const res = await getRoom(roomId)
+          this._handleModalRoomUpdate(res.data.data ?? res.data)
+        } catch (error) {
+          console.error('Erro ao atualizar sala:', error)
+        }
+      },
+    })
+  }
+
+  _stopModalRoomPolling() {
+    if (!this._modalRoomPolling) return
+    this._modalRoomPolling.remove(false)
+    this._modalRoomPolling = null
+  }
+
+  async _markReady() {
+    if (!this._modalState) return
+
+    if (this._modalState.mode === 'solo') {
+      const { mode } = this._modalState
+      this._closeModal({ cancelRoom: false })
+      this._startGame(mode)
+      return
+    }
+
+    const room = this._modalState.room
+    if (!room?.id || this._modalState.readySubmitting) return
+
+    const state = room.game_state ?? {}
+    const alreadyReady = this._modalState.role === 'guest'
+      ? Boolean(state.guest_ready)
+      : Boolean(state.host_ready)
+    if (alreadyReady) {
+      this._setFooterStatus('Aguardando o outro jogador ficar pronto.', '#ffdd77')
+      return
+    }
+
+    this._modalState.readySubmitting = true
+    this._buildModalBody()
+
+    try {
+      const res = await readyRoom(room.id)
+      this._modalState.readySubmitting = false
+      this._handleModalRoomUpdate(res.data.data ?? res.data)
+    } catch (error) {
+      console.error('Erro ao marcar pronto:', error)
+      if (!this._modalState) return
+      this._modalState.readySubmitting = false
+      this._buildModalBody()
+      this._setFooterStatus(this._apiErrorMessage(error, 'Não foi possível marcar pronto.'), '#ff7777')
+    }
   }
 
   _savedDeckName() {
@@ -426,27 +648,48 @@ export default class LobbyScene extends Scene {
   }
 
   // ── Ações ──────────────────────────────────────────────────
-  _searchByCode() {
+  async _searchByCode() {
     const code = this._codeInput?.value?.trim().toUpperCase()
     if (!code) {
       this._loadRooms()
       return
     }
-    const all = this.rooms
-    const filtered = all.filter(r => (r.room_code ?? '').toUpperCase().includes(code))
-    this.rooms = filtered
-    this._renderTable()
-    this.rooms = all
+
+    try {
+      const res = await getRoomByCode(code)
+      const room = res.data.data ?? res.data
+      this.rooms = [room]
+      this._renderTable()
+      this._setFooterStatus('Sala encontrada: ' + (room.room_code ?? code), '#9df7ff')
+    } catch (error) {
+      console.error('Erro ao buscar sala:', error)
+      this.rooms = []
+      this._renderTable()
+      this._setFooterStatus(this._apiErrorMessage(error, 'Sala não encontrada.'), '#ff7777')
+    }
   }
 
   async _joinRoom(code) {
     try {
       const res = await joinRoom(code, null)
       const room = res.data.data ?? res.data
-      this.scene.start('GameScene', { room, role: 'guest' })
+      this._openJoinedRoomModal(room)
     } catch (e) {
       console.error('Erro ao entrar na sala:', e)
+      this._setFooterStatus(this._apiErrorMessage(e, 'Não foi possível entrar na sala.'), '#ff7777')
     }
+  }
+
+  _apiErrorMessage(error, fallback) {
+    return error?.response?.data?.message
+      || Object.values(error?.response?.data?.errors ?? {})?.flat()?.[0]
+      || fallback
+  }
+
+  _setFooterStatus(message, color = '#555555') {
+    if (!this._footerText) return
+    this._footerText.setText(message)
+    this._footerText.setStyle({ color })
   }
 
   // ── Input HTML ──────────────────────────────────────────────────

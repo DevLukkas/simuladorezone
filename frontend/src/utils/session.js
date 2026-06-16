@@ -3,7 +3,7 @@
  *
  * Cenas permitidas para restauração.
  */
-const RESTORABLE = ['MenuScene', 'LobbyScene', 'LibraryScene', 'DeckBuilderScene', 'GameScene']
+const RESTORABLE = ['MenuScene', 'StarterDeckScene', 'LobbyScene', 'LibraryScene', 'DeckBuilderScene', 'ProfileScene', 'GameScene']
 const KEY_SCENE  = 'ez_current_scene'
 const KEY_AUTH   = 'auth_token'
 const KEY_SCENE_DATA = 'ez_current_scene_data'

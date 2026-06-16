@@ -1,81 +1,93 @@
-import { Scene } from 'phaser'
-import echo from '../config/echo.js'
-import api from '../config/api.js'
-import { criaturas }   from '../data/criaturas.js'
-import { habilidades } from '../data/habilidades.js'
-import { itens }       from '../data/itens.js'
-import { comandos }    from '../data/comandos.js'
-import { cenarios }    from '../data/cenarios.js'
-import { abilityEffectNeedsTarget, applyTargetedAbilityEffect } from '../effects/abilityEffects.js'
-import { matchesCreatureRule } from '../effects/creatureEffects.js'
-import { applySummonToken } from '../effects/summonToken.js'
+import { Scene } from "phaser";
+import echo from "../config/echo.js";
+import api from "../config/api.js";
+import { criaturas } from "../data/criaturas.js";
+import { habilidades } from "../data/habilidades.js";
+import { itens } from "../data/itens.js";
+import { comandos } from "../data/comandos.js";
+import { cenarios } from "../data/cenarios.js";
+import {
+  abilityEffectNeedsTarget,
+  applyTargetedAbilityEffect,
+} from "../effects/abilityEffects.js";
+import { matchesCreatureRule } from "../effects/creatureEffects.js";
+import { applySummonToken } from "../effects/summonToken.js";
 import {
   activateAbility,
   canActivateAbility,
   createCreatureInstance,
   recalculateCreatureStats,
   resolveTriggerEffects,
-} from '../effects/index.js'
-import { createEffectQueueRunner } from '../game/effectResolver.js'
+} from "../effects/index.js";
+import { createEffectQueueRunner } from "../game/effectResolver.js";
 import {
   canCreatureAttack,
   canNormalSummon,
   canUseMainAction,
   pointsForRarity,
-} from '../game/gameRules.js'
-import { aiChooseFirstCard, aiChooseFirstEmptySlot, aiChooseFirstSlot, aiDiscardRandom } from '../game/soloAi.js'
+} from "../game/gameRules.js";
+import {
+  aiChooseFirstCard,
+  aiChooseFirstEmptySlot,
+  aiChooseFirstSlot,
+  aiDiscardRandom,
+} from "../game/soloAi.js";
 import {
   attachmentTargets,
   commandTargetSlots,
   effectNeedsCreatureTarget,
   matchesCardRule,
-} from '../game/targeting.js'
-import { clearScene, saveScene, restoreSceneData } from '../utils/session.js'
+} from "../game/targeting.js";
+import { clearScene, saveScene, restoreSceneData } from "../utils/session.js";
+import { applyRevealRandomHandThenShuffleOne } from '../effects/commandEffects.js';
 
-const LOCAL_DECK_KEY = 'ezone_deck_builder_draft'
-const CARD_BACK_KEY = 'card_back'
-const BATTLE_BG_KEY = 'battle_bg'
-const MAX_HAND_SIZE = 8
-const MAX_SCORE = 3
+const LOCAL_DECK_KEY = "ezone_deck_builder_draft";
+const CARD_BACK_KEY = "card_back";
+const BATTLE_BG_KEY = "battle_bg";
+const MAX_HAND_SIZE = 8;
+const MAX_SCORE = 3;
 
 const TYPE_DEFAULT_COLOR = {
-  criatura:   0x886633,
+  criatura: 0x886633,
   habilidade: 0x2255aa,
-  item:       0x668844,
-  comando:    0x773399,
-  cenario:    0x336655,
-}
+  item: 0x668844,
+  comando: 0x773399,
+  cenario: 0x336655,
+};
 
 const ELEMENT_LABEL = {
-  fogo: 'Fogo',
-  agua: 'Agua',
-  terra: 'Terra',
-  vento: 'Vento',
-  neutro: 'Neutro',
-  vazio: 'Vazio',
-  cosmico: 'Cosmico',
-}
+  fogo: "Fogo",
+  agua: "Agua",
+  terra: "Terra",
+  vento: "Vento",
+  neutro: "Neutro",
+  vazio: "Vazio",
+  cosmico: "Cosmico",
+};
 
 function normalize(cards, card_type) {
-  return cards.map(c => ({
+  return cards.map((c) => ({
     ...c,
-    name:      c.nome,
+    name: c.nome,
     card_type,
-    attack:    c.ataque ?? null,
-    defense:   c.vida   ?? null,
-    element:   c.element ?? c.elemento ?? 'neutro',
-    rarity:    c.rarity ?? c.raridade,
-    color:     TYPE_DEFAULT_COLOR[card_type],
-  }))
+    attack: c.ataque ?? null,
+    defense: c.vida ?? null,
+    element: c.element ?? c.elemento ?? "neutro",
+    rarity: c.rarity ?? c.raridade,
+    color: TYPE_DEFAULT_COLOR[card_type],
+  }));
 }
 
 const ALL_CARDS = [
-  ...normalize(criaturas,   'criatura'),
-  ...normalize(habilidades, 'habilidade'),
-  ...normalize(itens.map(c => ({ ...c, elemento: 'neutro' })), 'item'),
-  ...normalize(comandos,    'comando'),
-  ...normalize(cenarios,    'cenario'),
-]
+  ...normalize(criaturas, "criatura"),
+  ...normalize(habilidades, "habilidade"),
+  ...normalize(
+    itens.map((c) => ({ ...c, elemento: "neutro" })),
+    "item",
+  ),
+  ...normalize(comandos, "comando"),
+  ...normalize(cenarios, "cenario"),
+];
 
 /**
  * GameScene — tabuleiro JxJ espelhado com drag & drop manual.
@@ -91,415 +103,476 @@ const ALL_CARDS = [
  */
 export default class GameScene extends Scene {
   constructor() {
-    super({ key: 'GameScene' })
-    this._resetRuntimeState()
+    super({ key: "GameScene" });
+    this._resetRuntimeState();
   }
 
   _resetRuntimeState() {
-    this.room = null
-    this.role = 'host' // 'host' | 'guest'
-    this.myDeck = []
-    this.myHand = []
-    this.myDiscard = []
-    this.oppDeck = []
-    this.oppHand = []
-    this.oppDiscard = []
-    this.oppHandCount = 5
-    this.myField = Array(5).fill(null)
-    this.oppField = Array(5).fill(null)
-    this.selectedCard = null
-    this.dragCard = null
-    this._handContainers = []
-    this._deckActionsOpen = false
-    this._magnifierButton = null
-    this._cardInspectPanel = null
-    this._mulliganOffered = false
-    this._mulliganModal = null
-    this._mulliganTimer = null
-    this._cardActionMenu = null
-    this._pendingSummonCard = null
-    this._pendingAttachmentCard = null
-    this._pendingCommandCard = null
-    this._pendingCommandEffect = null
-    this._pendingAbilityEffect = null
-    this._pendingAbilitySourceSlot = null
-    this._pendingAbilitySource = null
-    this._pendingHandAbilityCard = null
-    this._pendingHandAbility = null
-    this._pendingSpecialSummon = null
-    this._pendingSlotChoice = null
-    this._effectQueue = []
-    this._isResolvingEffect = false
-    this._effectQueueRunner = null
-    this._battleAttackButtons = []
-    this._commandResponseHighlights = []
-    this._commandResponseTimer = null
-    this._pendingAttackSlot = null
-    this._mustDiscardBeforeDraw = false
-    this._turnFuseStarted = false
-    this._turnNumber = 1
-    this._delayedEffects = []
-    this._activePlayer = 'my'
-    this._currentPhase = 'setup'
-    this._turnActions = { summoned: false, attached: false }
-    this._score = { my: 0, opp: 0 }
-    this._directDamage = { my: 0, opp: 0 }
-    this._myScenario = null
-    this._oppScenario = null
-    this._gameOver = false
-    this._actionLogs = []
-    this._logCollapsed = false
+    this.room = null;
+    this.role = "host"; // 'host' | 'guest'
+    this.myDeck = [];
+    this.myHand = [];
+    this.myDiscard = [];
+    this.oppDeck = [];
+    this.oppHand = [];
+    this.oppDiscard = [];
+    this.oppHandCount = 5;
+    this.oppDeckCount = 35;
+    this.myField = Array(5).fill(null);
+    this.oppField = Array(5).fill(null);
+    this.selectedCard = null;
+    this.dragCard = null;
+    this._handContainers = [];
+    this._deckActionsOpen = false;
+    this._magnifierButton = null;
+    this._cardInspectPanel = null;
+    this._mulliganOffered = false;
+    this._mulliganModal = null;
+    this._mulliganTimer = null;
+    this._cardActionMenu = null;
+    this._pendingSummonCard = null;
+    this._pendingAttachmentCard = null;
+    this._pendingCommandCard = null;
+    this._pendingCommandEffect = null;
+    this._pendingAbilityEffect = null;
+    this._pendingAbilitySourceSlot = null;
+    this._pendingAbilitySource = null;
+    this._pendingHandAbilityCard = null;
+    this._pendingHandAbility = null;
+    this._pendingSpecialSummon = null;
+    this._pendingSlotChoice = null;
+    this._effectQueue = [];
+    this._isResolvingEffect = false;
+    this._effectQueueRunner = null;
+    this._battleAttackButtons = [];
+    this._commandResponseHighlights = [];
+    this._commandResponseTimer = null;
+    this._pendingAttackSlot = null;
+    this._mustDiscardBeforeDraw = false;
+    this._turnFuseStarted = false;
+    this._turnNumber = 1;
+    this._delayedEffects = [];
+    this._activePlayer = "my";
+    this._currentPhase = "setup";
+    this._turnActions = { summoned: false, attached: false };
+    this._score = { my: 0, opp: 0 };
+    this._directDamage = { my: 0, opp: 0 };
+    this._myScenario = null;
+    this._oppScenario = null;
+    this._gameOver = false;
+    this._actionLogs = [];
+    this._logCollapsed = false;
     this._matchStats = {
       damageDealt: {},
       damageReceived: {},
-    }
-    this._slotsMy = null
-    this._slotsOpp = null
-    this._scoreDotsMy = null
-    this._scoreDotsOpp = null
-    this._turnFuseTimer = null
-    this._turnFuseGraphics = null
-    this._turnFuseText = null
-    this._turnBanner = null
-    this._phaseButton = null
-    this._phaseButtonGlow = null
-    this._toastText = null
-    this._directDamageTextMy = null
-    this._directDamageTextOpp = null
-    this._actionLogPanel = null
-    this._deckPileContainer = null
-    this._oppDeckPileContainer = null
-    this._discardPileContainer = null
-    this._oppDiscardPileContainer = null
-    this._oppHandContainer = null
-    this._scenarioContainer = null
-    this._discardViewer = null
-    this._replaceAttachmentMenu = null
-    this._elementChoiceMenu = null
-    this._effectChoiceModal = null
+      playedCards: [],
+    };
+    this._slotsMy = null;
+    this._slotsOpp = null;
+    this._scoreDotsMy = null;
+    this._scoreDotsOpp = null;
+    this._turnFuseTimer = null;
+    this._turnFuseGraphics = null;
+    this._turnFuseText = null;
+    this._turnBanner = null;
+    this._phaseButton = null;
+    this._phaseButtonGlow = null;
+    this._toastText = null;
+    this._directDamageTextMy = null;
+    this._directDamageTextOpp = null;
+    this._actionLogPanel = null;
+    this._deckPileContainer = null;
+    this._oppDeckPileContainer = null;
+    this._discardPileContainer = null;
+    this._oppDiscardPileContainer = null;
+    this._oppHandContainer = null;
+    this._scenarioContainer = null;
+    this._discardViewer = null;
+    this._replaceAttachmentMenu = null;
+    this._elementChoiceMenu = null;
+    this._effectChoiceModal = null;
+    this._myName = "Jogador";
+    this._opponentName = "Oponente";
   }
 
   init(data = {}) {
-    this._cleanupRuntimeBeforeRestart()
-    this._resetRuntimeState()
-    const restored = restoreSceneData()
-    this.room = data.room ?? restored?.room ?? { room_code: 'LOCAL', mode: 'solo' }
-    this.role = data.role ?? restored?.role ?? 'host'
+    this._cleanupRuntimeBeforeRestart();
+    this._resetRuntimeState();
+    const restored = restoreSceneData();
+    this.room = data.room ??
+      restored?.room ?? { room_code: "LOCAL", mode: "solo" };
+    this.role = data.role ?? restored?.role ?? "host";
+    this._syncPlayerNames();
   }
 
   _cleanupRuntimeBeforeRestart() {
-    this.time?.removeAllEvents()
-    this.tweens?.killAll()
-    if (this._turnFuseTimer) this._turnFuseTimer.remove(false)
-    this._turnFuseTimer = null
+    this.time?.removeAllEvents();
+    this.tweens?.killAll();
+    if (this._turnFuseTimer) this._turnFuseTimer.remove(false);
+    this._turnFuseTimer = null;
   }
 
   preload() {
     if (!this.textures.exists(BATTLE_BG_KEY)) {
-      this.load.image(BATTLE_BG_KEY, '/assets/img/bg_gameBattle.png')
+      this.load.image(BATTLE_BG_KEY, "/assets/img/bg_gameBattle.png");
     }
 
     if (!this.textures.exists(CARD_BACK_KEY)) {
-      this.load.image(CARD_BACK_KEY, '/assets/img/cover.png')
+      this.load.image(CARD_BACK_KEY, "/assets/img/cover.png");
     }
 
-    ALL_CARDS.forEach(card => {
-      const key  = `card_${card.id}`
-      const file = `/assets/cards/${String(card.id).padStart(2, '0')}.png`
+    ALL_CARDS.forEach((card) => {
+      const key = `card_${card.id}`;
+      const file = `/assets/cards/${String(card.id).padStart(2, "0")}.png`;
       if (!this.textures.exists(key)) {
-        this.load.image(key, file)
+        this.load.image(key, file);
       }
-    })
+    });
   }
 
   create() {
-    saveScene('GameScene', { room: this.room, role: this.role })
+    saveScene("GameScene", { room: this.room, role: this.role });
     this._effectQueueRunner = createEffectQueueRunner({
-      resolveJob: job => this._runEffectResolution(job),
-      onError: error => {
-        console.error('Erro ao resolver efeito:', error)
-        this._toast('Erro ao resolver efeito.')
+      resolveJob: (job) => this._runEffectResolution(job),
+      onError: (error) => {
+        console.error("Erro ao resolver efeito:", error);
+        this._toast("Erro ao resolver efeito.");
       },
-    })
+    });
 
-    const { width, height } = this.cameras.main
+    const { width, height } = this.cameras.main;
 
     // — Fundo —
-    this.add.image(width / 2, height / 2, BATTLE_BG_KEY).setDisplaySize(width, height)
+    this.add
+      .image(width / 2, height / 2, BATTLE_BG_KEY)
+      .setDisplaySize(width, height);
 
     // — Linha central —
-    this.add.line(0, 0, 0, height / 2, width, height / 2, 0x334455).setOrigin(0)
+    this.add
+      .line(0, 0, 0, height / 2, width, height / 2, 0x334455)
+      .setOrigin(0);
 
-    this._buildMatchHeader(width)
-    this._buildActionLogPanel()
+    this._buildMatchHeader(width);
+    this._buildActionLogPanel();
 
     // — Slots do campo —
-    this._slotsMy = this._createFieldSlots(width, height, 'my')
-    this._slotsOpp = this._createFieldSlots(width, height, 'opp')
+    this._slotsMy = this._createFieldSlots(width, height, "my");
+    this._slotsOpp = this._createFieldSlots(width, height, "opp");
 
     // — Zona da mão —
     this._handZone = this.add
       .zone(width / 2, height - 60, width - 40, 110)
-      .setRectangleDropZone(width - 40, 110)
+      .setRectangleDropZone(width - 40, 110);
 
     // — Info de turno —
     this._turnText = this.add
-      .text(width - 20, height / 2, 'Aguardando...', {
-        fontSize: '13px',
-        color: '#888888',
+      .text(width - 20, height / 2, "Aguardando...", {
+        fontSize: "13px",
+        color: "#888888",
       })
-      .setOrigin(1, 0.5)
+      .setOrigin(1, 0.5);
 
     // — Botões de turno —
     this._phaseButton = this.add
-      .text(width - 20, height - 58, 'FIM DE TURNO', {
-        fontSize: '15px',
-        color: '#ffffff',
-        backgroundColor: '#880000',
+      .text(width - 20, height - 58, "FIM DE TURNO", {
+        fontSize: "15px",
+        color: "#ffffff",
+        backgroundColor: "#880000",
         padding: { x: 12, y: 6 },
       })
       .setOrigin(1, 1)
       .setInteractive({ useHandCursor: true })
-      .on('pointerdown', () => this._advancePhase())
+      .on("pointerdown", () => this._advancePhase());
+    this._phaseButton.setVisible(false).disableInteractive();
 
     this.add
-      .text(width - 20, height - 20, 'SURRENDER', {
-        fontSize: '15px',
-        color: '#ffffff',
-        backgroundColor: '#3a1a1a',
+      .text(width - 20, height - 20, "SURRENDER", {
+        fontSize: "15px",
+        color: "#ffffff",
+        backgroundColor: "#3a1a1a",
         padding: { x: 12, y: 6 },
       })
       .setOrigin(1, 1)
       .setInteractive({ useHandCursor: true })
-      .on('pointerover', function () { this.setStyle({ backgroundColor: '#6a2222' }) })
-      .on('pointerout',  function () { this.setStyle({ backgroundColor: '#3a1a1a' }) })
-      .on('pointerdown', () => this._surrender())
+      .on("pointerover", function () {
+        this.setStyle({ backgroundColor: "#6a2222" });
+      })
+      .on("pointerout", function () {
+        this.setStyle({ backgroundColor: "#3a1a1a" });
+      })
+      .on("pointerdown", () => this._surrender());
 
     // — WebSocket: escutar ações do adversário —
-    this._listenChannel()
+    this._listenChannel();
 
-    this._renderOpponentHand()
-    this._renderOpponentDeckPile()
-    this._renderOpponentDiscardPile()
-    this._renderScenarioZone()
-    this.input.on('pointerdown', this._handleBoardPointerDown, this)
-    this._dealStartingHand()
+    this._renderOpponentHand();
+    this._renderOpponentDeckPile();
+    this._renderOpponentDiscardPile();
+    this._renderScenarioZone();
+    this.input.on("pointerdown", this._handleBoardPointerDown, this);
+    this._dealStartingHand();
   }
 
   _buildMatchHeader(width) {
-    const y = 18
-    const leftX = width / 2 - 180
-    const rightX = width / 2 + 180
+    const y = 18;
+    const leftX = width / 2 - 180;
+    const rightX = width / 2 + 180;
 
-    this.add.rectangle(width / 2, 0, width, 58, 0x071018, 0.92).setOrigin(0.5, 0)
-    this.add.rectangle(width / 2, 58, width, 1, 0x26384a).setOrigin(0.5)
+    this.add
+      .rectangle(width / 2, 0, width, 58, 0x071018, 0.92)
+      .setOrigin(0.5, 0);
+    this.add.rectangle(width / 2, 58, width, 1, 0x26384a).setOrigin(0.5);
 
-    this.add.text(leftX, y, 'JOGADOR 1', {
-      fontSize: '14px', color: '#ffffff', fontStyle: 'bold',
-    }).setOrigin(0.5)
-    this._directDamageTextMy = this.add.text(leftX + 82, y, 'Dano: 0/5', {
-      fontSize: '11px', color: '#d8ff66',
-    }).setOrigin(0, 0.5)
-    this.add.text(width / 2, y, 'x', {
-      fontSize: '16px', color: '#cccccc', fontStyle: 'bold',
-    }).setOrigin(0.5)
-    this.add.text(rightX, y, 'JOGADOR 2', {
-      fontSize: '14px', color: '#ffffff', fontStyle: 'bold',
-    }).setOrigin(0.5)
-    this._directDamageTextOpp = this.add.text(rightX + 82, y, 'Dano: 0/5', {
-      fontSize: '11px', color: '#ff9999',
-    }).setOrigin(0, 0.5)
+    this.add
+      .text(leftX, y, this._myName, {
+        fontSize: "14px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    this._directDamageTextMy = this.add
+      .text(leftX + 82, y, "Dano: 0/5", {
+        fontSize: "11px",
+        color: "#d8ff66",
+      })
+      .setOrigin(0, 0.5);
+    this.add
+      .text(width / 2, y, "x", {
+        fontSize: "16px",
+        color: "#cccccc",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    this.add
+      .text(rightX, y, this._opponentName, {
+        fontSize: "14px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    this._directDamageTextOpp = this.add
+      .text(rightX + 82, y, "Dano: 0/5", {
+        fontSize: "11px",
+        color: "#ff9999",
+      })
+      .setOrigin(0, 0.5);
 
-    this._scoreDotsMy = this._addScoreDots(leftX, y + 22)
-    this._scoreDotsOpp = this._addScoreDots(rightX, y + 22)
+    this._scoreDotsMy = this._addScoreDots(leftX, y + 22);
+    this._scoreDotsOpp = this._addScoreDots(rightX, y + 22);
 
-    this._roundText = this.add.text(width / 2, y + 32, '[Turno: 1]', {
-      fontSize: '13px', color: '#8fb8ff',
-    }).setOrigin(0.5)
-    this._updateDirectDamageHeader()
+    this._roundText = this.add
+      .text(width / 2, y + 32, "[Turno: 1]", {
+        fontSize: "13px",
+        color: "#8fb8ff",
+      })
+      .setOrigin(0.5);
+    this._updateDirectDamageHeader();
   }
 
   _buildTurnFuse(width, height) {
-    if (this._turnFuseTimer) this._turnFuseTimer.remove(false)
-    if (this._turnFuseGraphics) this._turnFuseGraphics.destroy()
-    if (this._turnFuseText) this._turnFuseText.destroy()
+    if (this._turnFuseTimer) this._turnFuseTimer.remove(false);
+    if (this._turnFuseGraphics) this._turnFuseGraphics.destroy();
+    if (this._turnFuseText) this._turnFuseText.destroy();
 
-    this._turnFuseGraphics = this.add.graphics().setDepth(4)
-    this._turnFuseText = this.add.text(width / 2, height / 2 - 24, '60', {
-      fontSize: '17px',
-      color: '#d8ff66',
-      fontStyle: 'bold',
-      backgroundColor: '#071018',
-      padding: { x: 9, y: 4 },
-    }).setOrigin(0.5).setDepth(5)
+    this._turnFuseGraphics = this.add.graphics().setDepth(4);
+    this._turnFuseText = this.add
+      .text(width / 2, height / 2 - 24, "60", {
+        fontSize: "17px",
+        color: "#d8ff66",
+        fontStyle: "bold",
+        backgroundColor: "#071018",
+        padding: { x: 9, y: 4 },
+      })
+      .setOrigin(0.5)
+      .setDepth(5);
 
-    const startTime = this.time.now
-    const duration = 60000
-    let expired = false
+    const startTime = this.time.now;
+    const duration = 60000;
+    let expired = false;
     const drawFuse = () => {
-      const elapsed = Math.min(duration, this.time.now - startTime)
-      const progress = elapsed / duration
-      const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000))
-      const x1 = 34
-      const x2 = width - 34
-      const y = height / 2
-      const burnX = x1 + (x2 - x1) * progress
-      const red = Math.round(120 + 135 * progress)
-      const green = Math.round(255 * (1 - Math.max(0, progress - 0.45) / 0.55))
-      const color = (red << 16) | (green << 8) | 0x22
+      const elapsed = Math.min(duration, this.time.now - startTime);
+      const progress = elapsed / duration;
+      const remaining = Math.max(0, Math.ceil((duration - elapsed) / 1000));
+      const x1 = 34;
+      const x2 = width - 34;
+      const y = height / 2;
+      const burnX = x1 + (x2 - x1) * progress;
+      const red = Math.round(120 + 135 * progress);
+      const green = Math.round(255 * (1 - Math.max(0, progress - 0.45) / 0.55));
+      const color = (red << 16) | (green << 8) | 0x22;
 
-      this._turnFuseGraphics.clear()
-      this._turnFuseGraphics.lineStyle(6, 0x181818, 0.9)
-      this._turnFuseGraphics.beginPath()
-      this._turnFuseGraphics.moveTo(x1, y)
-      this._turnFuseGraphics.lineTo(x2, y)
-      this._turnFuseGraphics.strokePath()
+      this._turnFuseGraphics.clear();
+      this._turnFuseGraphics.lineStyle(6, 0x181818, 0.9);
+      this._turnFuseGraphics.beginPath();
+      this._turnFuseGraphics.moveTo(x1, y);
+      this._turnFuseGraphics.lineTo(x2, y);
+      this._turnFuseGraphics.strokePath();
 
-      this._turnFuseGraphics.lineStyle(5, 0x555555, 0.65)
-      this._turnFuseGraphics.beginPath()
-      this._turnFuseGraphics.moveTo(x1, y)
-      this._turnFuseGraphics.lineTo(burnX, y)
-      this._turnFuseGraphics.strokePath()
+      this._turnFuseGraphics.lineStyle(5, 0x555555, 0.65);
+      this._turnFuseGraphics.beginPath();
+      this._turnFuseGraphics.moveTo(x1, y);
+      this._turnFuseGraphics.lineTo(burnX, y);
+      this._turnFuseGraphics.strokePath();
 
       if (burnX < x2) {
-        this._turnFuseGraphics.lineStyle(5, color, 1)
-        this._turnFuseGraphics.beginPath()
-        this._turnFuseGraphics.moveTo(burnX, y)
-        this._turnFuseGraphics.lineTo(x2, y)
-        this._turnFuseGraphics.strokePath()
+        this._turnFuseGraphics.lineStyle(5, color, 1);
+        this._turnFuseGraphics.beginPath();
+        this._turnFuseGraphics.moveTo(burnX, y);
+        this._turnFuseGraphics.lineTo(x2, y);
+        this._turnFuseGraphics.strokePath();
       }
 
-      this._turnFuseGraphics.fillStyle(progress > 0.78 ? 0xff2200 : 0xd8ff22, 1)
-      this._turnFuseGraphics.fillCircle(burnX, y, 7)
-      this._turnFuseText.setText(String(remaining))
-      this._turnFuseText.setStyle({ color: progress > 0.78 ? '#ff4422' : '#d8ff66' })
+      this._turnFuseGraphics.fillStyle(
+        progress > 0.78 ? 0xff2200 : 0xd8ff22,
+        1,
+      );
+      this._turnFuseGraphics.fillCircle(burnX, y, 7);
+      this._turnFuseText.setText(String(remaining));
+      this._turnFuseText.setStyle({
+        color: progress > 0.78 ? "#ff4422" : "#d8ff66",
+      });
 
       if (!expired && elapsed >= duration) {
-        expired = true
-        this._handleTurnFuseExpired()
+        expired = true;
+        this._handleTurnFuseExpired();
       }
-    }
+    };
 
-    drawFuse()
+    drawFuse();
     this._turnFuseTimer = this.time.addEvent({
       delay: 100,
       loop: true,
       callback: drawFuse,
-    })
+    });
   }
 
   _startTurnFuse() {
-    const { width, height } = this.cameras.main
-    this._turnFuseStarted = true
-    this._buildTurnFuse(width, height)
+    const { width, height } = this.cameras.main;
+    this._turnFuseStarted = true;
+    this._buildTurnFuse(width, height);
   }
 
   _stopTurnFuse() {
     if (this._turnFuseTimer) {
-      this._turnFuseTimer.remove(false)
-      this._turnFuseTimer = null
+      this._turnFuseTimer.remove(false);
+      this._turnFuseTimer = null;
     }
-    this._turnFuseStarted = false
+    this._turnFuseStarted = false;
   }
 
   _handleTurnFuseExpired() {
-    if (this._gameOver || this._currentPhase === 'setup') return
-    this._stopTurnFuse()
-    this._toast('Tempo esgotado. Turno encerrado.')
-    this._logAction('Tempo esgotado. Turno encerrado automaticamente.')
-    this._endTurn()
+    if (this._gameOver || this._currentPhase === "setup") return;
+    if (this._activePlayer !== "my") {
+      this._stopTurnFuse();
+      return;
+    }
+    this._stopTurnFuse();
+    this._toast("Tempo esgotado. Turno encerrado.");
+    this._logAction("Tempo esgotado. Turno encerrado automaticamente.");
+    this._endTurn();
   }
 
   _addScoreDots(x, y) {
-    const gap = 15
-    const dots = []
+    const gap = 15;
+    const dots = [];
     for (let i = 0; i < 3; i++) {
-      const dot = this.add.circle(x - gap + i * gap, y, 5, 0x777777)
-        .setStrokeStyle(1, 0xaaaaaa)
-      dots.push(dot)
+      const dot = this.add
+        .circle(x - gap + i * gap, y, 5, 0x777777)
+        .setStrokeStyle(1, 0xaaaaaa);
+      dots.push(dot);
     }
-    return dots
+    return dots;
   }
 
   _buildActionLogPanel() {
-    this._renderActionLogPanel()
+    this._renderActionLogPanel();
   }
 
   _renderActionLogPanel() {
-    if (this._actionLogPanel) this._actionLogPanel.destroy(true)
+    if (this._actionLogPanel) this._actionLogPanel.destroy(true);
 
-    const x = this._logCollapsed ? 16 : 126
-    const y = 360
-    const w = this._logCollapsed ? 34 : 244
-    const h = 520
-    this._actionLogPanel = this.add.container(x, y).setDepth(35)
+    const x = this._logCollapsed ? 16 : 126;
+    const y = 360;
+    const w = this._logCollapsed ? 34 : 244;
+    const h = 520;
+    this._actionLogPanel = this.add.container(x, y).setDepth(35);
 
-    const bg = this.add.rectangle(0, 0, w, h, 0x061014, 0.9)
-      .setStrokeStyle(1, 0x2f6f8f)
-    const toggle = this.add.text(-w / 2 + 18, -h / 2 + 18, '☰', {
-      fontSize: '18px',
-      color: '#ffffff',
-      backgroundColor: '#17313f',
-      padding: { x: 6, y: 2 },
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    toggle.on('pointerdown', () => {
-      this._logCollapsed = !this._logCollapsed
-      this._renderActionLogPanel()
-    })
-    this._actionLogPanel.add([bg, toggle])
+    const bg = this.add
+      .rectangle(0, 0, w, h, 0x061014, 0.9)
+      .setStrokeStyle(1, 0x2f6f8f);
+    const toggle = this.add
+      .text(-w / 2 + 18, -h / 2 + 18, "☰", {
+        fontSize: "18px",
+        color: "#ffffff",
+        backgroundColor: "#17313f",
+        padding: { x: 6, y: 2 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    toggle.on("pointerdown", () => {
+      this._logCollapsed = !this._logCollapsed;
+      this._renderActionLogPanel();
+    });
+    this._actionLogPanel.add([bg, toggle]);
 
-    if (this._logCollapsed) return
+    if (this._logCollapsed) return;
 
-    const title = this.add.text(-w / 2 + 44, -h / 2 + 10, 'LOG DA PARTIDA', {
-      fontSize: '12px',
-      color: '#8fb8ff',
-      fontStyle: 'bold',
-    }).setOrigin(0, 0)
-    this._actionLogPanel.add(title)
+    const title = this.add
+      .text(-w / 2 + 44, -h / 2 + 10, "LOG DA PARTIDA", {
+        fontSize: "12px",
+        color: "#8fb8ff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0, 0);
+    this._actionLogPanel.add(title);
 
-    const visible = this._actionLogs.slice(-18)
+    const visible = this._actionLogs.slice(-18);
     visible.forEach((line, i) => {
-      const text = this.add.text(-w / 2 + 12, -h / 2 + 42 + i * 25, line, {
-        fontSize: '10px',
-        color: '#d7e7df',
-        wordWrap: { width: w - 24 },
-      }).setOrigin(0, 0)
-      this._actionLogPanel.add(text)
-    })
+      const text = this.add
+        .text(-w / 2 + 12, -h / 2 + 42 + i * 25, line, {
+          fontSize: "10px",
+          color: "#d7e7df",
+          wordWrap: { width: w - 24 },
+        })
+        .setOrigin(0, 0);
+      this._actionLogPanel.add(text);
+    });
   }
 
   _logAction(message) {
-    this._actionLogs.push(`[T${this._turnNumber}] ${message}`)
-    if (this._actionLogs.length > 80) this._actionLogs.shift()
-    this._renderActionLogPanel()
+    this._actionLogs.push(`[T${this._turnNumber}] ${message}`);
+    if (this._actionLogs.length > 80) this._actionLogs.shift();
+    this._renderActionLogPanel();
   }
 
   // ────── Slots do Campo ──────
 
   _createFieldSlots(width, height, side) {
-    const slotCount = 5
-    const slotW = 90
-    const slotH = 125
-    const gap = 14
-    const totalW = slotCount * slotW + (slotCount - 1) * gap
-    const startX = (width - totalW) / 2
-    const y = side === 'my' ? height * 0.62 : height * 0.36
+    const slotCount = 5;
+    const slotW = 90;
+    const slotH = 125;
+    const gap = 14;
+    const totalW = slotCount * slotW + (slotCount - 1) * gap;
+    const startX = (width - totalW) / 2;
+    const y = side === "my" ? height * 0.62 : height * 0.36;
 
     return Array.from({ length: slotCount }, (_, i) => {
-      const x = startX + i * (slotW + gap) + slotW / 2
-      const slot = this.add.rectangle(x, y, slotW, slotH, 0x1a2a3a, 0.6)
-      slot.setStrokeStyle(1, 0x334455)
-      slot.setData('slotIndex', i)
-      slot.setData('side', side)
-      slot.setInteractive({ useHandCursor: true })
-      slot.on('pointerdown', () => this._handleSlotClick(side, i))
+      const x = startX + i * (slotW + gap) + slotW / 2;
+      const slot = this.add.rectangle(x, y, slotW, slotH, 0x1a2a3a, 0.6);
+      slot.setStrokeStyle(1, 0x334455);
+      slot.setData("slotIndex", i);
+      slot.setData("side", side);
+      slot.setInteractive({ useHandCursor: true });
+      slot.on("pointerdown", () => this._handleSlotClick(side, i));
 
       // DropZone
-      const zone = this.add.zone(x, y, slotW, slotH).setRectangleDropZone(slotW, slotH)
-      zone.setData('slotIndex', i)
-      zone.setData('side', side)
-      zone.setInteractive({ useHandCursor: true })
-      zone.on('pointerdown', () => this._handleSlotClick(side, i))
+      const zone = this.add
+        .zone(x, y, slotW, slotH)
+        .setRectangleDropZone(slotW, slotH);
+      zone.setData("slotIndex", i);
+      zone.setData("side", side);
+      zone.setInteractive({ useHandCursor: true });
+      zone.on("pointerdown", () => this._handleSlotClick(side, i));
 
       return {
         rect: slot,
@@ -513,393 +586,549 @@ export default class GameScene extends Scene {
         y,
         w: slotW,
         h: slotH,
-      }
-    })
+      };
+    });
   }
 
   _handleSlotClick(side, slotIndex) {
     if (this._pendingSlotChoice) {
-      this._selectGenericSlotChoice(side, slotIndex)
-      return
+      this._selectGenericSlotChoice(side, slotIndex);
+      return;
     }
 
     if (this._pendingCommandCard) {
-      this._selectCommandTarget(side, slotIndex)
-      return
+      this._selectCommandTarget(side, slotIndex);
+      return;
     }
 
     if (this._pendingAbilityEffect) {
-      this._selectAbilityTarget(side, slotIndex)
-      return
+      this._selectAbilityTarget(side, slotIndex);
+      return;
     }
 
     if (this._pendingSpecialSummon) {
-      this._selectSpecialSummonTarget(side, slotIndex)
-      return
+      this._selectSpecialSummonTarget(side, slotIndex);
+      return;
     }
 
     if (this._pendingAttackSlot) {
-      this._selectAttackTarget(side, slotIndex)
-      return
+      this._selectAttackTarget(side, slotIndex);
+      return;
     }
 
-    if (side === 'my') this._placePendingSummon(slotIndex)
+    if (side === "my") this._placePendingSummon(slotIndex);
   }
 
   // ────── Mão inicial ──────
 
   _loadLocalDeckCards() {
     try {
-      const saved = JSON.parse(localStorage.getItem(LOCAL_DECK_KEY))
-      if (!Array.isArray(saved?.cards)) return []
+      const saved = JSON.parse(localStorage.getItem(LOCAL_DECK_KEY));
+      if (!Array.isArray(saved?.cards)) return [];
 
-      const cards = []
+      const cards = [];
       for (const entry of saved.cards) {
-        const id = Number(entry?.id)
-        const qty = Number(entry?.qty)
-        const card = ALL_CARDS.find(c => Number(c.id) === id)
-        if (!card || !Number.isInteger(qty) || qty <= 0) continue
+        const id = Number(entry?.id);
+        const qty = Number(entry?.qty);
+        const card = ALL_CARDS.find((c) => Number(c.id) === id);
+        if (!card || !Number.isInteger(qty) || qty <= 0) continue;
 
         for (let i = 0; i < qty; i++) {
-          cards.push(card)
+          cards.push(card);
         }
       }
-      return cards
+      return cards;
     } catch {
-      return []
+      return [];
     }
   }
 
   _dealStartingHand() {
-    const baseDeck = this._loadLocalDeckCards()
+    const baseDeck = this._loadLocalDeckCards();
     if (baseDeck.length) {
-      const localDeck = this._shuffleCards(baseDeck)
-      this.myHand = localDeck.slice(0, 5)
-      this.myDeck = localDeck.slice(5)
-      this._setupSoloOpponentDeck(baseDeck)
-      this._renderDeckPile()
-      this._renderDiscardPile()
-      this._renderOpponentDeckPile()
-      this._renderOpponentDiscardPile()
-      this._renderHand(this.myHand)
-      this._renderOpponentHand()
-      this._openMulliganModal()
-      return
+      const localDeck = this._shuffleCards(baseDeck);
+      this.myHand = localDeck.slice(0, 5);
+      this.myDeck = localDeck.slice(5);
+      this._setupSoloOpponentDeck(baseDeck);
+      this._renderDeckPile();
+      this._renderDiscardPile();
+      this._renderOpponentDeckPile();
+      this._renderOpponentDiscardPile();
+      this._renderHand(this.myHand);
+      this._setupOpponentPublicCounts(baseDeck.length);
+      this._renderOpponentHand();
+      this._openMulliganModal();
+      return;
     }
 
-    this._dealDemoHand()
+    this._dealDemoHand();
   }
 
   _dealDemoHand() {
     const demoCards = this._shuffleCards([
-      { id: 1, name: 'Dragão Solar', attack: 9, defense: 7, mana_cost: 6, card_type: 'creature' },
-      { id: 2, name: 'Feitiço de Gelo', attack: null, defense: null, mana_cost: 3, card_type: 'spell' },
-      { id: 3, name: 'Escudo Lunar', attack: 2, defense: 10, mana_cost: 4, card_type: 'creature' },
-      { id: 4, name: 'Raio Veloz', attack: 6, defense: null, mana_cost: 2, card_type: 'spell' },
-      { id: 5, name: 'Golem de Pedra', attack: 5, defense: 8, mana_cost: 5, card_type: 'creature' },
-    ])
-    this.myHand = demoCards
-    this.myDeck = demoCards.slice(5)
-    this._setupSoloOpponentDeck(demoCards)
-    this._renderDeckPile()
-    this._renderDiscardPile()
-    this._renderOpponentDeckPile()
-    this._renderOpponentDiscardPile()
-    this._renderHand(this.myHand)
-    this._renderOpponentHand()
-    this._openMulliganModal()
+      {
+        id: 1,
+        name: "Dragão Solar",
+        attack: 9,
+        defense: 7,
+        mana_cost: 6,
+        card_type: "creature",
+      },
+      {
+        id: 2,
+        name: "Feitiço de Gelo",
+        attack: null,
+        defense: null,
+        mana_cost: 3,
+        card_type: "spell",
+      },
+      {
+        id: 3,
+        name: "Escudo Lunar",
+        attack: 2,
+        defense: 10,
+        mana_cost: 4,
+        card_type: "creature",
+      },
+      {
+        id: 4,
+        name: "Raio Veloz",
+        attack: 6,
+        defense: null,
+        mana_cost: 2,
+        card_type: "spell",
+      },
+      {
+        id: 5,
+        name: "Golem de Pedra",
+        attack: 5,
+        defense: 8,
+        mana_cost: 5,
+        card_type: "creature",
+      },
+    ]);
+    this.myHand = demoCards;
+    this.myDeck = demoCards.slice(5);
+    this._setupSoloOpponentDeck(demoCards);
+    this._renderDeckPile();
+    this._renderDiscardPile();
+    this._renderOpponentDeckPile();
+    this._renderOpponentDiscardPile();
+    this._renderHand(this.myHand);
+    this._setupOpponentPublicCounts(demoCards.length);
+    this._renderOpponentHand();
+    this._openMulliganModal();
+  }
+
+  _setupOpponentPublicCounts(deckSize) {
+    if (this._isSoloMode()) return;
+    this.oppHandCount = 5;
+    this.oppDeckCount = Math.max(
+      0,
+      (Number(deckSize) || 40) - this.oppHandCount,
+    );
+    this.oppDiscard = [];
+    this._renderOpponentDeckPile();
+    this._renderOpponentDiscardPile();
+  }
+
+  _syncPlayerNames() {
+    const hostName = this.room?.host?.name ?? "Jogador 1";
+    const guestName = this.room?.guest?.name ?? "Jogador 2";
+
+    if (this.role === "guest") {
+      this._myName = guestName;
+      this._opponentName = hostName;
+      return;
+    }
+
+    this._myName = hostName;
+    this._opponentName = guestName;
+  }
+
+  _getActivePlayerSideFromRoom() {
+    const activeId = Number(this.room?.game_state?.active_player_id);
+    if (!activeId) return "my";
+
+    return activeId === this._getMyUserId() ? "my" : "opp";
+  }
+
+  _getCurrentPhaseFromRoom() {
+    const phase = this.room?.game_state?.phase;
+    return ["main", "battle", "setup"].includes(phase) ? phase : "main";
   }
 
   _isSoloMode() {
-    return this.room?.mode === 'solo' || this.room?.room_code === 'LOCAL'
+    return this.room?.mode === "solo" || this.room?.room_code === "LOCAL";
   }
 
   _setupSoloOpponentDeck(baseDeck) {
-    if (!this._isSoloMode()) return
+    if (!this._isSoloMode()) return;
 
-    const aiDeck = this._shuffleCards(baseDeck)
-    this.oppHand = aiDeck.slice(0, 5)
-    this.oppDeck = aiDeck.slice(5)
-    this.oppDiscard = []
-    this.oppHandCount = this.oppHand.length
+    const aiDeck = this._shuffleCards(baseDeck);
+    this.oppHand = aiDeck.slice(0, 5);
+    this.oppDeck = aiDeck.slice(5);
+    this.oppDiscard = [];
+    this.oppHandCount = this.oppHand.length;
   }
 
   _shuffleCards(cards) {
-    const shuffled = [...cards]
+    const shuffled = [...cards];
     for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
-      ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
-    return shuffled
+    return shuffled;
   }
 
   _renderDeckPile() {
     if (this._deckPileContainer) {
-      this._deckPileContainer.destroy(true)
+      this._deckPileContainer.destroy(true);
     }
 
-    const { width, height } = this.cameras.main
-    const cardW = 80
-    const cardH = 112
-    const count = this.myDeck.length
-    const x = width - 238
-    const y = height - 90
+    const { width, height } = this.cameras.main;
+    const cardW = 80;
+    const cardH = 112;
+    const count = this.myDeck.length;
+    const x = width - 238;
+    const y = height - 90;
 
-    this._deckPileContainer = this.add.container(x, y)
+    this._deckPileContainer = this.add.container(x, y);
 
-    const base = this.add.rectangle(0, 0, cardW + 10, cardH + 10, 0x07100d, 0.95)
-      .setStrokeStyle(1, 0x2a5a2a)
-    this._deckPileContainer.add(base)
+    const base = this.add
+      .rectangle(0, 0, cardW + 10, cardH + 10, 0x07100d, 0.95)
+      .setStrokeStyle(1, 0x2a5a2a);
+    this._deckPileContainer.add(base);
 
     if (count > 0 && this.textures.exists(CARD_BACK_KEY)) {
-      const visibleCards = Math.min(7, count)
+      const visibleCards = Math.min(7, count);
       for (let i = visibleCards - 1; i >= 0; i--) {
-        const offset = i * 2
-        const back = this.add.image(-offset, -offset, CARD_BACK_KEY).setDisplaySize(cardW, cardH)
-        this._deckPileContainer.add(back)
+        const offset = i * 2;
+        const back = this.add
+          .image(-offset, -offset, CARD_BACK_KEY)
+          .setDisplaySize(cardW, cardH);
+        this._deckPileContainer.add(back);
       }
     } else {
-      const empty = this.add.rectangle(0, 0, cardW, cardH, 0x111820, 0.75)
-        .setStrokeStyle(1, 0x334455)
-      this._deckPileContainer.add(empty)
+      const empty = this.add
+        .rectangle(0, 0, cardW, cardH, 0x111820, 0.75)
+        .setStrokeStyle(1, 0x334455);
+      this._deckPileContainer.add(empty);
     }
 
-    const badge = this.add.circle(cardW / 2 - 2, cardH / 2 - 4, 15, 0x000000, 0.85)
-      .setStrokeStyle(1, 0x4caf50)
-    const countText = this.add.text(cardW / 2 - 2, cardH / 2 - 4, String(count), {
-      fontSize: '14px', color: '#ffffff', fontStyle: 'bold',
-    }).setOrigin(0.5)
-    const label = this.add.text(0, cardH / 2 + 18, 'BARALHO', {
-      fontSize: '10px', color: '#7fbf7f',
-    }).setOrigin(0.5)
+    const badge = this.add
+      .circle(cardW / 2 - 2, cardH / 2 - 4, 15, 0x000000, 0.85)
+      .setStrokeStyle(1, 0x4caf50);
+    const countText = this.add
+      .text(cardW / 2 - 2, cardH / 2 - 4, String(count), {
+        fontSize: "14px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    const label = this.add
+      .text(0, cardH / 2 + 18, "BARALHO", {
+        fontSize: "10px",
+        color: "#7fbf7f",
+      })
+      .setOrigin(0.5);
 
-    this._deckPileContainer.add([badge, countText, label])
-    this._deckPileContainer.setSize(cardW + 16, cardH + 16)
+    this._deckPileContainer.add([badge, countText, label]);
+    this._deckPileContainer.setSize(cardW + 16, cardH + 16);
     // Menu manual do baralho desativado por enquanto. Reative estas linhas para testes manuais:
     // this._deckPileContainer.setInteractive({ useHandCursor: true })
     // this._deckPileContainer.on('pointerdown', () => this._toggleDeckActions())
   }
 
   _renderOpponentDeckPile() {
-    if (this._oppDeckPileContainer) this._oppDeckPileContainer.destroy(true)
+    if (this._oppDeckPileContainer) this._oppDeckPileContainer.destroy(true);
 
-    const cardW = 72
-    const cardH = 101
-    const count = this._isSoloMode() ? this.oppDeck.length : 0
-    const x = 238
-    const y = 118
+    const cardW = 72;
+    const cardH = 101;
+    const count = this._isSoloMode() ? this.oppDeck.length : this.oppDeckCount;
+    const x = 238;
+    const y = 118;
 
-    this._oppDeckPileContainer = this.add.container(x, y).setDepth(3)
-    const base = this.add.rectangle(0, 0, cardW + 10, cardH + 10, 0x07100d, 0.95)
-      .setStrokeStyle(1, 0x2a5a2a)
-    this._oppDeckPileContainer.add(base)
+    this._oppDeckPileContainer = this.add.container(x, y).setDepth(3);
+    const base = this.add
+      .rectangle(0, 0, cardW + 10, cardH + 10, 0x07100d, 0.95)
+      .setStrokeStyle(1, 0x2a5a2a);
+    this._oppDeckPileContainer.add(base);
 
     if (count > 0 && this.textures.exists(CARD_BACK_KEY)) {
-      const visibleCards = Math.min(5, count)
+      const visibleCards = Math.min(5, count);
       for (let i = visibleCards - 1; i >= 0; i--) {
-        const offset = i * 2
-        this._oppDeckPileContainer.add(this.add.image(-offset, -offset, CARD_BACK_KEY).setDisplaySize(cardW, cardH))
+        const offset = i * 2;
+        this._oppDeckPileContainer.add(
+          this.add
+            .image(-offset, -offset, CARD_BACK_KEY)
+            .setDisplaySize(cardW, cardH),
+        );
       }
     } else {
-      this._oppDeckPileContainer.add(this.add.rectangle(0, 0, cardW, cardH, 0x111820, 0.75).setStrokeStyle(1, 0x334455))
+      this._oppDeckPileContainer.add(
+        this.add
+          .rectangle(0, 0, cardW, cardH, 0x111820, 0.75)
+          .setStrokeStyle(1, 0x334455),
+      );
     }
 
-    const badge = this.add.circle(cardW / 2 - 2, cardH / 2 - 4, 14, 0x000000, 0.85).setStrokeStyle(1, 0x4caf50)
-    const countText = this.add.text(cardW / 2 - 2, cardH / 2 - 4, String(count), {
-      fontSize: '13px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
-    const label = this.add.text(0, cardH / 2 + 15, 'DECK OP.', {
-      fontSize: '10px',
-      color: '#7fbf7f',
-    }).setOrigin(0.5)
-    this._oppDeckPileContainer.add([badge, countText, label])
+    const badge = this.add
+      .circle(cardW / 2 - 2, cardH / 2 - 4, 14, 0x000000, 0.85)
+      .setStrokeStyle(1, 0x4caf50);
+    const countText = this.add
+      .text(cardW / 2 - 2, cardH / 2 - 4, String(count), {
+        fontSize: "13px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    const label = this.add
+      .text(0, cardH / 2 + 15, "DECK OP.", {
+        fontSize: "10px",
+        color: "#7fbf7f",
+      })
+      .setOrigin(0.5);
+    this._oppDeckPileContainer.add([badge, countText, label]);
   }
 
   _renderDiscardPile() {
     if (this._discardPileContainer) {
-      this._discardPileContainer.destroy(true)
+      this._discardPileContainer.destroy(true);
     }
 
-    const { width, height } = this.cameras.main
-    const cardW = 72
-    const cardH = 101
-    const count = this.myDiscard.length
-    const x = width - 238
-    const y = height - 228
-    const topCard = this.myDiscard[count - 1]
+    const { width, height } = this.cameras.main;
+    const cardW = 72;
+    const cardH = 101;
+    const count = this.myDiscard.length;
+    const x = width - 238;
+    const y = height - 228;
+    const topCard = this.myDiscard[count - 1];
 
-    this._discardPileContainer = this.add.container(x, y).setDepth(3)
-    const base = this.add.rectangle(0, 0, cardW + 10, cardH + 10, 0x130c0c, 0.92)
-      .setStrokeStyle(1, 0x6a3434)
-    this._discardPileContainer.add(base)
+    this._discardPileContainer = this.add.container(x, y).setDepth(3);
+    const base = this.add
+      .rectangle(0, 0, cardW + 10, cardH + 10, 0x130c0c, 0.92)
+      .setStrokeStyle(1, 0x6a3434);
+    this._discardPileContainer.add(base);
 
     if (topCard) {
-      const key = `card_${topCard.id}`
+      const key = `card_${topCard.id}`;
       const cardImg = this.textures.exists(key)
         ? this.add.image(0, 0, key).setDisplaySize(cardW, cardH)
-        : this.add.rectangle(0, 0, cardW, cardH, topCard.color ?? 0x1a1a2e)
-      this._discardPileContainer.add(cardImg)
+        : this.add.rectangle(0, 0, cardW, cardH, topCard.color ?? 0x1a1a2e);
+      this._discardPileContainer.add(cardImg);
     } else {
-      const empty = this.add.rectangle(0, 0, cardW, cardH, 0x111111, 0.72)
-        .setStrokeStyle(1, 0x553333)
-      this._discardPileContainer.add(empty)
+      const empty = this.add
+        .rectangle(0, 0, cardW, cardH, 0x111111, 0.72)
+        .setStrokeStyle(1, 0x553333);
+      this._discardPileContainer.add(empty);
     }
 
-    const badge = this.add.circle(cardW / 2 - 2, cardH / 2 - 4, 13, 0x000000, 0.85)
-      .setStrokeStyle(1, 0xcc6666)
-    const countText = this.add.text(cardW / 2 - 2, cardH / 2 - 4, String(count), {
-      fontSize: '12px', color: '#ffffff', fontStyle: 'bold',
-    }).setOrigin(0.5)
-    const label = this.add.text(0, cardH / 2 + 17, 'DESCARTE', {
-      fontSize: '10px', color: '#ff9999',
-    }).setOrigin(0.5)
+    const badge = this.add
+      .circle(cardW / 2 - 2, cardH / 2 - 4, 13, 0x000000, 0.85)
+      .setStrokeStyle(1, 0xcc6666);
+    const countText = this.add
+      .text(cardW / 2 - 2, cardH / 2 - 4, String(count), {
+        fontSize: "12px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    const label = this.add
+      .text(0, cardH / 2 + 17, "DESCARTE", {
+        fontSize: "10px",
+        color: "#ff9999",
+      })
+      .setOrigin(0.5);
 
-    this._discardPileContainer.add([badge, countText, label])
-    this._discardPileContainer.setSize(cardW + 12, cardH + 24)
-    this._discardPileContainer.setInteractive({ useHandCursor: true })
-    this._discardPileContainer.on('pointerdown', () => this._openDiscardViewer('my'))
+    this._discardPileContainer.add([badge, countText, label]);
+    this._discardPileContainer.setSize(cardW + 12, cardH + 24);
+    this._discardPileContainer.setInteractive({ useHandCursor: true });
+    this._discardPileContainer.on("pointerdown", () =>
+      this._openDiscardViewer("my"),
+    );
   }
 
   _renderOpponentDiscardPile() {
-    if (this._oppDiscardPileContainer) this._oppDiscardPileContainer.destroy(true)
+    if (this._oppDiscardPileContainer)
+      this._oppDiscardPileContainer.destroy(true);
 
-    const cardW = 72
-    const cardH = 101
-    const count = this.oppDiscard.length
-    const x = 238
-    const y = 256
-    const topCard = this.oppDiscard[count - 1]
+    const cardW = 72;
+    const cardH = 101;
+    const count = this.oppDiscard.length;
+    const x = 238;
+    const y = 256;
+    const topCard = this.oppDiscard[count - 1];
 
-    this._oppDiscardPileContainer = this.add.container(x, y).setDepth(3)
-    const base = this.add.rectangle(0, 0, cardW + 10, cardH + 10, 0x130c0c, 0.92)
-      .setStrokeStyle(1, 0x6a3434)
-    this._oppDiscardPileContainer.add(base)
+    this._oppDiscardPileContainer = this.add.container(x, y).setDepth(3);
+    const base = this.add
+      .rectangle(0, 0, cardW + 10, cardH + 10, 0x130c0c, 0.92)
+      .setStrokeStyle(1, 0x6a3434);
+    this._oppDiscardPileContainer.add(base);
 
     if (topCard) {
-      const key = `card_${topCard.id}`
+      const key = `card_${topCard.id}`;
       const art = this.textures.exists(key)
         ? this.add.image(0, 0, key).setDisplaySize(cardW, cardH)
-        : this.add.rectangle(0, 0, cardW, cardH, topCard.color ?? 0x1a1a2e)
-      this._oppDiscardPileContainer.add(art)
+        : this.add.rectangle(0, 0, cardW, cardH, topCard.color ?? 0x1a1a2e);
+      this._oppDiscardPileContainer.add(art);
     } else {
-      this._oppDiscardPileContainer.add(this.add.rectangle(0, 0, cardW, cardH, 0x111111, 0.72).setStrokeStyle(1, 0x553333))
+      this._oppDiscardPileContainer.add(
+        this.add
+          .rectangle(0, 0, cardW, cardH, 0x111111, 0.72)
+          .setStrokeStyle(1, 0x553333),
+      );
     }
 
-    const badge = this.add.circle(cardW / 2 - 2, cardH / 2 - 4, 13, 0x000000, 0.85).setStrokeStyle(1, 0xcc6666)
-    const countText = this.add.text(cardW / 2 - 2, cardH / 2 - 4, String(count), {
-      fontSize: '12px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
-    const label = this.add.text(0, cardH / 2 + 14, 'DESC. OP.', {
-      fontSize: '10px',
-      color: '#ff9999',
-    }).setOrigin(0.5)
-    this._oppDiscardPileContainer.add([badge, countText, label])
-    this._oppDiscardPileContainer.setSize(cardW + 12, cardH + 24)
-    this._oppDiscardPileContainer.setInteractive({ useHandCursor: true })
-    this._oppDiscardPileContainer.on('pointerdown', () => this._openDiscardViewer('opp'))
+    const badge = this.add
+      .circle(cardW / 2 - 2, cardH / 2 - 4, 13, 0x000000, 0.85)
+      .setStrokeStyle(1, 0xcc6666);
+    const countText = this.add
+      .text(cardW / 2 - 2, cardH / 2 - 4, String(count), {
+        fontSize: "12px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    const label = this.add
+      .text(0, cardH / 2 + 14, "DESC. OP.", {
+        fontSize: "10px",
+        color: "#ff9999",
+      })
+      .setOrigin(0.5);
+    this._oppDiscardPileContainer.add([badge, countText, label]);
+    this._oppDiscardPileContainer.setSize(cardW + 12, cardH + 24);
+    this._oppDiscardPileContainer.setInteractive({ useHandCursor: true });
+    this._oppDiscardPileContainer.on("pointerdown", () =>
+      this._openDiscardViewer("opp"),
+    );
   }
 
   _openDiscardViewer(owner) {
-    if (this._discardViewer) this._discardViewer.destroy(true)
+    if (this._discardViewer) this._discardViewer.destroy(true);
 
-    const cards = owner === 'my' ? this.myDiscard : this.oppDiscard
-    const { width, height } = this.cameras.main
-    const panelW = 640
-    const panelH = 520
-    this._discardViewer = this.add.container(width / 2, height / 2).setDepth(130)
+    const cards = owner === "my" ? this.myDiscard : this.oppDiscard;
+    const { width, height } = this.cameras.main;
+    const panelW = 640;
+    const panelH = 520;
+    this._discardViewer = this.add
+      .container(width / 2, height / 2)
+      .setDepth(130);
 
-    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.55).setInteractive()
-    const panel = this.add.rectangle(0, 0, panelW, panelH, 0x071018, 0.97).setStrokeStyle(2, 0x6a3434)
-    const title = this.add.text(0, -panelH / 2 + 18, owner === 'my' ? 'SEU DESCARTE' : 'DESCARTE DO OPONENTE', {
-      fontSize: '15px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
-    const close = this.add.text(panelW / 2 - 20, -panelH / 2 + 18, 'X', {
-      fontSize: '14px',
-      color: '#ff7777',
-      fontStyle: 'bold',
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    close.on('pointerdown', () => {
-      this._discardViewer.destroy(true)
-      this._discardViewer = null
-    })
-    this._discardViewer.add([overlay, panel, title, close])
+    const overlay = this.add
+      .rectangle(0, 0, width, height, 0x000000, 0.55)
+      .setInteractive();
+    const panel = this.add
+      .rectangle(0, 0, panelW, panelH, 0x071018, 0.97)
+      .setStrokeStyle(2, 0x6a3434);
+    const title = this.add
+      .text(
+        0,
+        -panelH / 2 + 18,
+        owner === "my" ? "SEU DESCARTE" : "DESCARTE DO OPONENTE",
+        {
+          fontSize: "15px",
+          color: "#ffffff",
+          fontStyle: "bold",
+        },
+      )
+      .setOrigin(0.5);
+    const close = this.add
+      .text(panelW / 2 - 20, -panelH / 2 + 18, "X", {
+        fontSize: "14px",
+        color: "#ff7777",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    close.on("pointerdown", () => {
+      this._discardViewer.destroy(true);
+      this._discardViewer = null;
+    });
+    this._discardViewer.add([overlay, panel, title, close]);
 
     if (!cards.length) {
-      this._discardViewer.add(this.add.text(0, 0, 'Descarte vazio.', {
-        fontSize: '13px',
-        color: '#cccccc',
-      }).setOrigin(0.5))
-      return
+      this._discardViewer.add(
+        this.add
+          .text(0, 0, "Descarte vazio.", {
+            fontSize: "13px",
+            color: "#cccccc",
+          })
+          .setOrigin(0.5),
+      );
+      return;
     }
 
-    const visible = cards.slice().reverse().slice(0, 18)
-    const cols = 6
-    const cardW = 74
-    const cardH = 104
-    const gapX = 24
-    const gapY = 30
-    const totalW = cols * cardW + (cols - 1) * gapX
-    const startX = -totalW / 2 + cardW / 2
-    const startY = -panelH / 2 + 88
+    const visible = cards.slice().reverse().slice(0, 18);
+    const cols = 6;
+    const cardW = 74;
+    const cardH = 104;
+    const gapX = 24;
+    const gapY = 30;
+    const totalW = cols * cardW + (cols - 1) * gapX;
+    const startX = -totalW / 2 + cardW / 2;
+    const startY = -panelH / 2 + 88;
 
     visible.forEach((card, i) => {
-      const col = i % cols
-      const row = Math.floor(i / cols)
+      const col = i % cols;
+      const row = Math.floor(i / cols);
       const thumb = this._createCardThumbnail(
         card,
         startX + col * (cardW + gapX),
         startY + row * (cardH + gapY),
         cardW,
         cardH,
-        0x884444
-      )
-      this._discardViewer.add(thumb)
-    })
+        0x884444,
+      );
+      this._discardViewer.add(thumb);
+    });
   }
 
   _createCardThumbnail(card, x, y, w = 78, h = 109, borderColor = 0x4caf50) {
-    const container = this.add.container(x, y)
-    const key = `card_${card.id}`
+    const container = this.add.container(x, y);
+    const key = `card_${card.id}`;
     if (this.textures.exists(key)) {
-      container.add(this.add.image(0, 0, key).setDisplaySize(w, h))
+      container.add(this.add.image(0, 0, key).setDisplaySize(w, h));
     } else {
-      const bg = this.add.rectangle(0, 0, w, h, card.color ?? 0x1a1a2e)
-      const name = this.add.text(0, -h / 2 + 10, card.name ?? card.nome ?? 'Carta', {
-        fontSize: '8px',
-        color: '#ffffff',
-        wordWrap: { width: w - 8 },
-        align: 'center',
-      }).setOrigin(0.5, 0)
-      container.add([bg, name])
+      const bg = this.add.rectangle(0, 0, w, h, card.color ?? 0x1a1a2e);
+      const name = this.add
+        .text(0, -h / 2 + 10, card.name ?? card.nome ?? "Carta", {
+          fontSize: "8px",
+          color: "#ffffff",
+          wordWrap: { width: w - 8 },
+          align: "center",
+        })
+        .setOrigin(0.5, 0);
+      container.add([bg, name]);
     }
 
-    const border = this.add.rectangle(0, 0, w, h, 0x000000, 0)
-      .setStrokeStyle(1.5, borderColor)
-    container.add(border)
-    container.setSize(w, h)
-    return container
+    const border = this.add
+      .rectangle(0, 0, w, h, 0x000000, 0)
+      .setStrokeStyle(1.5, borderColor);
+    container.add(border);
+    container.setSize(w, h);
+    return container;
   }
 
-  _playDiscardSmoke(owner = 'my') {
-    const pile = owner === 'opp' ? this._oppDiscardPileContainer : this._discardPileContainer
-    if (!pile) return
+  _playDiscardSmoke(owner = "my") {
+    const pile =
+      owner === "opp"
+        ? this._oppDiscardPileContainer
+        : this._discardPileContainer;
+    if (!pile) return;
 
-    const baseX = pile.x
-    const baseY = pile.y - 34
+    const baseX = pile.x;
+    const baseY = pile.y - 34;
     for (let i = 0; i < 14; i++) {
-      const puff = this.add.circle(
-        baseX + this._randInt(-24, 24),
-        baseY + this._randInt(-8, 18),
-        this._randInt(7, 14),
-        0xd6d6d6,
-        0.62
-      ).setDepth(90)
+      const puff = this.add
+        .circle(
+          baseX + this._randInt(-24, 24),
+          baseY + this._randInt(-8, 18),
+          this._randInt(7, 14),
+          0xd6d6d6,
+          0.62,
+        )
+        .setDepth(90);
 
       this.tweens.add({
         targets: puff,
@@ -908,47 +1137,50 @@ export default class GameScene extends Scene {
         scale: 1.9,
         alpha: 0,
         duration: this._randInt(620, 980),
-        ease: 'Sine.easeOut',
+        ease: "Sine.easeOut",
         onComplete: () => puff.destroy(),
-      })
+      });
     }
   }
 
   _randInt(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min
+    return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
-  _discardTarget(owner = 'my') {
-    const pile = owner === 'opp' ? this._oppDiscardPileContainer : this._discardPileContainer
-    if (pile) return { x: pile.x, y: pile.y }
+  _discardTarget(owner = "my") {
+    const pile =
+      owner === "opp"
+        ? this._oppDiscardPileContainer
+        : this._discardPileContainer;
+    if (pile) return { x: pile.x, y: pile.y };
 
-    const { width, height } = this.cameras.main
-    return owner === 'opp'
+    const { width, height } = this.cameras.main;
+    return owner === "opp"
       ? { x: 238, y: 256 }
-      : { x: width - 238, y: height - 228 }
+      : { x: width - 238, y: height - 228 };
   }
 
-  _refreshDiscardForOwner(owner = 'my') {
-    if (owner === 'opp') {
-      this._renderOpponentDiscardPile()
-      this._playDiscardSmoke('opp')
-      return
+  _refreshDiscardForOwner(owner = "my") {
+    if (owner === "opp") {
+      this._renderOpponentDiscardPile();
+      this._playDiscardSmoke("opp");
+      return;
     }
 
-    this._renderDiscardPile()
-    this._playDiscardSmoke('my')
+    this._renderDiscardPile();
+    this._playDiscardSmoke("my");
   }
 
-  _animateFieldObjectToDiscard(cardObject, owner = 'my', options = {}) {
+  _animateFieldObjectToDiscard(cardObject, owner = "my", options = {}) {
     if (!cardObject) {
-      this._refreshDiscardForOwner(owner)
-      return
+      this._refreshDiscardForOwner(owner);
+      return;
     }
 
-    const target = this._discardTarget(owner)
-    cardObject.disableInteractive?.()
-    cardObject.removeAllListeners?.()
-    cardObject.setDepth(options.depth ?? 96)
+    const target = this._discardTarget(owner);
+    cardObject.disableInteractive?.();
+    cardObject.removeAllListeners?.();
+    cardObject.setDepth(options.depth ?? 96);
 
     this.tweens.add({
       targets: cardObject,
@@ -959,439 +1191,552 @@ export default class GameScene extends Scene {
       alpha: 0.94,
       delay: options.delay ?? 0,
       duration: options.duration ?? 460,
-      ease: 'Cubic.easeInOut',
+      ease: "Cubic.easeInOut",
       onComplete: () => {
-        cardObject.destroy(true)
-        this._refreshDiscardForOwner(owner)
-        options.onComplete?.()
+        cardObject.destroy(true);
+        this._refreshDiscardForOwner(owner);
+        options.onComplete?.();
       },
-    })
+    });
   }
 
-  _animateCardPreviewToDiscard(card, from, owner = 'my', options = {}) {
+  _animateCardPreviewToDiscard(card, from, owner = "my", options = {}) {
     this._animateCardPreviewTo(card, from, this._discardTarget(owner), {
       startScale: options.startScale ?? 0.82,
       endScale: options.endScale ?? 0.72,
       depth: options.depth ?? 96,
       duration: options.duration ?? 460,
-      ease: 'Cubic.easeInOut',
+      ease: "Cubic.easeInOut",
       onComplete: () => {
-        this._refreshDiscardForOwner(owner)
-        options.onComplete?.()
+        this._refreshDiscardForOwner(owner);
+        options.onComplete?.();
       },
-    })
+    });
   }
 
   _animateFieldObjectVanish(cardObject, options = {}) {
-    if (!cardObject) return
-    cardObject.disableInteractive?.()
-    cardObject.removeAllListeners?.()
-    cardObject.setDepth(options.depth ?? 94)
+    if (!cardObject) return;
+    cardObject.disableInteractive?.();
+    cardObject.removeAllListeners?.();
+    cardObject.setDepth(options.depth ?? 94);
     this.tweens.add({
       targets: cardObject,
       scale: options.scale ?? 0.42,
       alpha: 0,
       duration: options.duration ?? 320,
-      ease: 'Sine.easeIn',
+      ease: "Sine.easeIn",
       onComplete: () => cardObject.destroy(true),
-    })
+    });
   }
 
   _renderOpponentHand() {
     if (this._oppHandContainer) {
-      this._oppHandContainer.destroy(true)
+      this._oppHandContainer.destroy(true);
     }
 
-    const { width } = this.cameras.main
-    const cardW = 68
-    const cardH = 95
-    const gap = 8
-    const count = this._isSoloMode() ? this.oppHand.length : this.oppHandCount
-    const totalW = count * cardW + (count - 1) * gap
-    const startX = (width - totalW) / 2
-    const y = 130
+    const { width } = this.cameras.main;
+    const cardW = 68;
+    const cardH = 95;
+    const gap = 8;
+    const count = this._isSoloMode() ? this.oppHand.length : this.oppHandCount;
+    const totalW = count * cardW + (count - 1) * gap;
+    const startX = (width - totalW) / 2;
+    const y = 130;
 
-    this._oppHandContainer = this.add.container(0, 0)
+    this._oppHandContainer = this.add.container(0, 0);
     for (let i = 0; i < count; i++) {
-      const x = startX + i * (cardW + gap) + cardW / 2
+      const x = startX + i * (cardW + gap) + cardW / 2;
       const back = this.textures.exists(CARD_BACK_KEY)
         ? this.add.image(x, y, CARD_BACK_KEY).setDisplaySize(cardW, cardH)
-        : this.add.rectangle(x, y, cardW, cardH, 0x111820)
-      const border = this.add.rectangle(x, y, cardW, cardH, 0x000000, 0)
-        .setStrokeStyle(1, 0x556070)
-      this._oppHandContainer.add([back, border])
+        : this.add.rectangle(x, y, cardW, cardH, 0x111820);
+      const border = this.add
+        .rectangle(x, y, cardW, cardH, 0x000000, 0)
+        .setStrokeStyle(1, 0x556070);
+      this._oppHandContainer.add([back, border]);
     }
   }
 
   _toggleDeckActions() {
-    this._deckActionsOpen = !this._deckActionsOpen
+    this._deckActionsOpen = !this._deckActionsOpen;
     if (this._deckActionsOpen) {
-      this._renderDeckActions()
+      this._renderDeckActions();
     } else {
-      this._clearDeckActions()
+      this._clearDeckActions();
     }
   }
 
   _clearDeckActions() {
     if (this._deckActionsContainer) {
-      this._deckActionsContainer.destroy(true)
-      this._deckActionsContainer = null
+      this._deckActionsContainer.destroy(true);
+      this._deckActionsContainer = null;
     }
   }
 
   _closeDeckActionsSmooth(onComplete = null) {
     if (!this._deckActionsContainer) {
-      onComplete?.()
-      return
+      onComplete?.();
+      return;
     }
 
-    const menu = this._deckActionsContainer
-    this._deckActionsOpen = false
-    menu.disableInteractive?.()
+    const menu = this._deckActionsContainer;
+    this._deckActionsOpen = false;
+    menu.disableInteractive?.();
     this.tweens.add({
       targets: menu,
       alpha: 0,
       x: menu.x - 10,
       duration: 140,
-      ease: 'Sine.easeInOut',
+      ease: "Sine.easeInOut",
       onComplete: () => {
         if (this._deckActionsContainer === menu) {
-          this._deckActionsContainer.destroy(true)
-          this._deckActionsContainer = null
+          this._deckActionsContainer.destroy(true);
+          this._deckActionsContainer = null;
         }
-        onComplete?.()
+        onComplete?.();
       },
-    })
+    });
   }
 
   _renderDeckActions() {
-    this._clearDeckActions()
+    this._clearDeckActions();
 
-    const x = this._deckPileContainer.x - 122
-    const y = this._deckPileContainer.y - 92
+    const x = this._deckPileContainer.x - 122;
+    const y = this._deckPileContainer.y - 92;
     const actions = [
-      { label: 'COMPRAR', fn: () => this._drawCard() },
-      { label: 'EMBARALHAR', fn: () => this._shuffleDeck() },
-      { label: 'DESCARTAR', fn: () => this._discardTop() },
-      { label: 'EXILAR', fn: () => this._exileTop() },
-      { label: 'VER BARALHO', fn: () => this._viewDeck() },
-      { label: 'REVELAR TOP', fn: () => this._revealTop() },
-    ]
+      { label: "COMPRAR", fn: () => this._drawCard() },
+      { label: "EMBARALHAR", fn: () => this._shuffleDeck() },
+      { label: "DESCARTAR", fn: () => this._discardTop() },
+      { label: "EXILAR", fn: () => this._exileTop() },
+      { label: "VER BARALHO", fn: () => this._viewDeck() },
+      { label: "REVELAR TOP", fn: () => this._revealTop() },
+    ];
 
-    this._deckActionsContainer = this.add.container(x, y).setDepth(30)
+    this._deckActionsContainer = this.add.container(x, y).setDepth(30);
     actions.forEach((action, i) => {
-      const btn = this.add.text(0, i * 28, action.label, {
-        fontSize: '11px',
-        color: '#ffffff',
-        backgroundColor: '#162337',
-        padding: { x: 10, y: 5 },
-        fixedWidth: 104,
-        align: 'center',
-      }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true })
-      btn.on('pointerover', () => btn.setStyle({ backgroundColor: '#22405f' }))
-      btn.on('pointerout',  () => btn.setStyle({ backgroundColor: '#162337' }))
-      btn.on('pointerdown', () => this._closeDeckActionsSmooth(action.fn))
-      this._deckActionsContainer.add(btn)
-    })
+      const btn = this.add
+        .text(0, i * 28, action.label, {
+          fontSize: "11px",
+          color: "#ffffff",
+          backgroundColor: "#162337",
+          padding: { x: 10, y: 5 },
+          fixedWidth: 104,
+          align: "center",
+        })
+        .setOrigin(0, 0.5)
+        .setInteractive({ useHandCursor: true });
+      btn.on("pointerover", () => btn.setStyle({ backgroundColor: "#22405f" }));
+      btn.on("pointerout", () => btn.setStyle({ backgroundColor: "#162337" }));
+      btn.on("pointerdown", () => this._closeDeckActionsSmooth(action.fn));
+      this._deckActionsContainer.add(btn);
+    });
   }
 
   _renderHand(cards) {
-    this._clearMagnifier()
-    this._clearCardActionMenu()
-    this._clearSummonZones()
-    this._clearAttachmentTargets()
-    this._clearSpecialSummonTargets()
-    this._clearGenericSlotChoice()
-    this._pendingSummonCard = null
-    this._pendingAttachmentCard = null
-    this._pendingHandAbilityCard = null
-    this._pendingHandAbility = null
-    this._pendingSpecialSummon = null
-    this._handContainers.forEach(card => card.destroy(true))
-    this._handContainers = []
+    this._clearMagnifier();
+    this._clearCardActionMenu();
+    this._clearSummonZones();
+    this._clearAttachmentTargets();
+    this._clearSpecialSummonTargets();
+    this._clearGenericSlotChoice();
+    this._pendingSummonCard = null;
+    this._pendingAttachmentCard = null;
+    this._pendingHandAbilityCard = null;
+    this._pendingHandAbility = null;
+    this._pendingSpecialSummon = null;
+    this._handContainers.forEach((card) => card.destroy(true));
+    this._handContainers = [];
 
-    const { width, height } = this.cameras.main
-    const y = height - 65
-    const positions = this._handPositions(cards.length)
+    const { width, height } = this.cameras.main;
+    const y = height - 65;
+    const positions = this._handPositions(cards.length);
 
     cards.forEach((cardData, i) => {
-      this._handContainers.push(this._createCardObject(cardData, positions[i], y, true))
-    })
+      this._handContainers.push(
+        this._createCardObject(cardData, positions[i], y, true),
+      );
+    });
   }
 
   _handPositions(count) {
-    const { width } = this.cameras.main
-    const cardW = 80
-    const gap = 10
-    const totalW = count * cardW + Math.max(0, count - 1) * gap
-    const startX = (width - totalW) / 2
+    const { width } = this.cameras.main;
+    const cardW = 80;
+    const gap = 10;
+    const totalW = count * cardW + Math.max(0, count - 1) * gap;
+    const startX = (width - totalW) / 2;
 
-    return Array.from({ length: count }, (_, i) => startX + i * (cardW + gap) + cardW / 2)
+    return Array.from(
+      { length: count },
+      (_, i) => startX + i * (cardW + gap) + cardW / 2,
+    );
   }
 
   _showMagnifier(cardObject) {
-    this._clearCardActionMenu()
-    this._clearMagnifier()
+    this._clearCardActionMenu();
+    this._clearMagnifier();
 
-    const cardData = cardObject.getData('cardData')
-    this._magnifierButton = this.add.container(cardObject.x, cardObject.y).setDepth(35)
-    const bg = this.add.circle(0, 0, 18, 0x000000, 0.78)
-      .setStrokeStyle(2, 0xffffff)
-    const icon = this.add.text(0, -1, '🔍', {
-      fontSize: '18px',
-      color: '#ffffff',
-    }).setOrigin(0.5)
-    this._magnifierButton.add([bg, icon])
-    this._magnifierButton.setSize(36, 36)
-    this._magnifierButton.setInteractive({ useHandCursor: true })
-    this._magnifierButton.setData('floatingMenuControl', true)
-    this._magnifierButton.on('pointerdown', (pointer, localX, localY, event) => {
-      event?.stopPropagation()
-      this._openCardInspectPanel(cardData)
-      this._clearMagnifier()
-    })
+    const cardData = cardObject.getData("cardData");
+    this._magnifierButton = this.add
+      .container(cardObject.x, cardObject.y)
+      .setDepth(35);
+    const bg = this.add
+      .circle(0, 0, 18, 0x000000, 0.78)
+      .setStrokeStyle(2, 0xffffff);
+    const icon = this.add
+      .text(0, -1, "🔍", {
+        fontSize: "18px",
+        color: "#ffffff",
+      })
+      .setOrigin(0.5);
+    this._magnifierButton.add([bg, icon]);
+    this._magnifierButton.setSize(36, 36);
+    this._magnifierButton.setInteractive({ useHandCursor: true });
+    this._magnifierButton.setData("floatingMenuControl", true);
+    this._magnifierButton.on(
+      "pointerdown",
+      (pointer, localX, localY, event) => {
+        event?.stopPropagation();
+        this._openCardInspectPanel(cardData);
+        this._clearMagnifier();
+      },
+    );
   }
 
   _handleCardClick(cardObject) {
-    if (cardObject.getData('source') === 'field' && this._pendingSlotChoice) {
-      const mySlot = this._slotsMy.find(s => s.cardObject === cardObject)
+    if (cardObject.getData("source") === "field" && this._pendingSlotChoice) {
+      const mySlot = this._slotsMy.find((s) => s.cardObject === cardObject);
       if (mySlot) {
-        this._selectGenericSlotChoice('my', this._slotsMy.indexOf(mySlot))
-        return
+        this._selectGenericSlotChoice("my", this._slotsMy.indexOf(mySlot));
+        return;
       }
-      const oppSlot = this._slotsOpp.find(s => s.cardObject === cardObject)
+      const oppSlot = this._slotsOpp.find((s) => s.cardObject === cardObject);
       if (oppSlot) {
-        this._selectGenericSlotChoice('opp', this._slotsOpp.indexOf(oppSlot))
-        return
+        this._selectGenericSlotChoice("opp", this._slotsOpp.indexOf(oppSlot));
+        return;
       }
     }
 
-    if (cardObject.getData('source') === 'field' && this._pendingAttackSlot) {
-      const oppSlot = this._slotsOpp.find(s => s.cardObject === cardObject)
+    if (cardObject.getData("source") === "field" && this._pendingAttackSlot) {
+      const oppSlot = this._slotsOpp.find((s) => s.cardObject === cardObject);
       if (oppSlot) {
-        this._selectAttackTarget('opp', this._slotsOpp.indexOf(oppSlot))
-        return
+        this._selectAttackTarget("opp", this._slotsOpp.indexOf(oppSlot));
+        return;
       }
     }
 
-    if (cardObject.getData('source') === 'field' && this._pendingSpecialSummon) {
-      const slot = this._slotsMy.find(s => s.cardObject === cardObject)
-      if (slot) this._selectSpecialSummonTarget('my', this._slotsMy.indexOf(slot))
-      return
+    if (
+      cardObject.getData("source") === "field" &&
+      this._pendingSpecialSummon
+    ) {
+      const slot = this._slotsMy.find((s) => s.cardObject === cardObject);
+      if (slot)
+        this._selectSpecialSummonTarget("my", this._slotsMy.indexOf(slot));
+      return;
     }
 
-    if (cardObject.getData('source') === 'field' && this._pendingCommandCard) {
-      const slot = this._slotsMy.find(s => s.cardObject === cardObject)
-      if (slot) this._selectCommandTarget('my', this._slotsMy.indexOf(slot))
-      return
+    if (cardObject.getData("source") === "field" && this._pendingCommandCard) {
+      const slot = this._slotsMy.find((s) => s.cardObject === cardObject);
+      if (slot) this._selectCommandTarget("my", this._slotsMy.indexOf(slot));
+      return;
     }
 
-    if (cardObject.getData('source') === 'field' && this._attachPendingToTarget(cardObject)) {
-      return
+    if (
+      cardObject.getData("source") === "field" &&
+      this._attachPendingToTarget(cardObject)
+    ) {
+      return;
     }
-    this._showCardActions(cardObject)
+    this._showCardActions(cardObject);
   }
 
   _clearMagnifier() {
     if (this._magnifierButton) {
-      this._magnifierButton.destroy(true)
-      this._magnifierButton = null
+      this._magnifierButton.destroy(true);
+      this._magnifierButton = null;
     }
   }
 
   _showCardActions(cardObject) {
-    this._clearCardActionMenu()
-    this._clearMagnifier()
-    this._clearAttachmentReplaceChoice()
-    this._clearSummonZones()
-    this._clearAttachmentTargets()
-    this._clearSpecialSummonTargets()
-    this._clearGenericSlotChoice()
-    this._clearCommandTargets()
-    this._clearAbilityTargets()
-    this._pendingAttachmentCard = null
-    this._pendingCommandCard = null
-    this._pendingCommandEffect = null
-    this._pendingAbilityEffect = null
-    this._pendingAbilitySourceSlot = null
-    this._pendingAbilitySource = null
-    this._pendingHandAbilityCard = null
-    this._pendingHandAbility = null
-    this._pendingSpecialSummon = null
-    this._pendingSlotChoice = null
-    this._pendingAttackSlot = null
-    this._clearAttackTargets()
+    this._clearCardActionMenu();
+    this._clearMagnifier();
+    this._clearAttachmentReplaceChoice();
+    this._clearSummonZones();
+    this._clearAttachmentTargets();
+    this._clearSpecialSummonTargets();
+    this._clearGenericSlotChoice();
+    this._clearCommandTargets();
+    this._clearAbilityTargets();
+    this._pendingAttachmentCard = null;
+    this._pendingCommandCard = null;
+    this._pendingCommandEffect = null;
+    this._pendingAbilityEffect = null;
+    this._pendingAbilitySourceSlot = null;
+    this._pendingAbilitySource = null;
+    this._pendingHandAbilityCard = null;
+    this._pendingHandAbility = null;
+    this._pendingSpecialSummon = null;
+    this._pendingSlotChoice = null;
+    this._pendingAttackSlot = null;
+    this._clearAttackTargets();
 
-    const card = cardObject.getData('cardData')
-    const source = cardObject.getData('source')
-    const isMyFieldCard = source === 'field' && this._slotsMy.some(slot => slot.cardObject === cardObject)
+    const card = cardObject.getData("cardData");
+    const source = cardObject.getData("source");
+    const isMyFieldCard =
+      source === "field" &&
+      this._slotsMy.some((slot) => slot.cardObject === cardObject);
     const actions = [
-      { label: 'LUPA', color: '#22405f', fn: () => this._openCardInspectPanel(card) },
-    ]
-    if (source === 'hand') {
+      {
+        label: "LUPA",
+        color: "#22405f",
+        fn: () => this._openCardInspectPanel(card),
+      },
+    ];
+    if (source === "hand") {
       if (this._mustDiscardBeforeDraw && this.myHand.length >= MAX_HAND_SIZE) {
-        actions.push({ label: 'DESCARTAR', color: '#7a2323', fn: () => this._discardFromHand(cardObject) })
+        actions.push({
+          label: "DESCARTAR",
+          color: "#7a2323",
+          fn: () => this._discardFromHand(cardObject),
+        });
       }
-      const handAbilities = this._handCreatureAbilities(cardObject)
+      const handAbilities = this._handCreatureAbilities(cardObject);
       if (handAbilities.length) {
-        actions.unshift({ label: 'ATIVAR', color: '#8a4a12', fn: () => this._activateHandCreatureAbility(cardObject) })
+        actions.unshift({
+          label: "ATIVAR",
+          color: "#8a4a12",
+          fn: () => this._activateHandCreatureAbility(cardObject),
+        });
       }
-      if (card.card_type === 'criatura' && this._canUseMainAction('summon') && this._canNormalSummonCard(card)) {
-        actions.unshift({ label: 'INVOCAR', color: '#1b5e20', fn: () => this._startSummonSelection(cardObject) })
-      } else if (card.card_type === 'comando') {
-        actions.unshift({ label: 'ATIVAR', color: '#8a4a12', fn: () => this._activateCommand(cardObject) })
-      } else if (card.card_type === 'cenario' && this._canUseMainAction('scenario')) {
-        actions.unshift({ label: 'ATIVAR', color: '#1f6f5b', fn: () => this._activateScenario(cardObject) })
-      } else if (this._isAttachmentCard(card) && this._canUseMainAction('attach') && this._attachmentTargets(card).length) {
-        actions.unshift({ label: 'ANEXAR', color: '#6a3d9a', fn: () => this._startAttachmentSelection(cardObject) })
+      if (
+        card.card_type === "criatura" &&
+        this._canUseMainAction("summon") &&
+        this._canNormalSummonCard(card)
+      ) {
+        actions.unshift({
+          label: "INVOCAR",
+          color: "#1b5e20",
+          fn: () => this._startSummonSelection(cardObject),
+        });
+      } else if (card.card_type === "comando") {
+        actions.unshift({
+          label: "ATIVAR",
+          color: "#8a4a12",
+          fn: () => this._activateCommand(cardObject),
+        });
+      } else if (
+        card.card_type === "cenario" &&
+        this._canUseMainAction("scenario")
+      ) {
+        actions.unshift({
+          label: "ATIVAR",
+          color: "#1f6f5b",
+          fn: () => this._activateScenario(cardObject),
+        });
+      } else if (
+        this._isAttachmentCard(card) &&
+        this._canUseMainAction("attach") &&
+        this._attachmentTargets(card).length
+      ) {
+        actions.unshift({
+          label: "ANEXAR",
+          color: "#6a3d9a",
+          fn: () => this._startAttachmentSelection(cardObject),
+        });
       }
-    } else if (source === 'field' && isMyFieldCard) {
+    } else if (source === "field" && isMyFieldCard) {
       if (this._fieldCreatureAbilities(cardObject).length) {
-        actions.unshift({ label: 'ATIVAR', color: '#8a4a12', fn: () => this._activateFieldCreatureAbility(cardObject) })
+        actions.unshift({
+          label: "ATIVAR",
+          color: "#8a4a12",
+          fn: () => this._activateFieldCreatureAbility(cardObject),
+        });
       }
       if (this._canAttackWith(cardObject)) {
-        actions.unshift({ label: 'ATACAR', color: '#9a2f22', fn: () => this._startAttack(cardObject) })
+        actions.unshift({
+          label: "ATACAR",
+          color: "#9a2f22",
+          fn: () => this._startAttack(cardObject),
+        });
       }
-    } else if (source === 'attachment' && this._activatableAbilities(cardObject).length) {
-      actions.unshift({ label: 'ATIVAR', color: '#8a4a12', fn: () => this._openAbilityElementChoice(cardObject) })
+    } else if (
+      source === "attachment" &&
+      this._activatableAbilities(cardObject).length
+    ) {
+      actions.unshift({
+        label: "ATIVAR",
+        color: "#8a4a12",
+        fn: () => this._openAbilityElementChoice(cardObject),
+      });
     }
 
-    this._cardActionMenu = this.add.container(cardObject.x, cardObject.y - 72).setDepth(38)
+    this._cardActionMenu = this.add
+      .container(cardObject.x, cardObject.y - 72)
+      .setDepth(38);
     actions.forEach((action, i) => {
-      const btn = this.add.text((i - (actions.length - 1) / 2) * 78, 0, action.label, {
-        fontSize: '11px',
-        color: '#ffffff',
-        backgroundColor: action.color,
-        padding: { x: 10, y: 6 },
-      }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-      btn.setData('floatingMenuControl', true)
-      btn.on('pointerover', () => btn.setStyle({ backgroundColor: '#2f6f8f' }))
-      btn.on('pointerout',  () => btn.setStyle({ backgroundColor: action.color }))
-      btn.on('pointerdown', () => {
-        this._clearCardActionMenu()
-        action.fn()
-      })
-      this._cardActionMenu.add(btn)
-    })
+      const btn = this.add
+        .text((i - (actions.length - 1) / 2) * 78, 0, action.label, {
+          fontSize: "11px",
+          color: "#ffffff",
+          backgroundColor: action.color,
+          padding: { x: 10, y: 6 },
+        })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+      btn.setData("floatingMenuControl", true);
+      btn.on("pointerover", () => btn.setStyle({ backgroundColor: "#2f6f8f" }));
+      btn.on("pointerout", () =>
+        btn.setStyle({ backgroundColor: action.color }),
+      );
+      btn.on("pointerdown", () => {
+        this._clearCardActionMenu();
+        action.fn();
+      });
+      this._cardActionMenu.add(btn);
+    });
   }
 
   _isMyMainPhase() {
-    return this._activePlayer === 'my' && this._currentPhase === 'main' && !this._gameOver
+    return (
+      this._activePlayer === "my" &&
+      this._currentPhase === "main" &&
+      !this._gameOver
+    );
   }
 
   _isMyBattlePhase() {
-    return this._activePlayer === 'my' && this._currentPhase === 'battle' && !this._gameOver
+    return (
+      this._activePlayer === "my" &&
+      this._currentPhase === "battle" &&
+      !this._gameOver
+    );
   }
 
   _canUseMainAction(type) {
-    return canUseMainAction({
-      activePlayer: this._activePlayer,
-      currentPhase: this._currentPhase,
-      gameOver: this._gameOver,
-      turnActions: this._turnActions,
-    }, type)
+    return canUseMainAction(
+      {
+        activePlayer: this._activePlayer,
+        currentPhase: this._currentPhase,
+        gameOver: this._gameOver,
+        turnActions: this._turnActions,
+      },
+      type,
+    );
   }
 
   _canAttackWith(cardObject) {
-    const slot = this._slotsMy.find(s => s.cardObject === cardObject)
-    return canCreatureAttack({
-      activePlayer: this._activePlayer,
-      currentPhase: this._currentPhase,
-      gameOver: this._gameOver,
-      turnNumber: this._turnNumber,
-      actor: 'my',
-    }, slot?.card)
+    const slot = this._slotsMy.find((s) => s.cardObject === cardObject);
+    return canCreatureAttack(
+      {
+        activePlayer: this._activePlayer,
+        currentPhase: this._currentPhase,
+        gameOver: this._gameOver,
+        turnNumber: this._turnNumber,
+        actor: "my",
+      },
+      slot?.card,
+    );
   }
 
   _startAttack(cardObject) {
-    const slot = this._slotsMy.find(s => s.cardObject === cardObject)
+    const slot = this._slotsMy.find((s) => s.cardObject === cardObject);
     if (!slot?.card || !this._canAttackWith(cardObject)) {
-      this._toast('Esta criatura não pode atacar agora.')
-      return
+      this._toast("Esta criatura não pode atacar agora.");
+      return;
     }
 
-    const enemyCreatures = this._slotsOpp.filter(s => s.card)
-    const validTargets = enemyCreatures.filter(s => this._canBeAttackTarget(s))
+    const enemyCreatures = this._slotsOpp.filter((s) => s.card);
+    const validTargets = enemyCreatures.filter((s) =>
+      this._canBeAttackTarget(s),
+    );
     if (!enemyCreatures.length) {
-      this._resolveDirectAttack(slot)
-      return
+      this._resolveDirectAttack(slot);
+      return;
     }
     if (!validTargets.length) {
-      this._toast('Não há alvos válidos para atacar.')
-      return
+      this._toast("Não há alvos válidos para atacar.");
+      return;
     }
 
-    this._clearBattleAttackButtons()
-    this._pendingAttackSlot = slot
-    this._highlightAttackTargets(validTargets)
-    this._toast('Escolha a criatura inimiga alvo.')
+    this._clearBattleAttackButtons();
+    this._pendingAttackSlot = slot;
+    this._highlightAttackTargets(validTargets);
+    this._toast("Escolha a criatura inimiga alvo.");
   }
 
   _canBeAttackTarget(slot) {
-    if (!slot?.card) return false
-    return (slot.card.cannotBeAttackTargetUntilTurn ?? 0) < this._turnNumber
+    if (!slot?.card) return false;
+    return (slot.card.cannotBeAttackTargetUntilTurn ?? 0) < this._turnNumber;
   }
 
   _renderBattleAttackButtons() {
-    this._clearBattleAttackButtons()
-    if (!this._isMyBattlePhase()) return
+    this._clearBattleAttackButtons();
+    if (!this._isMyBattlePhase()) return;
 
-    let attackCount = 0
-    this._slotsMy.forEach(slot => {
-      if (!slot.cardObject || !this._canAttackWith(slot.cardObject)) return
-      attackCount += 1
+    let attackCount = 0;
+    this._slotsMy.forEach((slot) => {
+      if (!slot.cardObject || !this._canAttackWith(slot.cardObject)) return;
+      attackCount += 1;
 
-      const btn = this.add.container(slot.x, slot.y - slot.h / 2 - 18).setDepth(42)
-      const bg = this.add.rectangle(0, 0, 92, 28, 0x8a2418, 0.95)
-        .setStrokeStyle(1, 0xffc0a8)
-      const label = this.add.text(0, 0, '⚔ ATACAR', {
-        fontSize: '11px',
-        color: '#ffffff',
-        fontStyle: 'bold',
-      }).setOrigin(0.5)
-      btn.add([bg, label])
-      btn.setSize(92, 28)
-      btn.setInteractive({ useHandCursor: true })
-      btn.on('pointerover', () => bg.setFillStyle(0xb83222, 0.98))
-      btn.on('pointerout', () => bg.setFillStyle(0x8a2418, 0.95))
-      btn.on('pointerdown', () => this._startAttack(slot.cardObject))
-      this._battleAttackButtons.push(btn)
-    })
+      const btn = this.add
+        .container(slot.x, slot.y - slot.h / 2 - 18)
+        .setDepth(42);
+      const bg = this.add
+        .rectangle(0, 0, 92, 28, 0x8a2418, 0.95)
+        .setStrokeStyle(1, 0xffc0a8);
+      const label = this.add
+        .text(0, 0, "⚔ ATACAR", {
+          fontSize: "11px",
+          color: "#ffffff",
+          fontStyle: "bold",
+        })
+        .setOrigin(0.5);
+      btn.add([bg, label]);
+      btn.setSize(92, 28);
+      btn.setInteractive({ useHandCursor: true });
+      btn.on("pointerover", () => bg.setFillStyle(0xb83222, 0.98));
+      btn.on("pointerout", () => bg.setFillStyle(0x8a2418, 0.95));
+      btn.on("pointerdown", () => this._startAttack(slot.cardObject));
+      this._battleAttackButtons.push(btn);
+    });
 
-    this._updatePhaseButtonGlow(attackCount === 0)
+    this._updatePhaseButtonGlow(attackCount === 0);
   }
 
   _clearBattleAttackButtons() {
-    this._battleAttackButtons?.forEach(button => button.destroy(true))
-    this._battleAttackButtons = []
-    this._updatePhaseButtonGlow(false)
+    this._battleAttackButtons?.forEach((button) => button.destroy(true));
+    this._battleAttackButtons = [];
+    this._updatePhaseButtonGlow(false);
   }
 
   _updatePhaseButtonGlow(shouldGlow) {
-    if (!this._phaseButton) return
+    if (!this._phaseButton) return;
+    if (this._activePlayer !== "my" || !this._phaseButton.visible)
+      shouldGlow = false;
 
     if (!shouldGlow) {
       if (this._phaseButtonGlow) {
-        this.tweens.killTweensOf(this._phaseButtonGlow)
-        this._phaseButtonGlow.destroy()
-        this._phaseButtonGlow = null
+        this.tweens.killTweensOf(this._phaseButtonGlow);
+        this._phaseButtonGlow.destroy();
+        this._phaseButtonGlow = null;
       }
-      this.tweens.killTweensOf(this._phaseButton)
-      this._phaseButton.setAlpha(1).setScale(1)
-      return
+      this.tweens.killTweensOf(this._phaseButton);
+      this._phaseButton.setAlpha(1).setScale(1);
+      return;
     }
 
-    if (this._phaseButtonGlow) return
+    if (this._phaseButtonGlow) return;
 
-    const bounds = this._phaseButton.getBounds()
-    this._phaseButtonGlow = this.add.rectangle(
-      bounds.centerX,
-      bounds.centerY,
-      bounds.width + 18,
-      bounds.height + 14,
-      0x000000,
-      0
-    ).setStrokeStyle(3, 0xffdd44).setDepth(this._phaseButton.depth - 1)
+    const bounds = this._phaseButton.getBounds();
+    this._phaseButtonGlow = this.add
+      .rectangle(
+        bounds.centerX,
+        bounds.centerY,
+        bounds.width + 18,
+        bounds.height + 14,
+        0x000000,
+        0,
+      )
+      .setStrokeStyle(3, 0xffdd44)
+      .setDepth(this._phaseButton.depth - 1);
 
     this.tweens.add({
       targets: [this._phaseButtonGlow, this._phaseButton],
@@ -1401,17 +1746,18 @@ export default class GameScene extends Scene {
       duration: 520,
       yoyo: true,
       repeat: -1,
-      ease: 'Sine.easeInOut',
-    })
+      ease: "Sine.easeInOut",
+    });
   }
 
   _highlightAttackTargets(targets) {
-    this._clearAttackTargets()
-    targets.forEach(slot => {
-      const highlight = this.add.rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
+    this._clearAttackTargets();
+    targets.forEach((slot) => {
+      const highlight = this.add
+        .rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
         .setStrokeStyle(3, 0xff3333)
-        .setDepth(7)
-      slot.attackHighlight = highlight
+        .setDepth(7);
+      slot.attackHighlight = highlight;
       this.tweens.add({
         targets: highlight,
         scaleX: 1.08,
@@ -1420,161 +1766,221 @@ export default class GameScene extends Scene {
         duration: 340,
         yoyo: true,
         repeat: -1,
-        ease: 'Sine.easeInOut',
-      })
-    })
+        ease: "Sine.easeInOut",
+      });
+    });
   }
 
   _clearAttackTargets() {
-    this._slotsOpp?.forEach(slot => {
-      if (!slot.attackHighlight) return
-      this.tweens.killTweensOf(slot.attackHighlight)
-      slot.attackHighlight.destroy()
-      slot.attackHighlight = null
-    })
+    this._slotsOpp?.forEach((slot) => {
+      if (!slot.attackHighlight) return;
+      this.tweens.killTweensOf(slot.attackHighlight);
+      slot.attackHighlight.destroy();
+      slot.attackHighlight = null;
+    });
   }
 
   _selectAttackTarget(side, slotIndex) {
-    if (!this._pendingAttackSlot || side !== 'opp') return
-    const targetSlot = this._slotsOpp[slotIndex]
-    if (!targetSlot?.card) return
+    if (!this._pendingAttackSlot || side !== "opp") return;
+    const targetSlot = this._slotsOpp[slotIndex];
+    if (!targetSlot?.card) return;
     if (!this._canBeAttackTarget(targetSlot)) {
-      this._toast(`${targetSlot.card.name} não pode ser alvo de ataques neste turno.`)
-      return
+      this._toast(
+        `${targetSlot.card.name} não pode ser alvo de ataques neste turno.`,
+      );
+      return;
     }
 
-    this._resolveCreatureAttack(this._pendingAttackSlot, targetSlot)
-    this._pendingAttackSlot = null
-    this._clearAttackTargets()
-    this._renderBattleAttackButtons()
+    this._resolveCreatureAttack(this._pendingAttackSlot, targetSlot);
+    this._pendingAttackSlot = null;
+    this._clearAttackTargets();
+    this._renderBattleAttackButtons();
   }
 
   _updateDirectDamageHeader() {
-    if (this._directDamageTextMy) this._directDamageTextMy.setText(`Dano: ${this._directDamage.my}/5`)
-    if (this._directDamageTextOpp) this._directDamageTextOpp.setText(`Dano: ${this._directDamage.opp}/5`)
+    if (this._directDamageTextMy)
+      this._directDamageTextMy.setText(`Dano: ${this._directDamage.my}/5`);
+    if (this._directDamageTextOpp)
+      this._directDamageTextOpp.setText(`Dano: ${this._directDamage.opp}/5`);
   }
 
   _resolveDirectAttack(attackerSlot) {
-    const attacker = attackerSlot.card
-    const damage = attacker.currentStats?.attack ?? attacker.attack ?? 0
-    attacker.hasAttackedTurn = this._turnNumber
-    this._resolveAttachedCreatureAttackTriggers(attackerSlot, 'my')
-    this._directDamage.opp += damage
-    this._recordDamage(attacker, null, damage)
+    const attacker = attackerSlot.card;
+    const damage = attacker.currentStats?.attack ?? attacker.attack ?? 0;
+    attacker.hasAttackedTurn = this._turnNumber;
+    this._resolveAttachedCreatureAttackTriggers(attackerSlot, "my");
+    this._directDamage.opp += damage;
+    this._recordDamage(attacker, null, damage);
 
     while (this._directDamage.opp >= 5) {
-      this._directDamage.opp -= 5
-      this._addScore('my', 1)
+      this._directDamage.opp -= 5;
+      this._addScore("my", 1);
     }
-    this._updateDirectDamageHeader()
+    this._updateDirectDamageHeader();
 
-    this._toast(`${attacker.name} causou ${damage} de dano direto.`)
-    this._logAction(`${attacker.name} causou ${damage} de dano direto.`)
-    this._renderBattleAttackButtons()
+    this._toast(`${attacker.name} causou ${damage} de dano direto.`);
+    this._logAction(`${attacker.name} causou ${damage} de dano direto.`);
+    this._renderBattleAttackButtons();
   }
 
   _resolveOpponentDirectAttack(attackerSlot) {
-    const attacker = attackerSlot.card
-    const damage = attacker.currentStats?.attack ?? attacker.attack ?? 0
-    attacker.hasAttackedTurn = this._turnNumber
-    this._resolveAttachedCreatureAttackTriggers(attackerSlot, 'opp')
-    this._directDamage.my += damage
-    this._recordDamage(attacker, null, damage)
+    const attacker = attackerSlot.card;
+    const damage = attacker.currentStats?.attack ?? attacker.attack ?? 0;
+    attacker.hasAttackedTurn = this._turnNumber;
+    this._resolveAttachedCreatureAttackTriggers(attackerSlot, "opp");
+    this._directDamage.my += damage;
+    this._recordDamage(attacker, null, damage);
 
     while (this._directDamage.my >= 5) {
-      this._directDamage.my -= 5
-      this._addScore('opp', 1)
+      this._directDamage.my -= 5;
+      this._addScore("opp", 1);
     }
-    this._updateDirectDamageHeader()
+    this._updateDirectDamageHeader();
 
-    this._toast(`${attacker.name} causou ${damage} de dano direto.`)
-    this._logAction(`${attacker.name} causou ${damage} de dano direto ao jogador.`)
+    this._toast(`${attacker.name} causou ${damage} de dano direto.`);
+    this._logAction(
+      `${attacker.name} causou ${damage} de dano direto ao jogador.`,
+    );
   }
 
   _resolveCreatureAttack(attackerSlot, defenderSlot) {
-    this._resolveCreatureBattle(attackerSlot, this._slotsMy, defenderSlot, this._slotsOpp)
+    this._resolveCreatureBattle(
+      attackerSlot,
+      this._slotsMy,
+      defenderSlot,
+      this._slotsOpp,
+    );
   }
 
   _resolveOpponentCreatureAttack(attackerSlot, defenderSlot) {
-    this._resolveCreatureBattle(attackerSlot, this._slotsOpp, defenderSlot, this._slotsMy)
+    this._resolveCreatureBattle(
+      attackerSlot,
+      this._slotsOpp,
+      defenderSlot,
+      this._slotsMy,
+    );
   }
 
-  _resolveCreatureBattle(attackerSlot, attackerSlots, defenderSlot, defenderSlots) {
-    const attacker = attackerSlot.card
-    const defender = defenderSlot.card
-    const atkDamage = this._combatDamageAfterReduction(defenderSlot, defenderSlots, attacker.currentStats?.attack ?? attacker.attack ?? 0)
-    const defDamage = this._combatDamageAfterReduction(attackerSlot, attackerSlots, defender.currentStats?.attack ?? defender.attack ?? 0)
+  _resolveCreatureBattle(
+    attackerSlot,
+    attackerSlots,
+    defenderSlot,
+    defenderSlots,
+  ) {
+    const attacker = attackerSlot.card;
+    const defender = defenderSlot.card;
+    const atkDamage = this._combatDamageAfterReduction(
+      defenderSlot,
+      defenderSlots,
+      attacker.currentStats?.attack ?? attacker.attack ?? 0,
+    );
+    const defDamage = this._combatDamageAfterReduction(
+      attackerSlot,
+      attackerSlots,
+      defender.currentStats?.attack ?? defender.attack ?? 0,
+    );
 
-    attacker.hasAttackedTurn = this._turnNumber
-    const attackTriggerAttachments = [...(attackerSlot.attachments ?? [])]
-    defender.damageTaken = (defender.damageTaken ?? 0) + atkDamage
-    attacker.damageTaken = (attacker.damageTaken ?? 0) + defDamage
-    this._recordDamage(attacker, defender, atkDamage)
-    this._recordDamage(defender, attacker, defDamage)
+    attacker.hasAttackedTurn = this._turnNumber;
+    const attackTriggerAttachments = [...(attackerSlot.attachments ?? [])];
+    defender.damageTaken = (defender.damageTaken ?? 0) + atkDamage;
+    attacker.damageTaken = (attacker.damageTaken ?? 0) + defDamage;
+    this._recordDamage(attacker, defender, atkDamage);
+    this._recordDamage(defender, attacker, defDamage);
 
-    this._refreshBattleDamage(attackerSlot, attackerSlots, defenderSlot)
-    this._refreshBattleDamage(defenderSlot, defenderSlots, attackerSlot)
+    this._refreshBattleDamage(attackerSlot, attackerSlots, defenderSlot);
+    this._refreshBattleDamage(defenderSlot, defenderSlots, attackerSlot);
     this._resolveAttachedCreatureAttackTriggers(
       attackerSlot,
-      attackerSlots === this._slotsMy ? 'my' : 'opp',
-      attackTriggerAttachments
-    )
-    this._toast(`${attacker.name} atacou ${defender.name}.`)
-    this._logAction(`${attacker.name} atacou ${defender.name}.`)
-    if (attackerSlots === this._slotsMy) this._renderBattleAttackButtons()
+      attackerSlots === this._slotsMy ? "my" : "opp",
+      attackTriggerAttachments,
+    );
+    this._toast(`${attacker.name} atacou ${defender.name}.`);
+    this._logAction(`${attacker.name} atacou ${defender.name}.`);
+    if (attackerSlots === this._slotsMy) this._renderBattleAttackButtons();
   }
 
   _refreshBattleDamage(slot, ownerSlots, destroyerSlot = null) {
-    if (!slot?.card) return
-    recalculateCreatureStats(slot.card, slot.attachments.map(entry => entry.card), {
-      yourField: ownerSlots,
-    })
-    this._refreshFieldStatsOverlay(slot)
+    if (!slot?.card) return;
+    recalculateCreatureStats(
+      slot.card,
+      slot.attachments.map((entry) => entry.card),
+      {
+        yourField: ownerSlots,
+      },
+    );
+    this._refreshFieldStatsOverlay(slot);
     if ((slot.card.currentStats?.defense ?? 1) <= 0) {
-      this._destroyCreatureInBattle(slot, ownerSlots === this._slotsMy ? 'my' : 'opp', destroyerSlot)
+      this._destroyCreatureInBattle(
+        slot,
+        ownerSlots === this._slotsMy ? "my" : "opp",
+        destroyerSlot,
+      );
     }
   }
 
-  _destroyCreatureInBattle(slot, owner, destroyerSlot = null) {
-    const card = slot.card
-    const cardObject = slot.cardObject
-    const attachments = [...(slot.attachments ?? [])]
-    this._playBattleDestroyEffect(slot.x, slot.y)
-    const pointsTo = owner === 'my' ? 'opp' : 'my'
-    this._addScore(pointsTo, this._pointsForRarity(card))
-    this._resolveDestroyedByCreatureTriggers(card, destroyerSlot)
+  _destroyCreatureInBattle(slot, owner, destroyerSlot = null, options = {}) {
+    const card = slot.card;
+    if (!card) return;
+    const cardObject = slot.cardObject;
+    const attachments = [...(slot.attachments ?? [])];
+    const slotIndex =
+      owner === "my"
+        ? this._slotsMy.indexOf(slot)
+        : this._slotsOpp.indexOf(slot);
 
-    const discard = owner === 'my' ? this.myDiscard : this.oppDiscard
+    this._playBattleDestroyEffect(slot.x, slot.y);
+    const pointsTo = owner === "my" ? "opp" : "my";
+    this._addScore(pointsTo, this._pointsForRarity(card));
+    this._resolveDestroyedByCreatureTriggers(card, destroyerSlot);
+
+    const discard = owner === "my" ? this.myDiscard : this.oppDiscard;
     if (!card.isToken) {
-      discard.push(card)
-      this._animateFieldObjectToDiscard(cardObject, owner)
+      discard.push(card);
+      this._animateFieldObjectToDiscard(cardObject, owner);
     } else {
-      this._animateFieldObjectVanish(cardObject)
+      this._animateFieldObjectVanish(cardObject);
     }
     attachments.forEach((attachment, index) => {
-      if (attachment.card) discard.push(attachment.card)
-      this._animateFieldObjectToDiscard(attachment.object, owner, { delay: 80 + index * 70, scale: 0.58 })
-    })
-    slot.card = null
-    slot.cardObject = null
-    slot.attachments = []
-    if (!card.isToken) this._resolveCreatureSentToDiscard(card, owner)
-    this._recalculateAllFieldCreatures()
-    this._logAction(card.isToken ? `${card.name} desapareceu em batalha.` : `${card.name} foi destruida em batalha.`)
+      if (attachment.card) discard.push(attachment.card);
+      this._animateFieldObjectToDiscard(attachment.object, owner, {
+        delay: 80 + index * 70,
+        scale: 0.58,
+      });
+    });
+    slot.card = null;
+    slot.cardObject = null;
+    slot.attachments = [];
+    if (!card.isToken) this._resolveCreatureSentToDiscard(card, owner);
+    this._recalculateAllFieldCreatures();
+    this._logAction(
+      card.isToken
+        ? `${card.name} desapareceu em batalha.`
+        : `${card.name} foi destruida em batalha.`,
+    );
+
+    if (options.sync !== false && !this._isSoloMode() && slotIndex >= 0) {
+      this._sendAction("field_destroyed", {
+        owner,
+        slot: slotIndex,
+        card_id: card.id,
+      });
+    }
   }
 
   _playBattleDestroyEffect(x, y) {
-    const fx = this.add.container(x, y).setDepth(120)
-    const stain = this.add.circle(0, 2, 28, 0x7a0000, 0.62)
-    const skull = this.add.text(0, -8, '☠', {
-      fontSize: '42px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-      stroke: '#2a0000',
-      strokeThickness: 4,
-    }).setOrigin(0.5)
-    const splash = this.add.circle(0, 8, 12, 0xbb0000, 0.72)
-    fx.add([stain, splash, skull])
+    const fx = this.add.container(x, y).setDepth(120);
+    const stain = this.add.circle(0, 2, 28, 0x7a0000, 0.62);
+    const skull = this.add
+      .text(0, -8, "☠", {
+        fontSize: "42px",
+        color: "#ffffff",
+        fontStyle: "bold",
+        stroke: "#2a0000",
+        strokeThickness: 4,
+      })
+      .setOrigin(0.5);
+    const splash = this.add.circle(0, 8, 12, 0xbb0000, 0.72);
+    fx.add([stain, splash, skull]);
 
     const drops = [
       { x: -22, y: 2, tx: -48, ty: 28, r: 5 },
@@ -1582,11 +1988,11 @@ export default class GameScene extends Scene {
       { x: -8, y: 20, tx: -16, ty: 52, r: 4 },
       { x: 14, y: 20, tx: 22, ty: 50, r: 3 },
       { x: 0, y: -16, tx: 4, ty: -40, r: 3 },
-    ]
+    ];
 
-    drops.forEach(drop => {
-      const blood = this.add.circle(drop.x, drop.y, drop.r, 0xb10000, 0.9)
-      fx.add(blood)
+    drops.forEach((drop) => {
+      const blood = this.add.circle(drop.x, drop.y, drop.r, 0xb10000, 0.9);
+      fx.add(blood);
       this.tweens.add({
         targets: blood,
         x: drop.tx,
@@ -1594,9 +2000,9 @@ export default class GameScene extends Scene {
         alpha: 0,
         scale: 0.35,
         duration: 620,
-        ease: 'Quad.easeOut',
-      })
-    })
+        ease: "Quad.easeOut",
+      });
+    });
 
     this.tweens.add({
       targets: skull,
@@ -1604,8 +2010,8 @@ export default class GameScene extends Scene {
       scale: 1.18,
       duration: 180,
       yoyo: true,
-      ease: 'Back.easeOut',
-    })
+      ease: "Back.easeOut",
+    });
 
     this.tweens.add({
       targets: fx,
@@ -1613,285 +2019,331 @@ export default class GameScene extends Scene {
       scale: 1.22,
       delay: 520,
       duration: 420,
-      ease: 'Sine.easeIn',
+      ease: "Sine.easeIn",
       onComplete: () => fx.destroy(true),
-    })
+    });
   }
 
   _combatDamageAfterReduction(targetSlot, ownerSlots, incoming) {
-    let damage = Math.max(0, Number(incoming) || 0)
-    if (!targetSlot?.card || damage <= 0) return damage
+    let damage = Math.max(0, Number(incoming) || 0);
+    if (!targetSlot?.card || damage <= 0) return damage;
 
     for (const sourceSlot of ownerSlots ?? []) {
-      const source = sourceSlot.card
-      if (!source) continue
+      const source = sourceSlot.card;
+      if (!source) continue;
 
       for (const effect of source.effects ?? []) {
-        if (effect.type !== 'reduce_combat_damage_taken') continue
-        if (effect.target === 'other_your_creatures' && source.instanceId === targetSlot.card.instanceId) continue
-        if (!matchesCreatureRule(targetSlot.card, effect.filter ?? {})) continue
-        damage = Math.max(0, damage - (Number(effect.value) || 0))
+        if (effect.type !== "reduce_combat_damage_taken") continue;
+        if (
+          effect.target === "other_your_creatures" &&
+          source.instanceId === targetSlot.card.instanceId
+        )
+          continue;
+        if (!matchesCreatureRule(targetSlot.card, effect.filter ?? {}))
+          continue;
+        damage = Math.max(0, damage - (Number(effect.value) || 0));
       }
     }
 
-    return damage
+    return damage;
   }
 
   _pointsForRarity(card) {
-    return pointsForRarity(card)
+    return pointsForRarity(card);
   }
 
   _addScore(player, amount) {
-    if (!amount || this._gameOver) return
-    this._score[player] = Math.min(MAX_SCORE, this._score[player] + amount)
-    this._renderScoreDots()
-    this._notifyScore(player, amount)
-    this._logAction(`${player === 'my' ? 'Voce' : 'Oponente'} marcou ${amount} ponto(s).`)
-    if (this._score[player] >= MAX_SCORE) this._finishGame(player)
+    if (!amount || this._gameOver) return;
+    this._score[player] = Math.min(MAX_SCORE, this._score[player] + amount);
+    this._renderScoreDots();
+    this._notifyScore(player, amount);
+    this._logAction(
+      `${player === "my" ? "Voce" : "Oponente"} marcou ${amount} ponto(s).`,
+    );
+    if (this._score[player] >= MAX_SCORE) this._finishGame(player);
   }
 
   _notifyScore(player, amount) {
-    const { width, height } = this.cameras.main
-    const text = player === 'my'
-      ? `VOCE MARCOU ${amount} PONTO(S)`
-      : `OPONENTE MARCOU ${amount} PONTO(S)`
-    const color = player === 'my' ? '#d8ff66' : '#ff6666'
+    const { width, height } = this.cameras.main;
+    const text =
+      player === "my"
+        ? `VOCE MARCOU ${amount} PONTO(S)`
+        : `OPONENTE MARCOU ${amount} PONTO(S)`;
+    const color = player === "my" ? "#d8ff66" : "#ff6666";
 
-    const notice = this.add.container(width / 2, height / 2 - 96).setDepth(125)
-    const bg = this.add.rectangle(0, 0, 620, 74, 0x100707, 0.9).setStrokeStyle(3, player === 'my' ? 0xd8ff66 : 0xff3333)
-    const label = this.add.text(0, 0, text, {
-      fontSize: '28px',
-      color,
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
-    notice.add([bg, label])
-    notice.setScale(0.76)
+    const notice = this.add.container(width / 2, height / 2 - 96).setDepth(125);
+    const bg = this.add
+      .rectangle(0, 0, 620, 74, 0x100707, 0.9)
+      .setStrokeStyle(3, player === "my" ? 0xd8ff66 : 0xff3333);
+    const label = this.add
+      .text(0, 0, text, {
+        fontSize: "28px",
+        color,
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    notice.add([bg, label]);
+    notice.setScale(0.76);
     this.tweens.add({
       targets: notice,
       scale: 1.06,
       duration: 140,
       yoyo: true,
       hold: 760,
-      ease: 'Back.easeOut',
+      ease: "Back.easeOut",
       onComplete: () => notice.destroy(true),
-    })
+    });
   }
 
   _renderScoreDots() {
     this._scoreDotsMy?.forEach((dot, i) => {
-      dot.setFillStyle(i < this._score.my ? 0x4caf50 : 0x777777)
-      dot.setStrokeStyle(i < this._score.my ? 2 : 1, i < this._score.my ? 0xd8ff66 : 0xaaaaaa)
-    })
+      dot.setFillStyle(i < this._score.my ? 0x4caf50 : 0x777777);
+      dot.setStrokeStyle(
+        i < this._score.my ? 2 : 1,
+        i < this._score.my ? 0xd8ff66 : 0xaaaaaa,
+      );
+    });
     this._scoreDotsOpp?.forEach((dot, i) => {
-      dot.setFillStyle(i < this._score.opp ? 0xdd4444 : 0x777777)
-      dot.setStrokeStyle(i < this._score.opp ? 2 : 1, i < this._score.opp ? 0xffcccc : 0xaaaaaa)
-    })
-    this._pulseLatestScoreDot('my')
-    this._pulseLatestScoreDot('opp')
+      dot.setFillStyle(i < this._score.opp ? 0xdd4444 : 0x777777);
+      dot.setStrokeStyle(
+        i < this._score.opp ? 2 : 1,
+        i < this._score.opp ? 0xffcccc : 0xaaaaaa,
+      );
+    });
+    this._pulseLatestScoreDot("my");
+    this._pulseLatestScoreDot("opp");
   }
 
   _pulseLatestScoreDot(player) {
-    const score = this._score[player]
-    if (!score) return
-    const dots = player === 'my' ? this._scoreDotsMy : this._scoreDotsOpp
-    const dot = dots?.[score - 1]
-    if (!dot) return
+    const score = this._score[player];
+    if (!score) return;
+    const dots = player === "my" ? this._scoreDotsMy : this._scoreDotsOpp;
+    const dot = dots?.[score - 1];
+    if (!dot) return;
 
-    const glow = this.add.circle(dot.x, dot.y, 12, player === 'my' ? 0xd8ff66 : 0xff5555, 0.28)
-      .setDepth(dot.depth - 1)
+    const glow = this.add
+      .circle(dot.x, dot.y, 12, player === "my" ? 0xd8ff66 : 0xff5555, 0.28)
+      .setDepth(dot.depth - 1);
     this.tweens.add({
       targets: [dot, glow],
       scaleX: 1.7,
       scaleY: 1.7,
       alpha: 0,
       duration: 520,
-      ease: 'Cubic.easeOut',
+      ease: "Cubic.easeOut",
       onComplete: () => {
-        dot.setScale(1)
-        dot.setAlpha(1)
-        glow.destroy()
+        dot.setScale(1);
+        dot.setAlpha(1);
+        glow.destroy();
       },
-    })
+    });
   }
 
   _finishGame(winner) {
-    this._gameOver = true
-    this._showTurnBanner(winner === 'my' ? 'VITORIA!' : 'DERROTA!')
-    this._toast(winner === 'my' ? 'Você conquistou 3 pontos.' : 'O oponente conquistou 3 pontos.')
-    this._logAction(winner === 'my' ? 'Vitoria.' : 'Derrota.')
+    this._gameOver = true;
+    this._finishRemoteRoom();
+    this._showTurnBanner(winner === "my" ? "VITORIA!" : "DERROTA!");
+    this._toast(
+      winner === "my"
+        ? "Você conquistou 3 pontos."
+        : "O oponente conquistou 3 pontos.",
+    );
+    this._logAction(winner === "my" ? "Vitoria." : "Derrota.");
     this.time.delayedCall(1400, () => {
-      clearScene()
-      this.scene.start('StatusGameScene', {
-        result: winner === 'my' ? 'victory' : 'defeat',
-        winnerName: winner === 'my' ? 'Jogador 1' : 'Jogador 2',
+      clearScene();
+      this.scene.start("StatusGameScene", {
+        result: winner === "my" ? "victory" : "defeat",
+        winnerName: winner === "my" ? "Jogador 1" : "Jogador 2",
         score: this._score,
         logs: this._actionLogs,
         stats: this._matchStats,
-      })
-    })
+      });
+    });
   }
 
   _recordDamage(source, target, amount) {
-    const damage = Number(amount) || 0
-    if (!source || damage <= 0) return
+    const damage = Number(amount) || 0;
+    if (!source || damage <= 0) return;
 
-    const sourceName = source.name ?? source.nome ?? 'Carta'
-    this._matchStats.damageDealt[sourceName] = (this._matchStats.damageDealt[sourceName] ?? 0) + damage
+    const sourceName = source.name ?? source.nome ?? "Carta";
+    this._matchStats.damageDealt[sourceName] =
+      (this._matchStats.damageDealt[sourceName] ?? 0) + damage;
 
     if (target) {
-      const targetName = target.name ?? target.nome ?? 'Carta'
-      this._matchStats.damageReceived[targetName] = (this._matchStats.damageReceived[targetName] ?? 0) + damage
+      const targetName = target.name ?? target.nome ?? "Carta";
+      this._matchStats.damageReceived[targetName] =
+        (this._matchStats.damageReceived[targetName] ?? 0) + damage;
     }
+  }
+
+  _recordPlayedCard(card) {
+    if (!card?.id) return;
+    if (!Array.isArray(this._matchStats.playedCards))
+      this._matchStats.playedCards = [];
+    this._matchStats.playedCards.push({
+      id: card.id,
+      name: card.name ?? card.nome,
+      card_type: card.card_type,
+    });
   }
 
   _clearCardActionMenu() {
     if (this._cardActionMenu) {
-      this._cardActionMenu.destroy(true)
-      this._cardActionMenu = null
+      this._cardActionMenu.destroy(true);
+      this._cardActionMenu = null;
     }
   }
 
   _clearAttachmentReplaceChoice() {
     if (this._replaceAttachmentMenu) {
-      this._replaceAttachmentMenu.destroy(true)
-      this._replaceAttachmentMenu = null
+      this._replaceAttachmentMenu.destroy(true);
+      this._replaceAttachmentMenu = null;
     }
   }
 
   _isFloatingMenuPointerTarget(gameObject) {
     return Boolean(
-      gameObject?.getData?.('floatingMenuControl')
-      || gameObject?.getData?.('cardData')
-      || gameObject === this._magnifierButton
-    )
+      gameObject?.getData?.("floatingMenuControl") ||
+      gameObject?.getData?.("cardData") ||
+      gameObject === this._magnifierButton,
+    );
   }
 
   _handleBoardPointerDown(pointer, currentlyOver = []) {
-    const targets = Array.isArray(currentlyOver) ? currentlyOver : []
-    if (targets.some(target => this._isFloatingMenuPointerTarget(target))) return
+    const targets = Array.isArray(currentlyOver) ? currentlyOver : [];
+    if (targets.some((target) => this._isFloatingMenuPointerTarget(target)))
+      return;
 
-    this._clearCardActionMenu()
-    this._clearMagnifier()
-    this._clearAttachmentReplaceChoice()
+    this._clearCardActionMenu();
+    this._clearMagnifier();
+    this._clearAttachmentReplaceChoice();
   }
 
   _startSummonSelection(cardObject) {
-    if (!this._canUseMainAction('summon')) {
-      this._toast('Você já invocou neste turno.')
-      return
+    if (!this._canUseMainAction("summon")) {
+      this._toast("Você já invocou neste turno.");
+      return;
     }
-    const card = cardObject.getData('cardData')
+    const card = cardObject.getData("cardData");
     if (card?.summonRule?.normal === false) {
-      this._toast(`${card.name} não pode ser invocada normalmente.`)
-      return
+      this._toast(`${card.name} não pode ser invocada normalmente.`);
+      return;
     }
-    if (!this._slotsMy.some(slot => !slot.card)) {
-      this._toast('Não há zonas vazias para invocar.')
-      return
+    if (!this._slotsMy.some((slot) => !slot.card)) {
+      this._toast("Não há zonas vazias para invocar.");
+      return;
     }
-    this._pendingSummonCard = cardObject
-    this._highlightSummonZones()
-    this._toast('Escolha uma zona vazia para invocar.')
+    this._pendingSummonCard = cardObject;
+    this._highlightSummonZones();
+    this._toast("Escolha uma zona vazia para invocar.");
   }
 
   _canNormalSummonCard(card) {
-    return canNormalSummon(card)
+    return canNormalSummon(card);
   }
 
   _handCreatureAbilities(cardObject) {
-    const card = cardObject.getData('cardData')
-    if (card?.card_type !== 'criatura') return []
-    const sourceIndex = this._handContainers.indexOf(cardObject)
+    const card = cardObject.getData("cardData");
+    if (card?.card_type !== "criatura") return [];
+    const sourceIndex = this._handContainers.indexOf(cardObject);
 
-    return (card.activatedAbilities ?? []).filter(ability => {
-      if (ability.source !== 'hand') return false
-      if (ability.action?.type === 'special_summon_over_your_creature') {
-        return this._hasSpecialSummonCandidate(sourceIndex, ability.action.filter ?? {})
-          && this._slotsMy.some(slot => slot.card)
+    return (card.activatedAbilities ?? []).filter((ability) => {
+      if (ability.source !== "hand") return false;
+      if (ability.action?.type === "special_summon_over_your_creature") {
+        return (
+          this._hasSpecialSummonCandidate(
+            sourceIndex,
+            ability.action.filter ?? {},
+          ) && this._slotsMy.some((slot) => slot.card)
+        );
       }
-      return false
-    })
+      return false;
+    });
   }
 
   _hasSpecialSummonCandidate(sourceIndex, filter) {
-    if (sourceIndex < 0) return false
-    return this.myHand.some((card, index) => (
-      index !== sourceIndex
-      && card.card_type === 'criatura'
-      && this._matchesCardRule(card, filter)
-    ))
+    if (sourceIndex < 0) return false;
+    return this.myHand.some(
+      (card, index) =>
+        index !== sourceIndex &&
+        card.card_type === "criatura" &&
+        this._matchesCardRule(card, filter),
+    );
   }
 
   _activateHandCreatureAbility(cardObject) {
-    const ability = this._handCreatureAbilities(cardObject)[0]
-    const sourceCard = cardObject.getData('cardData')
+    const ability = this._handCreatureAbilities(cardObject)[0];
+    const sourceCard = cardObject.getData("cardData");
     if (!ability) {
-      this._toast('Habilidade indisponível.')
-      return
+      this._toast("Habilidade indisponível.");
+      return;
     }
 
-    if (ability.action?.type === 'special_summon_over_your_creature') {
-      const targets = this._slotsMy.filter(slot => slot.card)
+    if (ability.action?.type === "special_summon_over_your_creature") {
+      const targets = this._slotsMy.filter((slot) => slot.card);
       if (!targets.length) {
-        this._toast('Você precisa de uma criatura em campo.')
-        return
+        this._toast("Você precisa de uma criatura em campo.");
+        return;
       }
-      this._pendingHandAbilityCard = cardObject
-      this._pendingHandAbility = ability
+      this._pendingHandAbilityCard = cardObject;
+      this._pendingHandAbility = ability;
       this._pendingSpecialSummon = {
         sourceCard,
         sourceIndex: this._handContainers.indexOf(cardObject),
         ability,
-      }
+      };
       this._requestCreatureSlotChoice({
-        title: 'Escolha a criatura em campo para receber a invocação especial.',
-        side: 'my',
+        title: "Escolha a criatura em campo para receber a invocação especial.",
+        side: "my",
         slots: targets,
         color: 0xff66aa,
-        onSelect: targetSlot => this._openSpecialSummonCandidateChoiceForTarget(targetSlot),
-      })
+        onSelect: (targetSlot) =>
+          this._openSpecialSummonCandidateChoiceForTarget(targetSlot),
+      });
     }
   }
 
   _openSpecialSummonCandidateChoiceForTarget(targetSlot) {
-    if (!this._pendingSpecialSummon) return
+    if (!this._pendingSpecialSummon) return;
 
-    const sourceIndex = this._pendingSpecialSummon.sourceIndex
-    const filter = this._pendingSpecialSummon.ability.action?.filter ?? {}
+    const sourceIndex = this._pendingSpecialSummon.sourceIndex;
+    const filter = this._pendingSpecialSummon.ability.action?.filter ?? {};
     if (sourceIndex < 0) {
-      this._toast('Não foi possível localizar a carta na mão.')
-      this._clearSpecialSummonState()
-      return
+      this._toast("Não foi possível localizar a carta na mão.");
+      this._clearSpecialSummonState();
+      return;
     }
 
     const candidates = this.myHand
       .map((card, index) => ({ card, index }))
-      .filter(entry => (
-        entry.index !== sourceIndex
-        && entry.card.card_type === 'criatura'
-        && this._matchesCardRule(entry.card, filter)
-      ))
+      .filter(
+        (entry) =>
+          entry.index !== sourceIndex &&
+          entry.card.card_type === "criatura" &&
+          this._matchesCardRule(entry.card, filter),
+      );
 
     this._requestCardChoice({
-      title: 'Escolha a criatura para invocar',
+      title: "Escolha a criatura para invocar",
       cards: candidates,
-      emptyMessage: 'Não há criatura Esdras válida na mão.',
+      emptyMessage: "Não há criatura Esdras válida na mão.",
       accent: 0xff66aa,
-      buttonColor: '#6a2448',
+      buttonColor: "#6a2448",
       maxVisible: 8,
-      labelForCard: card => card.name,
-      onSelect: entry => this._completeSpecialSummon(targetSlot, entry.index),
+      labelForCard: (card) => card.name,
+      onSelect: (entry) => this._completeSpecialSummon(targetSlot, entry.index),
       onEmpty: () => this._clearSpecialSummonState(),
-    })
+    });
   }
 
   _highlightSpecialSummonTargets(targets) {
-    this._clearSpecialSummonTargets()
-    targets.forEach(slot => {
-      const highlight = this.add.rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
+    this._clearSpecialSummonTargets();
+    targets.forEach((slot) => {
+      const highlight = this.add
+        .rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
         .setStrokeStyle(3, 0xff66aa)
-        .setDepth(7)
-      slot.specialHighlight = highlight
+        .setDepth(7);
+      slot.specialHighlight = highlight;
       this.tweens.add({
         targets: highlight,
         scaleX: 1.08,
@@ -1900,151 +2352,180 @@ export default class GameScene extends Scene {
         duration: 380,
         yoyo: true,
         repeat: -1,
-        ease: 'Sine.easeInOut',
-      })
-    })
+        ease: "Sine.easeInOut",
+      });
+    });
   }
 
   _clearSpecialSummonTargets() {
-    this._slotsMy?.forEach(slot => {
-      if (!slot.specialHighlight) return
-      this.tweens.killTweensOf(slot.specialHighlight)
-      slot.specialHighlight.destroy()
-      slot.specialHighlight = null
-    })
+    this._slotsMy?.forEach((slot) => {
+      if (!slot.specialHighlight) return;
+      this.tweens.killTweensOf(slot.specialHighlight);
+      slot.specialHighlight.destroy();
+      slot.specialHighlight = null;
+    });
   }
 
   _selectSpecialSummonTarget(side, slotIndex) {
-    if (!this._pendingSpecialSummon || side !== 'my') return
-    const targetSlot = this._slotsMy[slotIndex]
-    if (!targetSlot?.card) return
+    if (!this._pendingSpecialSummon || side !== "my") return;
+    const targetSlot = this._slotsMy[slotIndex];
+    if (!targetSlot?.card) return;
 
-    const sourceIndex = this._pendingSpecialSummon.sourceIndex
-    const filter = this._pendingSpecialSummon.ability.action?.filter ?? {}
+    const sourceIndex = this._pendingSpecialSummon.sourceIndex;
+    const filter = this._pendingSpecialSummon.ability.action?.filter ?? {};
     if (sourceIndex < 0) {
-      this._toast('Não foi possível localizar a carta na mão.')
-      this._clearSpecialSummonState()
-      return
+      this._toast("Não foi possível localizar a carta na mão.");
+      this._clearSpecialSummonState();
+      return;
     }
 
     const candidates = this.myHand
       .map((card, index) => ({ card, index }))
-      .filter(entry => (
-        entry.index !== sourceIndex
-        && entry.card.card_type === 'criatura'
-        && this._matchesCardRule(entry.card, filter)
-      ))
+      .filter(
+        (entry) =>
+          entry.index !== sourceIndex &&
+          entry.card.card_type === "criatura" &&
+          this._matchesCardRule(entry.card, filter),
+      );
 
     if (!candidates.length) {
-      this._toast('Não há criatura Esdras válida na mão.')
-      this._clearSpecialSummonState()
-      return
+      this._toast("Não há criatura Esdras válida na mão.");
+      this._clearSpecialSummonState();
+      return;
     }
 
-    this._clearSpecialSummonTargets()
-    this._openSpecialSummonCandidateChoice(targetSlot, candidates)
+    this._clearSpecialSummonTargets();
+    this._openSpecialSummonCandidateChoice(targetSlot, candidates);
   }
 
   _openSpecialSummonCandidateChoice(targetSlot, candidates) {
-    this._closeEffectChoiceModal()
-    const { width, height } = this.cameras.main
-    const panelW = 500
-    const visible = candidates.slice(0, 8)
-    const panelH = 150 + visible.length * 32
-    this._effectChoiceModal = this.add.container(width / 2, height / 2).setDepth(132)
+    this._closeEffectChoiceModal();
+    const { width, height } = this.cameras.main;
+    const panelW = 500;
+    const visible = candidates.slice(0, 8);
+    const panelH = 150 + visible.length * 32;
+    this._effectChoiceModal = this.add
+      .container(width / 2, height / 2)
+      .setDepth(132);
 
-    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.58).setInteractive()
-    const panel = this.add.rectangle(0, 0, panelW, panelH, 0x071018, 0.97).setStrokeStyle(2, 0xff66aa)
-    const title = this.add.text(0, -panelH / 2 + 22, 'Escolha a criatura para invocar', {
-      fontSize: '15px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
-    this._effectChoiceModal.add([overlay, panel, title])
+    const overlay = this.add
+      .rectangle(0, 0, width, height, 0x000000, 0.58)
+      .setInteractive();
+    const panel = this.add
+      .rectangle(0, 0, panelW, panelH, 0x071018, 0.97)
+      .setStrokeStyle(2, 0xff66aa);
+    const title = this.add
+      .text(0, -panelH / 2 + 22, "Escolha a criatura para invocar", {
+        fontSize: "15px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    this._effectChoiceModal.add([overlay, panel, title]);
 
     visible.forEach((entry, i) => {
-      const btn = this.add.text(0, -panelH / 2 + 60 + i * 32, entry.card.name, {
-        fontSize: '12px',
-        color: '#ffffff',
-        backgroundColor: '#6a2448',
-        padding: { x: 10, y: 7 },
-        fixedWidth: panelW - 54,
-        align: 'center',
-      }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-      btn.on('pointerdown', () => this._completeSpecialSummon(targetSlot, entry.index))
-      this._effectChoiceModal.add(btn)
-    })
+      const btn = this.add
+        .text(0, -panelH / 2 + 60 + i * 32, entry.card.name, {
+          fontSize: "12px",
+          color: "#ffffff",
+          backgroundColor: "#6a2448",
+          padding: { x: 10, y: 7 },
+          fixedWidth: panelW - 54,
+          align: "center",
+        })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+      btn.on("pointerdown", () =>
+        this._completeSpecialSummon(targetSlot, entry.index),
+      );
+      this._effectChoiceModal.add(btn);
+    });
   }
 
   _completeSpecialSummon(targetSlot, summonIndex) {
-    const sourceObject = this._pendingHandAbilityCard
-    const sourceCard = this._pendingSpecialSummon?.sourceCard
-    const sourceIndex = this._pendingSpecialSummon?.sourceIndex
-    if (!sourceCard || sourceIndex == null || sourceIndex < 0 || summonIndex < 0) {
-      this._toast('Não foi possível resolver a invocação especial.')
-      this._clearSpecialSummonState()
-      this._closeEffectChoiceModal()
-      return
+    const sourceObject = this._pendingHandAbilityCard;
+    const sourceCard = this._pendingSpecialSummon?.sourceCard;
+    const sourceIndex = this._pendingSpecialSummon?.sourceIndex;
+    if (
+      !sourceCard ||
+      sourceIndex == null ||
+      sourceIndex < 0 ||
+      summonIndex < 0
+    ) {
+      this._toast("Não foi possível resolver a invocação especial.");
+      this._clearSpecialSummonState();
+      this._closeEffectChoiceModal();
+      return;
     }
 
     if (!targetSlot?.card) {
-      this._toast('O alvo não está mais em campo.')
-      this._clearSpecialSummonState()
-      this._closeEffectChoiceModal()
-      return
+      this._toast("O alvo não está mais em campo.");
+      this._clearSpecialSummonState();
+      this._closeEffectChoiceModal();
+      return;
     }
 
-    const summonCard = this.myHand[summonIndex]
+    const summonCard = this.myHand[summonIndex];
     if (!summonCard || summonIndex === sourceIndex) {
-      this._toast('Criatura inválida para invocação especial.')
-      this._clearSpecialSummonState()
-      this._closeEffectChoiceModal()
-      return
+      this._toast("Criatura inválida para invocação especial.");
+      this._clearSpecialSummonState();
+      this._closeEffectChoiceModal();
+      return;
     }
 
-    const removedSource = this.myHand.splice(sourceIndex, 1)[0]
-    this.myDiscard.push(removedSource ?? sourceCard)
-    sourceObject?.destroy(true)
-    this._handContainers = this._handContainers.filter(object => object !== sourceObject)
+    const removedSource = this.myHand.splice(sourceIndex, 1)[0];
+    this.myDiscard.push(removedSource ?? sourceCard);
+    sourceObject?.destroy(true);
+    this._handContainers = this._handContainers.filter(
+      (object) => object !== sourceObject,
+    );
 
-    const adjustedSummonIndex = summonIndex > sourceIndex ? summonIndex - 1 : summonIndex
-    const [selectedSummonCard] = this.myHand.splice(adjustedSummonIndex, 1)
+    const adjustedSummonIndex =
+      summonIndex > sourceIndex ? summonIndex - 1 : summonIndex;
+    const [selectedSummonCard] = this.myHand.splice(adjustedSummonIndex, 1);
     if (!selectedSummonCard) {
-      this._toast('Não foi possível encontrar a criatura escolhida.')
-      this._clearSpecialSummonState()
-      this._closeEffectChoiceModal()
-      return
+      this._toast("Não foi possível encontrar a criatura escolhida.");
+      this._clearSpecialSummonState();
+      this._closeEffectChoiceModal();
+      return;
     }
 
-    this._sendFieldCreatureToDiscard(targetSlot, 'my', 'invocação especial')
-    this._summonCreatureToSlot(selectedSummonCard, targetSlot, { canAttackFromTurn: this._turnNumber + 1 })
+    this._sendFieldCreatureToDiscard(targetSlot, "my", "invocação especial");
+    this._summonCreatureToSlot(selectedSummonCard, targetSlot, {
+      canAttackFromTurn: this._turnNumber + 1,
+    });
 
-    this._renderHand(this.myHand)
-    this._renderDiscardPile()
-    this._playDiscardSmoke()
-    this._closeEffectChoiceModal()
-    this._clearSpecialSummonState()
-    this._toast(`${sourceCard.name} foi descartada para invocar ${selectedSummonCard.name}.`)
-    this._logAction(`${sourceCard.name} ativou invocação especial de ${selectedSummonCard.name}.`)
+    this._renderHand(this.myHand);
+    this._renderDiscardPile();
+    this._playDiscardSmoke();
+    this._closeEffectChoiceModal();
+    this._clearSpecialSummonState();
+    this._toast(
+      `${sourceCard.name} foi descartada para invocar ${selectedSummonCard.name}.`,
+    );
+    this._logAction(
+      `${sourceCard.name} ativou invocação especial de ${selectedSummonCard.name}.`,
+    );
   }
 
   _clearSpecialSummonState() {
-    this._pendingHandAbilityCard = null
-    this._pendingHandAbility = null
-    this._pendingSpecialSummon = null
-    this._clearSpecialSummonTargets()
+    this._pendingHandAbilityCard = null;
+    this._pendingHandAbility = null;
+    this._pendingSpecialSummon = null;
+    this._clearSpecialSummonTargets();
   }
 
   _highlightSummonZones() {
-    this._slotsMy.forEach(slot => {
-      if (slot.card) return
-      slot.rect.setStrokeStyle(3, 0xffcc00)
-      slot.rect.setFillStyle(0x2d3a18, 0.75)
+    this._slotsMy.forEach((slot) => {
+      if (slot.card) return;
+      slot.rect.setStrokeStyle(3, 0xffcc00);
+      slot.rect.setFillStyle(0x2d3a18, 0.75);
 
-      const highlight = this.add.rectangle(slot.x, slot.y, slot.w + 16, slot.h + 16, 0x000000, 0)
+      const highlight = this.add
+        .rectangle(slot.x, slot.y, slot.w + 16, slot.h + 16, 0x000000, 0)
         .setStrokeStyle(3, 0xffdd44)
-        .setDepth(6)
-      slot.highlight = highlight
+        .setDepth(6);
+      slot.highlight = highlight;
 
       // this.tweens.add({
       //   targets: highlight,
@@ -2059,84 +2540,87 @@ export default class GameScene extends Scene {
         duration: 420,
         yoyo: true,
         repeat: -1,
-        ease: 'Sine.easeInOut',
-      })
-    })
+        ease: "Sine.easeInOut",
+      });
+    });
   }
 
   _clearSummonZones() {
-    this._slotsMy?.forEach(slot => {
-      this.tweens.killTweensOf(slot.rect)
-      slot.rect.setAlpha(1)
-      slot.rect.setFillStyle(0x1a2a3a, 0.6)
-      slot.rect.setStrokeStyle(1, 0x334455)
+    this._slotsMy?.forEach((slot) => {
+      this.tweens.killTweensOf(slot.rect);
+      slot.rect.setAlpha(1);
+      slot.rect.setFillStyle(0x1a2a3a, 0.6);
+      slot.rect.setStrokeStyle(1, 0x334455);
       if (slot.highlight) {
-        this.tweens.killTweensOf(slot.highlight)
-        slot.highlight.destroy()
-        slot.highlight = null
+        this.tweens.killTweensOf(slot.highlight);
+        slot.highlight.destroy();
+        slot.highlight = null;
       }
-    })
+    });
   }
 
   _isAttachmentCard(card) {
-    return card.card_type === 'item' || card.card_type === 'habilidade'
+    return card.card_type === "item" || card.card_type === "habilidade";
   }
 
   _attachmentTargets(card) {
-    return attachmentTargets(card, this._slotsMy)
+    return attachmentTargets(card, this._slotsMy);
   }
 
   _startAttachmentSelection(cardObject) {
-    if (!this._canUseMainAction('attach')) {
-      this._toast('Você já anexou neste turno.')
-      return
+    if (!this._canUseMainAction("attach")) {
+      this._toast("Você já anexou neste turno.");
+      return;
     }
-    const card = cardObject.getData('cardData')
-    const targets = this._attachmentTargets(card)
+    const card = cardObject.getData("cardData");
+    const targets = this._attachmentTargets(card);
     if (!targets.length) {
-      this._toast('Não há criaturas válidas para anexar.')
-      return
+      this._toast("Não há criaturas válidas para anexar.");
+      return;
     }
 
-    this._enqueueEffectResolution({ type: 'attachment', cardObject })
+    this._enqueueEffectResolution({ type: "attachment", cardObject });
   }
 
   async _resolveAttachmentQueued(cardObject) {
-    if (!this._canUseMainAction('attach')) {
-      this._toast('Você já anexou neste turno.')
-      return
+    if (!this._canUseMainAction("attach")) {
+      this._toast("Você já anexou neste turno.");
+      return;
     }
 
-    const card = cardObject.getData('cardData')
-    const targets = this._attachmentTargets(card)
+    const card = cardObject.getData("cardData");
+    const targets = this._attachmentTargets(card);
     if (!targets.length) {
-      this._toast('Não há criaturas válidas para anexar.')
-      return
+      this._toast("Não há criaturas válidas para anexar.");
+      return;
     }
 
     const targetSlot = await this._requestCreatureSlotChoiceAsync({
-      title: 'Escolha uma criatura para anexar.',
-      side: 'my',
+      title: "Escolha uma criatura para anexar.",
+      side: "my",
       slots: targets,
-      color: card.card_type === 'habilidade' ? 0x44aaff : 0xbb77ff,
-    })
-    if (!targetSlot) return
+      color: card.card_type === "habilidade" ? 0x44aaff : 0xbb77ff,
+    });
+    if (!targetSlot) return;
 
-    this._pendingAttachmentCard = cardObject
-    this._animateAttachmentToSlot(targetSlot, cardObject, card)
+    this._pendingAttachmentCard = cardObject;
+    this._animateAttachmentToSlot(targetSlot, cardObject, card);
   }
 
   _highlightAttachmentTargets(targets) {
-    this._clearAttachmentTargets()
+    this._clearAttachmentTargets();
 
-    targets.forEach(slot => {
-      const color = this._pendingAttachmentCard?.getData('cardData')?.card_type === 'habilidade'
-        ? 0x44aaff
-        : 0xbb77ff
-      const highlight = this.add.rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
+    targets.forEach((slot) => {
+      const color =
+        this._pendingAttachmentCard?.getData("cardData")?.card_type ===
+        "habilidade"
+          ? 0x44aaff
+          : 0xbb77ff;
+      const highlight = this.add
+        .rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
         .setStrokeStyle(3, color)
-        .setDepth(7)
-      slot.attachHighlight = highlight
+        .setDepth(7);
+      slot.attachHighlight = highlight;
 
       this.tweens.add({
         targets: highlight,
@@ -2146,8 +2630,8 @@ export default class GameScene extends Scene {
         duration: 380,
         yoyo: true,
         repeat: -1,
-        ease: 'Sine.easeInOut',
-      })
+        ease: "Sine.easeInOut",
+      });
       // this.tweens.add({
       //   targets: highlight,
       //   angle: 360,
@@ -2155,150 +2639,182 @@ export default class GameScene extends Scene {
       //   repeat: -1,
       //   ease: 'Linear',
       // })
-    })
+    });
   }
 
   _clearAttachmentTargets() {
-    this._slotsMy?.forEach(slot => {
-      if (!slot.attachHighlight) return
-      this.tweens.killTweensOf(slot.attachHighlight)
-      slot.attachHighlight.destroy()
-      slot.attachHighlight = null
-    })
+    this._slotsMy?.forEach((slot) => {
+      if (!slot.attachHighlight) return;
+      this.tweens.killTweensOf(slot.attachHighlight);
+      slot.attachHighlight.destroy();
+      slot.attachHighlight = null;
+    });
   }
 
   _clearCommandTargets() {
-    ;[...(this._slotsMy ?? []), ...(this._slotsOpp ?? [])].forEach(slot => {
-      if (!slot.commandHighlight) return
-      this.tweens.killTweensOf(slot.commandHighlight)
-      slot.commandHighlight.destroy()
-      slot.commandHighlight = null
-    })
+    [...(this._slotsMy ?? []), ...(this._slotsOpp ?? [])].forEach((slot) => {
+      if (!slot.commandHighlight) return;
+      this.tweens.killTweensOf(slot.commandHighlight);
+      slot.commandHighlight.destroy();
+      slot.commandHighlight = null;
+    });
   }
 
   _clearAbilityTargets() {
-    ;[...(this._slotsMy ?? []), ...(this._slotsOpp ?? [])].forEach(slot => {
-      if (!slot.abilityHighlight) return
-      this.tweens.killTweensOf(slot.abilityHighlight)
-      slot.abilityHighlight.destroy()
-      slot.abilityHighlight = null
-    })
+    [...(this._slotsMy ?? []), ...(this._slotsOpp ?? [])].forEach((slot) => {
+      if (!slot.abilityHighlight) return;
+      this.tweens.killTweensOf(slot.abilityHighlight);
+      slot.abilityHighlight.destroy();
+      slot.abilityHighlight = null;
+    });
   }
 
   _enqueueEffectResolution(job) {
     if (this._effectQueueRunner) {
-      this._effectQueueRunner.enqueue(job)
-      return
+      this._effectQueueRunner.enqueue(job);
+      return;
     }
-    this._effectQueue.push(job)
-    this._processEffectQueue()
+    this._effectQueue.push(job);
+    this._processEffectQueue();
   }
 
   async _processEffectQueue() {
-    if (this._isResolvingEffect) return
-    this._isResolvingEffect = true
+    if (this._isResolvingEffect) return;
+    this._isResolvingEffect = true;
 
     while (this._effectQueue.length) {
-      const job = this._effectQueue.shift()
+      const job = this._effectQueue.shift();
       try {
-        await this._runEffectResolution(job)
+        await this._runEffectResolution(job);
       } catch (error) {
-        console.error('Erro ao resolver efeito:', error)
-        this._toast('Erro ao resolver efeito.')
+        console.error("Erro ao resolver efeito:", error);
+        this._toast("Erro ao resolver efeito.");
       }
     }
 
-    this._isResolvingEffect = false
+    this._isResolvingEffect = false;
   }
 
   async _runEffectResolution(job) {
-    if (job.type === 'command') {
-      await this._resolveCommandQueued(job.cardObject)
-      return
+    if (job.type === "command") {
+      await this._resolveCommandQueued(job.cardObject);
+      return;
     }
 
-    if (job.type === 'attachment') {
-      await this._resolveAttachmentQueued(job.cardObject)
+    if (job.type === "attachment") {
+      await this._resolveAttachmentQueued(job.cardObject);
     }
   }
 
   _activateCommand(cardObject) {
-    this._enqueueEffectResolution({ type: 'command', cardObject })
+    this._enqueueEffectResolution({ type: "command", cardObject });
   }
 
   async _resolveCommandQueued(cardObject) {
-    const card = cardObject.getData('cardData')
-    const effects = card.effects ?? []
+    const card = cardObject.getData("cardData");
+    const effects = card.effects ?? [];
     if (!effects.length) {
-      this._toast('Este comando ainda não tem efeito configurado.')
-      return
+      this._toast("Este comando ainda não tem efeito configurado.");
+      return;
     }
 
-    const discardHandEffect = effects.find(effect => effect.type === 'discard_hand_then_draw')
+    const discardHandEffect = effects.find(
+      (effect) => effect.type === "discard_hand_then_draw",
+    );
     if (discardHandEffect) {
-      this._resolveDiscardHandThenDrawCommand(cardObject, discardHandEffect)
-      this._toast(`${card.name} resolvido.`)
-      this._logAction(`${card.name} foi ativado.`)
-      return
+      this._resolveDiscardHandThenDrawCommand(cardObject, discardHandEffect);
+      this._toast(`${card.name} resolvido.`);
+      this._logAction(`${card.name} foi ativado.`);
+      return;
     }
 
     if (!this._payEffectCosts(card, effects)) {
-      this._toast('Não foi possível pagar o custo.')
-      return
+      this._toast("Não foi possível pagar o custo.");
+      return;
     }
 
-    let resolved = false
-    for (const effect of effects) {
-      const targetSlot = await this._chooseTargetForEffect(effect, 'comando')
-      if (targetSlot === false) return
-      resolved = this._applyCommandEffect(effect, targetSlot, card) || resolved
-    }
+    let resolved = false;
+
+
+
+    const revealShuffleEffect = effects.find(
+  effect => effect.type === 'reveal_random_hand_then_shuffle_one'
+)
+
+  if (revealShuffleEffect) {
+    const resolved = await applyRevealRandomHandThenShuffleOne(revealShuffleEffect, {
+      scene: this,
+      opponentHand: this.oppHand,
+      opponentDeck: this.oppDeck,
+      opponentDiscard: this.oppDiscard,
+      shuffleCards: cards => this._shuffleCards(cards),
+      randInt: (min, max) => this._randInt(min, max),
+    })
 
     this._finishCommand(cardObject)
-    this._toast(resolved ? `${card.name} resolvido.` : `${card.name} foi para o descarte.`)
+    this._toast(resolved ? `${card.name} resolvido.` : `${card.name} não encontrou alvo válido.`)
     this._logAction(`${card.name} foi ativado.`)
+    return
+  }
+
+
+
+    for (const effect of effects) {
+      const targetSlot = await this._chooseTargetForEffect(effect, "comando");
+      if (targetSlot === false) return;
+      resolved = this._applyCommandEffect(effect, targetSlot, card) || resolved;
+    }
+
+    this._finishCommand(cardObject);
+    this._toast(
+      resolved
+        ? `${card.name} resolvido.`
+        : `${card.name} foi para o descarte.`,
+    );
+    this._logAction(`${card.name} foi ativado.`);
   }
 
   _payEffectCosts() {
-    return true
+    return true;
   }
 
-  async _chooseTargetForEffect(effect, sourceLabel = 'efeito') {
-    if (!this._commandNeedsTarget(effect)) return null
+  async _chooseTargetForEffect(effect, sourceLabel = "efeito") {
+    if (!this._commandNeedsTarget(effect)) return null;
 
-    const targets = this._commandTargetSlots(effect)
+    const targets = this._commandTargetSlots(effect);
     if (!targets.length) {
-      this._toast(`Não há alvo válido para este ${sourceLabel}.`)
-      return false
+      this._toast(`Não há alvo válido para este ${sourceLabel}.`);
+      return false;
     }
 
-    const side = effect.target === 'enemy_creature' ? 'opp' : 'my'
+    const side = effect.target === "enemy_creature" ? "opp" : "my";
     const slot = await this._requestCreatureSlotChoiceAsync({
       title: `Escolha o alvo do ${sourceLabel}.`,
       side,
       slots: targets,
       color: 0xffcc44,
-    })
+    });
 
-    return slot ?? false
+    return slot ?? false;
   }
 
   _commandNeedsTarget(effect) {
-    return effectNeedsCreatureTarget(effect)
+    return effectNeedsCreatureTarget(effect);
   }
 
   _commandTargetSlots(effect) {
-    return commandTargetSlots(effect, this._slotsMy, this._slotsOpp)
+    return commandTargetSlots(effect, this._slotsMy, this._slotsOpp);
   }
 
   _highlightCommandTargets(targets) {
-    this._clearCommandTargets()
+    this._clearCommandTargets();
 
-    targets.forEach(slot => {
-      const highlight = this.add.rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
+    targets.forEach((slot) => {
+      const highlight = this.add
+        .rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
         .setStrokeStyle(3, 0xffcc44)
-        .setDepth(7)
-      slot.commandHighlight = highlight
+        .setDepth(7);
+      slot.commandHighlight = highlight;
       this.tweens.add({
         targets: highlight,
         scaleX: 1.08,
@@ -2307,183 +2823,212 @@ export default class GameScene extends Scene {
         duration: 360,
         yoyo: true,
         repeat: -1,
-        ease: 'Sine.easeInOut',
-      })
-    })
+        ease: "Sine.easeInOut",
+      });
+    });
   }
 
   _selectCommandTarget(side, slotIndex) {
-    if (!this._pendingCommandCard || !this._pendingCommandEffect) return
+    if (!this._pendingCommandCard || !this._pendingCommandEffect) return;
 
-    const slot = side === 'enemy' || side === 'opp'
-      ? this._slotsOpp[slotIndex]
-      : this._slotsMy[slotIndex]
-    if (!slot?.card || !this._commandTargetSlots(this._pendingCommandEffect).includes(slot)) return
+    const slot =
+      side === "enemy" || side === "opp"
+        ? this._slotsOpp[slotIndex]
+        : this._slotsMy[slotIndex];
+    if (
+      !slot?.card ||
+      !this._commandTargetSlots(this._pendingCommandEffect).includes(slot)
+    )
+      return;
 
-    this._resolveCommand(this._pendingCommandCard, slot)
+    this._resolveCommand(this._pendingCommandCard, slot);
   }
 
   _resolveCommand(cardObject, targetSlot) {
-    const card = cardObject.getData('cardData')
-    const discardHandEffect = (card.effects ?? []).find(effect => effect.type === 'discard_hand_then_draw')
+    const card = cardObject.getData("cardData");
+    const discardHandEffect = (card.effects ?? []).find(
+      (effect) => effect.type === "discard_hand_then_draw",
+    );
     if (discardHandEffect) {
-      this._resolveDiscardHandThenDrawCommand(cardObject, discardHandEffect)
-      this._pendingCommandCard = null
-      this._pendingCommandEffect = null
-      this._clearCommandTargets()
-      this._toast(`${card.name} resolvido.`)
-      return
+      this._resolveDiscardHandThenDrawCommand(cardObject, discardHandEffect);
+      this._pendingCommandCard = null;
+      this._pendingCommandEffect = null;
+      this._clearCommandTargets();
+      this._toast(`${card.name} resolvido.`);
+      return;
     }
 
-    let resolved = false
+    let resolved = false;
 
     for (const effect of card.effects ?? []) {
-      resolved = this._applyCommandEffect(effect, targetSlot, card) || resolved
+      resolved = this._applyCommandEffect(effect, targetSlot, card) || resolved;
     }
 
-    this._finishCommand(cardObject)
-    this._pendingCommandCard = null
-    this._pendingCommandEffect = null
-    this._clearCommandTargets()
-    this._toast(resolved ? `${card.name} resolvido.` : `${card.name} foi para o descarte.`)
-    this._logAction(`${card.name} foi ativado.`)
+    this._finishCommand(cardObject);
+    this._pendingCommandCard = null;
+    this._pendingCommandEffect = null;
+    this._clearCommandTargets();
+    this._toast(
+      resolved
+        ? `${card.name} resolvido.`
+        : `${card.name} foi para o descarte.`,
+    );
+    this._logAction(`${card.name} foi ativado.`);
   }
 
   _applyCommandEffect(effect, targetSlot, commandCard) {
     switch (effect.type) {
-      case 'prevent_attack':
-        if (!targetSlot?.card) return false
-        targetSlot.card.cannotAttackUntilTurn = this._turnNumber
-        return true
-      case 'discard_hand_then_draw':
-        this._resolveDiscardHandThenDrawCommand(null, effect, commandCard)
-        return true
-      case 'sacrifice_then_summon_from_deck':
-        return this._sacrificeThenSummonFromDeck(targetSlot, effect.summon)
-      case 'temporary_modify_stat':
-        return this._applyTemporaryCommandModifier(targetSlot, effect)
-      case 'prevent_attack_target':
-        if (!targetSlot?.card) return false
-        targetSlot.card.cannotBeAttackTargetUntilTurn = this._turnNumber
-        return true
-      case 'force_attack':
-        if (!targetSlot?.card) return false
-        targetSlot.card.forcedAttackUntilTurn = this._turnNumber + 1
-        return true
-      case 'reveal_random_hand_then_shuffle_one':
-        this._toast('Efeito preparado para modo com oponente.')
-        return true
-      default:
+      case "prevent_attack":
+        if (!targetSlot?.card) return false;
+        targetSlot.card.cannotAttackUntilTurn = this._turnNumber;
+        return true;
+      case "discard_hand_then_draw":
+        this._resolveDiscardHandThenDrawCommand(null, effect, commandCard);
+        return true;
+      case "sacrifice_then_summon_from_deck":
+        return this._sacrificeThenSummonFromDeck(targetSlot, effect.summon);
+      case "temporary_modify_stat":
+        return this._applyTemporaryCommandModifier(targetSlot, effect);
+      case "prevent_attack_target":
+        if (!targetSlot?.card) return false;
+        targetSlot.card.cannotBeAttackTargetUntilTurn = this._turnNumber;
+        return true;
+      case "force_attack":
+        if (!targetSlot?.card) return false;
+        targetSlot.card.forcedAttackUntilTurn = this._turnNumber + 1;
+        return true;
+     case 'reveal_random_hand_then_shuffle_one':
         return false
+      default:
+        return false;
     }
   }
 
   _finishCommand(cardObject) {
-    const card = cardObject.getData('cardData')
-    const handIndex = this.myHand.findIndex(c => c.id === card.id)
-    if (handIndex !== -1) this.myHand.splice(handIndex, 1)
+    const card = cardObject.getData("cardData");
+    const handIndex = this.myHand.findIndex((c) => c.id === card.id);
+    if (handIndex !== -1) this.myHand.splice(handIndex, 1);
 
-    this._handContainers = this._handContainers.filter(c => c !== cardObject)
-    this._renderHand(this.myHand)
-    this._animateCardToDiscard(cardObject, card)
+    this._handContainers = this._handContainers.filter((c) => c !== cardObject);
+    this._renderHand(this.myHand);
+    this._animateCardToDiscard(cardObject, card);
   }
 
   _discardHandThenDraw(commandCard) {
-    let keptCommand = false
-    const discarded = []
-    const remaining = []
+    let keptCommand = false;
+    const discarded = [];
+    const remaining = [];
 
     for (const card of this.myHand) {
       if (!keptCommand && card.id === commandCard.id) {
-        remaining.push(card)
-        keptCommand = true
+        remaining.push(card);
+        keptCommand = true;
       } else {
-        discarded.push(card)
+        discarded.push(card);
       }
     }
 
-    this.myDiscard.push(...discarded)
-    this.myHand = remaining
+    this.myDiscard.push(...discarded);
+    this.myHand = remaining;
 
-    const drawCount = Math.min(discarded.length, this.myDeck.length, MAX_HAND_SIZE - this.myHand.length)
+    const drawCount = Math.min(
+      discarded.length,
+      this.myDeck.length,
+      MAX_HAND_SIZE - this.myHand.length,
+    );
     for (let i = 0; i < drawCount; i++) {
-      this.myHand.push(this.myDeck.shift())
+      this.myHand.push(this.myDeck.shift());
     }
 
-    this._renderDeckPile()
+    this._renderDeckPile();
   }
 
-  _resolveDiscardHandThenDrawCommand(commandObject, effect, commandCard = null) {
-    const command = commandCard ?? commandObject?.getData('cardData')
-    if (!command) return
+  _resolveDiscardHandThenDrawCommand(
+    commandObject,
+    effect,
+    commandCard = null,
+  ) {
+    const command = commandCard ?? commandObject?.getData("cardData");
+    if (!command) return;
 
-    const commandIndex = this.myHand.findIndex(card => card.id === command.id)
-    if (commandIndex !== -1) this.myHand.splice(commandIndex, 1)
+    const commandIndex = this.myHand.findIndex(
+      (card) => card.id === command.id,
+    );
+    if (commandIndex !== -1) this.myHand.splice(commandIndex, 1);
 
-    const otherHandObjects = this._handContainers.filter(object => object !== commandObject)
-    const discardedCount = otherHandObjects.length
-    this.myHand = []
-    this._handContainers = []
+    const otherHandObjects = this._handContainers.filter(
+      (object) => object !== commandObject,
+    );
+    const discardedCount = otherHandObjects.length;
+    this.myHand = [];
+    this._handContainers = [];
 
-    const drawCount = Math.min(discardedCount, this.myDeck.length, MAX_HAND_SIZE)
-    const finishDraw = () => this._animateDrawCardsFromDeck(drawCount)
-    const discardOthers = () => this._animateHandObjectsToDiscard(otherHandObjects, finishDraw)
+    const drawCount = Math.min(
+      discardedCount,
+      this.myDeck.length,
+      MAX_HAND_SIZE,
+    );
+    const finishDraw = () => this._animateDrawCardsFromDeck(drawCount);
+    const discardOthers = () =>
+      this._animateHandObjectsToDiscard(otherHandObjects, finishDraw);
 
     if (commandObject) {
-      this._animateCardToDiscard(commandObject, command, discardOthers)
+      this._animateCardToDiscard(commandObject, command, discardOthers);
     } else {
-      this.myDiscard.push(command)
-      this._renderDiscardPile()
-      discardOthers()
+      this.myDiscard.push(command);
+      this._renderDiscardPile();
+      discardOthers();
     }
   }
 
   _animateHandObjectsToDiscard(cardObjects, onComplete) {
     if (!cardObjects.length) {
-      onComplete?.()
-      return
+      onComplete?.();
+      return;
     }
 
-    let completed = 0
+    let completed = 0;
     cardObjects.forEach((cardObject, index) => {
-      const card = cardObject.getData('cardData')
+      const card = cardObject.getData("cardData");
       this.time.delayedCall(index * 110, () => {
         this._animateCardToDiscard(cardObject, card, () => {
-          completed += 1
-          if (completed === cardObjects.length) onComplete?.()
-        })
-      })
-    })
+          completed += 1;
+          if (completed === cardObjects.length) onComplete?.();
+        });
+      });
+    });
   }
 
   _animateDrawCardsFromDeck(count, options = {}) {
     if (count <= 0) {
-      this._renderHand(this.myHand)
-      return
+      this._renderHand(this.myHand);
+      return;
     }
 
-    const existingHand = this.myHand.length
-    const drawn = []
+    const existingHand = this.myHand.length;
+    const drawn = [];
     for (let i = 0; i < count; i++) {
-      const card = this.myDeck.shift()
-      if (card) drawn.push(card)
+      const card = this.myDeck.shift();
+      if (card) drawn.push(card);
     }
 
-    this._renderDeckPile()
-    const y = this.cameras.main.height - 65
-    const targetPositions = this._handPositions(existingHand + drawn.length).slice(existingHand)
+    this._renderDeckPile();
+    const y = this.cameras.main.height - 65;
+    const targetPositions = this._handPositions(
+      existingHand + drawn.length,
+    ).slice(existingHand);
     const start = this._deckPileContainer
       ? { x: this._deckPileContainer.x, y: this._deckPileContainer.y }
-      : { x: this.cameras.main.width - 238, y: this.cameras.main.height - 90 }
+      : { x: this.cameras.main.width - 238, y: this.cameras.main.height - 90 };
 
-    let completed = 0
-    const previews = []
+    let completed = 0;
+    const previews = [];
     drawn.forEach((card, index) => {
-      const preview = this._createCardObject(card, start.x, start.y, false)
-      preview.setDepth(96)
-      preview.setScale(0.72)
-      preview.setAlpha(0.92)
-      previews.push(preview)
+      const preview = this._createCardObject(card, start.x, start.y, false);
+      preview.setDepth(96);
+      preview.setScale(0.72);
+      preview.setAlpha(0.92);
+      previews.push(preview);
 
       this.tweens.add({
         targets: preview,
@@ -2493,25 +3038,26 @@ export default class GameScene extends Scene {
         alpha: 1,
         duration: 380,
         delay: index * 120,
-        ease: 'Cubic.easeOut',
+        ease: "Cubic.easeOut",
         onComplete: () => {
-          completed += 1
+          completed += 1;
           if (completed === drawn.length) {
-            drawn.forEach(cardData => this.myHand.push(cardData))
-            previews.forEach(object => object.destroy(true))
-            this._renderHand(this.myHand)
-            this._logAction(`Voce comprou ${drawn.length} carta(s).`)
-            this._discardRandomIfHandOverflow()
-            options.onComplete?.()
+            drawn.forEach((cardData) => this.myHand.push(cardData));
+            previews.forEach((object) => object.destroy(true));
+            this._renderHand(this.myHand);
+            this._logAction(`Voce comprou ${drawn.length} carta(s).`);
+            this._discardRandomIfHandOverflow();
+            this._syncPublicZoneState("draw_cards", { count: drawn.length });
+            options.onComplete?.();
           }
         },
-      })
-    })
+      });
+    });
   }
 
   _animateExistingCardTo(cardObject, x, y, options = {}) {
-    cardObject.disableInteractive()
-    cardObject.setDepth(options.depth ?? 92)
+    cardObject.disableInteractive();
+    cardObject.setDepth(options.depth ?? 92);
 
     this.tweens.add({
       targets: cardObject,
@@ -2520,19 +3066,19 @@ export default class GameScene extends Scene {
       scale: options.scale ?? cardObject.scale,
       angle: options.angle ?? 0,
       duration: options.duration ?? 360,
-      ease: options.ease ?? 'Cubic.easeInOut',
+      ease: options.ease ?? "Cubic.easeInOut",
       onComplete: () => {
-        cardObject.setAlpha(1)
-        options.onComplete?.()
+        cardObject.setAlpha(1);
+        options.onComplete?.();
       },
-    })
+    });
   }
 
   _animateCardPreviewTo(card, from, to, options = {}) {
-    const preview = this._createCardObject(card, from.x, from.y, false)
-    preview.setDepth(options.depth ?? 92)
-    preview.setScale(options.startScale ?? 0.72)
-    preview.setAlpha(options.alpha ?? 0.92)
+    const preview = this._createCardObject(card, from.x, from.y, false);
+    preview.setDepth(options.depth ?? 92);
+    preview.setScale(options.startScale ?? 0.72);
+    preview.setAlpha(options.alpha ?? 0.92);
 
     this.tweens.add({
       targets: preview,
@@ -2541,244 +3087,295 @@ export default class GameScene extends Scene {
       scale: options.endScale ?? 1,
       alpha: 1,
       duration: options.duration ?? 360,
-      ease: options.ease ?? 'Cubic.easeInOut',
+      ease: options.ease ?? "Cubic.easeInOut",
       onComplete: () => {
-        preview.destroy(true)
-        options.onComplete?.()
+        preview.destroy(true);
+        options.onComplete?.();
       },
-    })
+    });
   }
 
   _sacrificeThenSummonFromDeck(targetSlot, summonRule) {
-    if (!targetSlot?.card || !summonRule) return false
+    if (!targetSlot?.card || !summonRule) return false;
 
-    const sacrificedObject = targetSlot.cardObject
-    const attachments = [...(targetSlot.attachments ?? [])]
+    const sacrificedObject = targetSlot.cardObject;
+    const attachments = [...(targetSlot.attachments ?? [])];
     if (!targetSlot.card.isToken) {
-      this.myDiscard.push(targetSlot.card)
-      this._animateFieldObjectToDiscard(sacrificedObject, 'my')
+      this.myDiscard.push(targetSlot.card);
+      this._animateFieldObjectToDiscard(sacrificedObject, "my");
     } else {
-      this._animateFieldObjectVanish(sacrificedObject)
+      this._animateFieldObjectVanish(sacrificedObject);
     }
     attachments.forEach((attachment, index) => {
-      if (attachment.card) this.myDiscard.push(attachment.card)
-      this._animateFieldObjectToDiscard(attachment.object, 'my', { delay: 80 + index * 70, scale: 0.58 })
-    })
-    targetSlot.card = null
-    targetSlot.cardObject = null
-    targetSlot.attachments = []
+      if (attachment.card) this.myDiscard.push(attachment.card);
+      this._animateFieldObjectToDiscard(attachment.object, "my", {
+        delay: 80 + index * 70,
+        scale: 0.58,
+      });
+    });
+    targetSlot.card = null;
+    targetSlot.cardObject = null;
+    targetSlot.attachments = [];
 
-    let summoned = 0
-    const max = summonRule.count ?? 1
+    let summoned = 0;
+    const max = summonRule.count ?? 1;
     for (let i = this.myDeck.length - 1; i >= 0 && summoned < max; i--) {
-      const card = this.myDeck[i]
-      if (!this._matchesSummonRule(card, summonRule)) continue
-      const emptySlot = this._slotsMy.find(slot => !slot.card)
-      if (!emptySlot) break
+      const card = this.myDeck[i];
+      if (!this._matchesSummonRule(card, summonRule)) continue;
+      const emptySlot = this._slotsMy.find((slot) => !slot.card);
+      if (!emptySlot) break;
 
-      this.myDeck.splice(i, 1)
+      this.myDeck.splice(i, 1);
       this._summonCreatureToSlot(card, emptySlot, {
-        canAttackFromTurn: summonRule.can_attack_this_turn === false ? this._turnNumber + 1 : this._turnNumber,
-      })
-      summoned += 1
+        canAttackFromTurn:
+          summonRule.can_attack_this_turn === false
+            ? this._turnNumber + 1
+            : this._turnNumber,
+      });
+      summoned += 1;
     }
 
-    this._renderDeckPile()
-    return true
+    this._renderDeckPile();
+    return true;
   }
 
   _matchesSummonRule(card, rule) {
-    if (rule.card_type && card.card_type !== rule.card_type) return false
-    if (rule.race && card.raca !== rule.race) return false
-    if (rule.max_attack != null && Number(card.attack) > Number(rule.max_attack)) return false
-    return true
+    if (rule.card_type && card.card_type !== rule.card_type) return false;
+    if (rule.race && card.raca !== rule.race) return false;
+    if (
+      rule.max_attack != null &&
+      Number(card.attack) > Number(rule.max_attack)
+    )
+      return false;
+    return true;
   }
 
   _applyTemporaryCommandModifier(targetSlot, effect) {
-    if (!targetSlot?.card) return false
+    if (!targetSlot?.card) return false;
 
-    const value = this._valueFromCommandRule(effect.value_per_card)
+    const value = this._valueFromCommandRule(effect.value_per_card);
     const modifier = {
       expiresOnTurn: this._turnNumber,
-      attack: effect.stats?.includes('attack') ? value : 0,
-      defense: effect.stats?.includes('defense') ? value : 0,
-    }
-    targetSlot.card.tempModifiers = [...(targetSlot.card.tempModifiers ?? []), modifier]
-    this._recalculateAllFieldCreatures()
-    return true
+      attack: effect.stats?.includes("attack") ? value : 0,
+      defense: effect.stats?.includes("defense") ? value : 0,
+    };
+    targetSlot.card.tempModifiers = [
+      ...(targetSlot.card.tempModifiers ?? []),
+      modifier,
+    ];
+    this._recalculateAllFieldCreatures();
+    return true;
   }
 
   _valueFromCommandRule(rule) {
-    if (!rule) return Number(rule?.value) || 0
+    if (!rule) return Number(rule?.value) || 0;
 
-    if (rule.zone === 'your_discard') {
-      const count = this.myDiscard.filter(card => {
-        if (rule.name_includes && !String(card.name ?? card.nome ?? '').includes(rule.name_includes)) return false
-        return true
-      }).length
-      return count * (Number(rule.value) || 0)
+    if (rule.zone === "your_discard") {
+      const count = this.myDiscard.filter((card) => {
+        if (
+          rule.name_includes &&
+          !String(card.name ?? card.nome ?? "").includes(rule.name_includes)
+        )
+          return false;
+        return true;
+      }).length;
+      return count * (Number(rule.value) || 0);
     }
 
-    return Number(rule.value) || 0
+    return Number(rule.value) || 0;
   }
 
   _activateScenario(cardObject) {
-    const card = cardObject.getData('cardData')
+    const card = cardObject.getData("cardData");
     if (this._myScenario) {
-      const oldScenario = this._myScenario
+      const oldScenario = this._myScenario;
       const from = this._scenarioContainer
         ? { x: this._scenarioContainer.x, y: this._scenarioContainer.y - 8 }
-        : { x: 320, y: this.cameras.main.height / 2 }
-      this.myDiscard.push(oldScenario)
-      this._animateCardPreviewToDiscard(oldScenario, from, 'my')
+        : { x: 320, y: this.cameras.main.height / 2 };
+      this.myDiscard.push(oldScenario);
+      this._animateCardPreviewToDiscard(oldScenario, from, "my");
     }
 
-    this._myScenario = card
-    const handIndex = this.myHand.findIndex(c => c.id === card.id)
-    if (handIndex !== -1) this.myHand.splice(handIndex, 1)
-    cardObject.destroy(true)
-    this._handContainers = this._handContainers.filter(object => object !== cardObject)
-    this._renderHand(this.myHand)
-    this._renderScenarioZone()
-    this._toast(`${card.name} ativo.`)
-    this._logAction(`${card.name} entrou como cenario.`)
+    this._myScenario = card;
+    const handIndex = this.myHand.findIndex((c) => c.id === card.id);
+    if (handIndex !== -1) this.myHand.splice(handIndex, 1);
+    cardObject.destroy(true);
+    this._handContainers = this._handContainers.filter(
+      (object) => object !== cardObject,
+    );
+    this._renderHand(this.myHand);
+    this._renderScenarioZone();
+    this._toast(`${card.name} ativo.`);
+    this._logAction(`${card.name} entrou como cenario.`);
   }
 
   _renderScenarioZone() {
-    if (this._scenarioContainer) this._scenarioContainer.destroy(true)
+    if (this._scenarioContainer) this._scenarioContainer.destroy(true);
 
-    const firstSlot = this._slotsMy?.[0]
-    const fallback = { x: 320, y: this.cameras.main.height / 2 + 42 }
-    const x = (firstSlot?.x ?? fallback.x) - 132
-    const y = (firstSlot?.y ?? fallback.y) - 42
-    this._scenarioContainer = this.add.container(x, y).setDepth(3)
-    const base = this.add.rectangle(0, 0, 118, 82, 0x0c2018, 0.88).setStrokeStyle(1, 0x338866)
-    const label = this.add.text(0, 34, 'CENARIO', { fontSize: '10px', color: '#88ddbb' }).setOrigin(0.5)
-    this._scenarioContainer.add([base, label])
+    const firstSlot = this._slotsMy?.[0];
+    const fallback = { x: 320, y: this.cameras.main.height / 2 + 42 };
+    const x = (firstSlot?.x ?? fallback.x) - 132;
+    const y = (firstSlot?.y ?? fallback.y) - 42;
+    this._scenarioContainer = this.add.container(x, y).setDepth(3);
+    const base = this.add
+      .rectangle(0, 0, 118, 82, 0x0c2018, 0.88)
+      .setStrokeStyle(1, 0x338866);
+    const label = this.add
+      .text(0, 34, "CENARIO", { fontSize: "10px", color: "#88ddbb" })
+      .setOrigin(0.5);
+    this._scenarioContainer.add([base, label]);
 
     if (this._myScenario) {
-      const key = `card_${this._myScenario.id}`
+      const key = `card_${this._myScenario.id}`;
       const art = this.textures.exists(key)
         ? this.add.image(0, -8, key).setDisplaySize(64, 90)
-        : this.add.rectangle(0, -8, 64, 90, this._myScenario.color ?? 0x336655)
-      this._scenarioContainer.add(art)
+        : this.add.rectangle(0, -8, 64, 90, this._myScenario.color ?? 0x336655);
+      this._scenarioContainer.add(art);
     }
   }
 
   _attachPendingToTarget(cardObject) {
-    if (!this._pendingAttachmentCard) return false
+    if (!this._pendingAttachmentCard) return false;
 
-    const slot = this._slotsMy.find(s => s.cardObject === cardObject)
-    if (!slot) return false
+    const slot = this._slotsMy.find((s) => s.cardObject === cardObject);
+    if (!slot) return false;
 
-    const attachmentObject = this._pendingAttachmentCard
-    const attachment = attachmentObject.getData('cardData')
-    if (!this._attachmentTargets(attachment).includes(slot)) return false
+    const attachmentObject = this._pendingAttachmentCard;
+    const attachment = attachmentObject.getData("cardData");
+    if (!this._attachmentTargets(attachment).includes(slot)) return false;
 
-    this._animateAttachmentToSlot(slot, attachmentObject, attachment)
-    return true
+    this._animateAttachmentToSlot(slot, attachmentObject, attachment);
+    return true;
   }
 
   _animateAttachmentToSlot(slot, attachmentObject, attachment) {
-    const index = Math.min(slot.attachments.length, 1)
-    const xOffset = index === 0 ? -12 : 12
-    this._animateExistingCardTo(attachmentObject, slot.x + xOffset, slot.y + 9, {
-      scale: 0.98,
-      depth: 92,
-      duration: 320,
-      onComplete: () => this._placeAttachment(slot, attachmentObject, attachment),
-    })
+    const index = Math.min(slot.attachments.length, 1);
+    const xOffset = index === 0 ? -12 : 12;
+    this._animateExistingCardTo(
+      attachmentObject,
+      slot.x + xOffset,
+      slot.y + 9,
+      {
+        scale: 0.98,
+        depth: 92,
+        duration: 320,
+        onComplete: () =>
+          this._placeAttachment(slot, attachmentObject, attachment),
+      },
+    );
   }
 
   _placeAttachment(slot, attachmentObject, attachment) {
     if (slot.attachments.length >= 2) {
-      this._openAttachmentReplaceChoice(slot, attachmentObject, attachment)
-      return
+      this._openAttachmentReplaceChoice(slot, attachmentObject, attachment);
+      return;
     }
 
-    const index = slot.attachments.length
-    const xOffset = index === 0 ? -12 : 12
-    attachmentObject.setPosition(slot.x + xOffset, slot.y + 9)
-    attachmentObject.setScale(0.98)
-    attachmentObject.setDepth(6 + index)
-    attachmentObject.setData('source', 'attachment')
-    attachmentObject.setData('slot', slot)
-    attachmentObject.setData('abilityState', { usedAbilities: {} })
-    attachmentObject.removeAllListeners('pointerdown')
-    attachmentObject.setInteractive({ useHandCursor: true })
-    attachmentObject.on('pointerdown', () => this._showCardActions(attachmentObject))
+    const index = slot.attachments.length;
+    const xOffset = index === 0 ? -12 : 12;
+    attachmentObject.setPosition(slot.x + xOffset, slot.y + 9);
+    attachmentObject.setScale(0.98);
+    attachmentObject.setDepth(6 + index);
+    attachmentObject.setData("source", "attachment");
+    attachmentObject.setData("slot", slot);
+    attachmentObject.setData("abilityState", { usedAbilities: {} });
+    attachmentObject.removeAllListeners("pointerdown");
+    attachmentObject.setInteractive({ useHandCursor: true });
+    attachmentObject.on("pointerdown", () =>
+      this._showCardActions(attachmentObject),
+    );
 
-    slot.attachments.push({ card: attachment, object: attachmentObject })
-    this._resolveOnAttachEffects(slot, attachment)
-    this._resolveAttachmentTriggeredAbilities(slot, attachment)
-    this._recalculateAllFieldCreatures()
-    this._handContainers = this._handContainers.filter(card => card !== attachmentObject)
-    const handIndex = this.myHand.findIndex(card => card.id === attachment.id)
-    if (handIndex !== -1) this.myHand.splice(handIndex, 1)
-    this._turnActions.attached = true
+    slot.attachments.push({ card: attachment, object: attachmentObject });
+    this._resolveOnAttachEffects(slot, attachment);
+    this._resolveAttachmentTriggeredAbilities(slot, attachment);
+    this._recalculateAllFieldCreatures();
+    this._handContainers = this._handContainers.filter(
+      (card) => card !== attachmentObject,
+    );
+    const handIndex = this.myHand.findIndex(
+      (card) => card.id === attachment.id,
+    );
+    if (handIndex !== -1) this.myHand.splice(handIndex, 1);
+    this._turnActions.attached = true;
 
-    this._pendingAttachmentCard = null
-    this._clearAttachmentTargets()
-    this._toast(`${attachment.name} anexada.`)
-    this._logAction(`${attachment.name} foi anexada a ${slot.card.name}.`)
+    this._pendingAttachmentCard = null;
+    this._clearAttachmentTargets();
+    this._toast(`${attachment.name} anexada.`);
+    this._logAction(`${attachment.name} foi anexada a ${slot.card.name}.`);
   }
 
   _placeOpponentAttachment(slot, attachment) {
-    if (!slot?.card || slot.attachments.length >= 2) return false
+    if (!slot?.card || slot.attachments.length >= 2) return false;
 
-    const index = slot.attachments.length
-    const xOffset = index === 0 ? -12 : 12
-    const attachmentObject = this._createCardObject(attachment, slot.x + xOffset, slot.y + 9, false)
-    attachmentObject.setScale(0.98)
-    attachmentObject.setDepth(6 + index)
-    attachmentObject.setData('source', 'attachment')
-    attachmentObject.setData('slot', slot)
-    attachmentObject.setData('abilityState', { usedAbilities: {} })
-    attachmentObject.setInteractive({ useHandCursor: true })
-    attachmentObject.on('pointerdown', () => this._showCardActions(attachmentObject))
+    const index = slot.attachments.length;
+    const xOffset = index === 0 ? -12 : 12;
+    const attachmentObject = this._createCardObject(
+      attachment,
+      slot.x + xOffset,
+      slot.y + 9,
+      false,
+    );
+    attachmentObject.setScale(0.98);
+    attachmentObject.setDepth(6 + index);
+    attachmentObject.setData("source", "attachment");
+    attachmentObject.setData("slot", slot);
+    attachmentObject.setData("abilityState", { usedAbilities: {} });
+    attachmentObject.setInteractive({ useHandCursor: true });
+    attachmentObject.on("pointerdown", () =>
+      this._showCardActions(attachmentObject),
+    );
 
-    slot.attachments.push({ card: attachment, object: attachmentObject })
-    this._recalculateAllFieldCreatures()
-    this._logAction(`Oponente anexou ${attachment.name} a ${slot.card.name}.`)
-    return true
+    slot.attachments.push({ card: attachment, object: attachmentObject });
+    this._recalculateAllFieldCreatures();
+    this._logAction(`Oponente anexou ${attachment.name} a ${slot.card.name}.`);
+    return true;
   }
 
   _openAttachmentReplaceChoice(slot, attachmentObject, attachment) {
-    this._clearAttachmentTargets()
-    this._clearAttachmentReplaceChoice()
+    this._clearAttachmentTargets();
+    this._clearAttachmentReplaceChoice();
 
-    this._replaceAttachmentMenu = this.add.container(slot.x, slot.y - 92).setDepth(46)
-    const bg = this.add.rectangle(0, 0, 260, 66, 0x071018, 0.92).setStrokeStyle(1, 0xbb77ff)
-    const label = this.add.text(0, -20, 'Descartar qual anexo?', {
-      fontSize: '11px',
-      color: '#ffffff',
-    }).setOrigin(0.5)
-    this._replaceAttachmentMenu.add([bg, label])
+    this._replaceAttachmentMenu = this.add
+      .container(slot.x, slot.y - 92)
+      .setDepth(46);
+    const bg = this.add
+      .rectangle(0, 0, 260, 66, 0x071018, 0.92)
+      .setStrokeStyle(1, 0xbb77ff);
+    const label = this.add
+      .text(0, -20, "Descartar qual anexo?", {
+        fontSize: "11px",
+        color: "#ffffff",
+      })
+      .setOrigin(0.5);
+    this._replaceAttachmentMenu.add([bg, label]);
 
     slot.attachments.forEach((entry, index) => {
-      const btn = this.add.text((index - 0.5) * 112, 14, entry.card.name.slice(0, 14), {
-        fontSize: '10px',
-        color: '#ffffff',
-        backgroundColor: '#6a3d9a',
-        padding: { x: 8, y: 5 },
-        fixedWidth: 104,
-        align: 'center',
-      }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-      btn.setData('floatingMenuControl', true)
-      btn.on('pointerdown', () => {
-        this._clearAttachmentReplaceChoice()
-        this._discardAttachment(slot, index)
-        this._placeAttachment(slot, attachmentObject, attachment)
-      })
-      this._replaceAttachmentMenu.add(btn)
-    })
+      const btn = this.add
+        .text((index - 0.5) * 112, 14, entry.card.name.slice(0, 14), {
+          fontSize: "10px",
+          color: "#ffffff",
+          backgroundColor: "#6a3d9a",
+          padding: { x: 8, y: 5 },
+          fixedWidth: 104,
+          align: "center",
+        })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+      btn.setData("floatingMenuControl", true);
+      btn.on("pointerdown", () => {
+        this._clearAttachmentReplaceChoice();
+        this._discardAttachment(slot, index);
+        this._placeAttachment(slot, attachmentObject, attachment);
+      });
+      this._replaceAttachmentMenu.add(btn);
+    });
   }
 
   _discardAttachment(slot, index) {
-    const [entry] = slot.attachments.splice(index, 1)
-    if (!entry) return
-    this.myDiscard.push(entry.card)
-    this._animateFieldObjectToDiscard(entry.object, 'my', { scale: 0.58 })
+    const [entry] = slot.attachments.splice(index, 1);
+    if (!entry) return;
+    this.myDiscard.push(entry.card);
+    this._animateFieldObjectToDiscard(entry.object, "my", { scale: 0.58 });
   }
 
   _resolveOnAttachEffects(slot, attachment) {
@@ -2786,371 +3383,479 @@ export default class GameScene extends Scene {
       source: attachment,
       attachedCreature: slot.card,
       yourField: this._slotsMy,
-    })
+    });
 
     for (const effect of attachment.onAttach ?? []) {
-      if (effect.type === 'change_element') this._openOnAttachElementChoice(slot, effect)
-      if (abilityEffectNeedsTarget(effect)) this._startOnAttachAbilityTargetSelection(slot, attachment, effect)
+      if (effect.type === "change_element")
+        this._openOnAttachElementChoice(slot, effect);
+      if (abilityEffectNeedsTarget(effect))
+        this._startOnAttachAbilityTargetSelection(slot, attachment, effect);
     }
 
     for (const result of results) {
-      if (result.card_type === 'criatura') this._summonTokenToFirstEmptyZone(result)
-      if (result.type === 'delayed_effect') this._scheduleDelayedEffect(slot, attachment, result)
+      if (result.card_type === "criatura")
+        this._summonTokenToFirstEmptyZone(result);
+      if (result.type === "delayed_effect")
+        this._scheduleDelayedEffect(slot, attachment, result);
     }
   }
 
   _resolveAttachmentTriggeredAbilities(slot, attachment) {
     for (const ability of attachment.triggeredAbilities ?? []) {
-      if (ability.trigger !== 'attached_count_reaches') continue
+      if (ability.trigger !== "attached_count_reaches") continue;
 
-      const targetName = ability.attachedName ?? attachment.name ?? attachment.nome
-      const count = (slot.attachments ?? []).filter(entry => (
-        String(entry.card?.name ?? entry.card?.nome ?? '').toLowerCase()
-          === String(targetName).toLowerCase()
-      )).length
-      if (count !== Number(ability.count)) continue
+      const targetName =
+        ability.attachedName ?? attachment.name ?? attachment.nome;
+      const count = (slot.attachments ?? []).filter(
+        (entry) =>
+          String(entry.card?.name ?? entry.card?.nome ?? "").toLowerCase() ===
+          String(targetName).toLowerCase(),
+      ).length;
+      if (count !== Number(ability.count)) continue;
 
-      if (ability.action?.type === 'opponent_discard_random') {
-        this._discardRandomOpponentCards(ability.action.discard ?? 1)
+      if (ability.action?.type === "opponent_discard_random") {
+        this._discardRandomOpponentCards(ability.action.discard ?? 1);
       }
     }
   }
 
-  _resolveAttachedCreatureAttackTriggers(attackerSlot, owner = 'my', attachments = null) {
-    const activeAttachments = attachments ?? attackerSlot?.attachments ?? []
-    if (!attackerSlot?.card && !activeAttachments.length) return
-    if (!activeAttachments.length) return
+  _resolveAttachedCreatureAttackTriggers(
+    attackerSlot,
+    owner = "my",
+    attachments = null,
+  ) {
+    const activeAttachments = attachments ?? attackerSlot?.attachments ?? [];
+    if (!attackerSlot?.card && !activeAttachments.length) return;
+    if (!activeAttachments.length) return;
 
     for (const attachment of activeAttachments) {
       for (const ability of attachment.card?.triggeredAbilities ?? []) {
-        if (ability.trigger !== 'attached_creature_attacks') continue
-        this._resolveAttachedCreatureAttackAction(attackerSlot, owner, attachment.card, ability.action)
+        if (ability.trigger !== "attached_creature_attacks") continue;
+        this._resolveAttachedCreatureAttackAction(
+          attackerSlot,
+          owner,
+          attachment.card,
+          ability.action,
+        );
       }
     }
   }
 
-  _resolveAttachedCreatureAttackAction(attackerSlot, owner, attachment, action) {
-    if (!action) return false
+  _resolveAttachedCreatureAttackAction(
+    attackerSlot,
+    owner,
+    attachment,
+    action,
+  ) {
+    if (!action) return false;
 
     if (
-      action.type !== 'choose_enemy_creature_then_prevent_attack'
-      && action.type !== 'choose_enemy_creature_prevent_attack_next_turn'
+      action.type !== "choose_enemy_creature_then_prevent_attack" &&
+      action.type !== "choose_enemy_creature_prevent_attack_next_turn"
     ) {
-      return false
+      return false;
     }
 
-    const enemySlots = owner === 'my'
-      ? this._slotsOpp.filter(slot => slot.card)
-      : this._slotsMy.filter(slot => slot.card)
+    const enemySlots =
+      owner === "my"
+        ? this._slotsOpp.filter((slot) => slot.card)
+        : this._slotsMy.filter((slot) => slot.card);
 
-    if (!enemySlots.length) return false
+    if (!enemySlots.length) return false;
 
-    const applyPreventAttack = targetSlot => {
-      if (!targetSlot?.card) return
-      targetSlot.card.cannotAttackUntilTurn = this._turnNumber + 1
-      this._toast(`${targetSlot.card.name} não poderá atacar no próximo turno.`)
-      this._logAction(`${attachment.name} impediu ${targetSlot.card.name} de atacar no próximo turno.`)
-    }
+    const applyPreventAttack = (targetSlot) => {
+      if (!targetSlot?.card) return;
+      targetSlot.card.cannotAttackUntilTurn = this._turnNumber + 1;
+      this._toast(
+        `${targetSlot.card.name} não poderá atacar no próximo turno.`,
+      );
+      this._logAction(
+        `${attachment.name} impediu ${targetSlot.card.name} de atacar no próximo turno.`,
+      );
+    };
 
-    if (owner === 'opp') {
-      applyPreventAttack(enemySlots[0])
-      return true
+    if (owner === "opp") {
+      applyPreventAttack(enemySlots[0]);
+      return true;
     }
 
     this._requestCreatureSlotChoice({
       title: `${attachment.name}: escolha uma criatura inimiga.`,
-      side: 'opp',
+      side: "opp",
       slots: enemySlots,
       color: 0x66ddff,
       onSelect: applyPreventAttack,
-    })
-    return true
+    });
+    return true;
   }
 
   _discardRandomOpponentCards(count = 1) {
-    const amount = Math.max(1, Number(count) || 1)
-    const discarded = aiDiscardRandom({
-      hand: this.oppHand,
-      discard: this.oppDiscard,
-    }, amount, (min, max) => this._randInt(min, max))
+    const amount = Math.max(1, Number(count) || 1);
+    const discarded = aiDiscardRandom(
+      {
+        hand: this.oppHand,
+        discard: this.oppDiscard,
+      },
+      amount,
+      (min, max) => this._randInt(min, max),
+    );
 
-    this.oppHandCount = this.oppHand.length
-    this._renderOpponentHand()
-    this._renderOpponentDiscardPile()
+    this.oppHandCount = this.oppHand.length;
+    this._renderOpponentHand();
+    this._renderOpponentDiscardPile();
 
     if (!discarded.length) {
-      this._toast('Oponente não tem cartas na mão para descartar.')
-      return
+      this._toast("Oponente não tem cartas na mão para descartar.");
+      return;
     }
 
-    this._toast('Oponente descartou uma carta aleatória.')
-    this._logAction(`Oponente descartou ${discarded.length} carta(s) aleatória(s).`)
+    this._toast("Oponente descartou uma carta aleatória.");
+    this._logAction(
+      `Oponente descartou ${discarded.length} carta(s) aleatória(s).`,
+    );
   }
 
   _requestYesNoChoice({
-    title = 'Ativar efeito?',
-    message = '',
-    confirmLabel = 'SIM',
-    cancelLabel = 'NÃO',
+    title = "Ativar efeito?",
+    message = "",
+    confirmLabel = "SIM",
+    cancelLabel = "NÃO",
     onConfirm,
     onCancel,
   } = {}) {
-    this._closeEffectChoiceModal()
-    const { width, height } = this.cameras.main
-    this._effectChoiceModal = this.add.container(width / 2, height / 2).setDepth(132)
+    this._closeEffectChoiceModal();
+    const { width, height } = this.cameras.main;
+    this._effectChoiceModal = this.add
+      .container(width / 2, height / 2)
+      .setDepth(132);
 
-    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.58).setInteractive()
-    const panel = this.add.rectangle(0, 0, 430, 180, 0x071018, 0.97).setStrokeStyle(2, 0x4caf50)
-    const titleText = this.add.text(0, -58, title, {
-      fontSize: '16px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
-    const body = this.add.text(0, -22, message, {
-      fontSize: '12px',
-      color: '#d7e7df',
-      align: 'center',
-      wordWrap: { width: 370 },
-    }).setOrigin(0.5)
-    const yes = this.add.text(-76, 48, confirmLabel, {
-      fontSize: '13px',
-      color: '#ffffff',
-      backgroundColor: '#1b5e20',
-      padding: { x: 20, y: 8 },
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    const no = this.add.text(76, 48, cancelLabel, {
-      fontSize: '13px',
-      color: '#ffffff',
-      backgroundColor: '#5a2525',
-      padding: { x: 20, y: 8 },
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+    const overlay = this.add
+      .rectangle(0, 0, width, height, 0x000000, 0.58)
+      .setInteractive();
+    const panel = this.add
+      .rectangle(0, 0, 430, 180, 0x071018, 0.97)
+      .setStrokeStyle(2, 0x4caf50);
+    const titleText = this.add
+      .text(0, -58, title, {
+        fontSize: "16px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    const body = this.add
+      .text(0, -22, message, {
+        fontSize: "12px",
+        color: "#d7e7df",
+        align: "center",
+        wordWrap: { width: 370 },
+      })
+      .setOrigin(0.5);
+    const yes = this.add
+      .text(-76, 48, confirmLabel, {
+        fontSize: "13px",
+        color: "#ffffff",
+        backgroundColor: "#1b5e20",
+        padding: { x: 20, y: 8 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    const no = this.add
+      .text(76, 48, cancelLabel, {
+        fontSize: "13px",
+        color: "#ffffff",
+        backgroundColor: "#5a2525",
+        padding: { x: 20, y: 8 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
 
-    yes.on('pointerdown', () => {
-      this._closeEffectChoiceModal()
-      onConfirm?.()
-    })
-    no.on('pointerdown', () => {
-      this._closeEffectChoiceModal()
-      onCancel?.()
-    })
+    yes.on("pointerdown", () => {
+      this._closeEffectChoiceModal();
+      onConfirm?.();
+    });
+    no.on("pointerdown", () => {
+      this._closeEffectChoiceModal();
+      onCancel?.();
+    });
 
-    this._effectChoiceModal.add([overlay, panel, titleText, body, yes, no])
+    this._effectChoiceModal.add([overlay, panel, titleText, body, yes, no]);
   }
 
   _requestYesNoChoiceAsync(options = {}) {
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
       this._requestYesNoChoice({
         ...options,
         onConfirm: () => {
-          options.onConfirm?.()
-          resolve(true)
+          options.onConfirm?.();
+          resolve(true);
         },
         onCancel: () => {
-          options.onCancel?.()
-          resolve(false)
+          options.onCancel?.();
+          resolve(false);
         },
-      })
-    })
+      });
+    });
   }
 
   _requestTimedYesNoChoiceAsync(options = {}) {
-    return new Promise(resolve => {
-      let remaining = options.seconds ?? 7
-      let settled = false
-      const finish = value => {
-        if (settled) return
-        settled = true
+    return new Promise((resolve) => {
+      let remaining = options.seconds ?? 7;
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
         if (this._commandResponseTimer) {
-          this._commandResponseTimer.remove(false)
-          this._commandResponseTimer = null
+          this._commandResponseTimer.remove(false);
+          this._commandResponseTimer = null;
         }
-        this._closeEffectChoiceModal()
-        resolve(value)
-      }
+        this._closeEffectChoiceModal();
+        resolve(value);
+      };
 
-      this._closeEffectChoiceModal()
-      const { width, height } = this.cameras.main
-      this._effectChoiceModal = this.add.container(width / 2, height / 2).setDepth(132)
+      this._closeEffectChoiceModal();
+      const { width, height } = this.cameras.main;
+      this._effectChoiceModal = this.add
+        .container(width / 2, height / 2)
+        .setDepth(132);
 
-      const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.48).setInteractive()
-      const panel = this.add.rectangle(0, 0, 460, 190, 0x071018, 0.97).setStrokeStyle(2, 0xffcc44)
-      const title = this.add.text(0, -62, options.title ?? 'Responder com comando?', {
-        fontSize: '16px',
-        color: '#ffffff',
-        fontStyle: 'bold',
-      }).setOrigin(0.5)
-      const body = this.add.text(0, -22, options.message ?? 'Você pode ativar uma carta de comando em resposta.', {
-        fontSize: '12px',
-        color: '#d7e7df',
-        align: 'center',
-        wordWrap: { width: 390 },
-      }).setOrigin(0.5)
-      const timer = this.add.text(0, 20, `${remaining}s`, {
-        fontSize: '15px',
-        color: '#ffdd66',
-        fontStyle: 'bold',
-      }).setOrigin(0.5)
-      const yes = this.add.text(-78, 58, 'SIM', {
-        fontSize: '13px',
-        color: '#ffffff',
-        backgroundColor: '#1b5e20',
-        padding: { x: 22, y: 8 },
-      }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-      const no = this.add.text(78, 58, 'NÃO', {
-        fontSize: '13px',
-        color: '#ffffff',
-        backgroundColor: '#5a2525',
-        padding: { x: 22, y: 8 },
-      }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+      const overlay = this.add
+        .rectangle(0, 0, width, height, 0x000000, 0.48)
+        .setInteractive();
+      const panel = this.add
+        .rectangle(0, 0, 460, 190, 0x071018, 0.97)
+        .setStrokeStyle(2, 0xffcc44);
+      const title = this.add
+        .text(0, -62, options.title ?? "Responder com comando?", {
+          fontSize: "16px",
+          color: "#ffffff",
+          fontStyle: "bold",
+        })
+        .setOrigin(0.5);
+      const body = this.add
+        .text(
+          0,
+          -22,
+          options.message ??
+            "Você pode ativar uma carta de comando em resposta.",
+          {
+            fontSize: "12px",
+            color: "#d7e7df",
+            align: "center",
+            wordWrap: { width: 390 },
+          },
+        )
+        .setOrigin(0.5);
+      const timer = this.add
+        .text(0, 20, `${remaining}s`, {
+          fontSize: "15px",
+          color: "#ffdd66",
+          fontStyle: "bold",
+        })
+        .setOrigin(0.5);
+      const yes = this.add
+        .text(-78, 58, "SIM", {
+          fontSize: "13px",
+          color: "#ffffff",
+          backgroundColor: "#1b5e20",
+          padding: { x: 22, y: 8 },
+        })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+      const no = this.add
+        .text(78, 58, "NÃO", {
+          fontSize: "13px",
+          color: "#ffffff",
+          backgroundColor: "#5a2525",
+          padding: { x: 22, y: 8 },
+        })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
 
-      yes.on('pointerdown', () => finish(true))
-      no.on('pointerdown', () => finish(false))
-      this._effectChoiceModal.add([overlay, panel, title, body, timer, yes, no])
+      yes.on("pointerdown", () => finish(true));
+      no.on("pointerdown", () => finish(false));
+      this._effectChoiceModal.add([
+        overlay,
+        panel,
+        title,
+        body,
+        timer,
+        yes,
+        no,
+      ]);
 
       this._commandResponseTimer = this.time.addEvent({
         delay: 1000,
         repeat: remaining - 1,
         callback: () => {
-          remaining -= 1
-          timer.setText(`${remaining}s`)
-          if (remaining <= 0) finish(false)
+          remaining -= 1;
+          timer.setText(`${remaining}s`);
+          if (remaining <= 0) finish(false);
         },
-      })
-    })
+      });
+    });
   }
 
   _requestCardChoice({
-    title = 'Escolha uma carta',
+    title = "Escolha uma carta",
     cards = [],
-    emptyMessage = 'Nenhuma carta válida.',
+    emptyMessage = "Nenhuma carta válida.",
     accent = 0x4caf50,
-    buttonColor = '#16385c',
+    buttonColor = "#16385c",
     maxVisible = 10,
-    labelForCard = card => `${card.name ?? card.nome}`,
+    labelForCard = (card) => `${card.name ?? card.nome}`,
     onSelect,
     onEmpty,
   } = {}) {
-    this._closeEffectChoiceModal()
+    this._closeEffectChoiceModal();
     if (!cards.length) {
-      this._toast(emptyMessage)
-      onEmpty?.()
-      return
+      this._toast(emptyMessage);
+      onEmpty?.();
+      return;
     }
 
-    const { width, height } = this.cameras.main
-    const visible = cards.slice(0, maxVisible)
-    const cardW = 78
-    const cardH = 109
-    const cols = Math.min(5, visible.length)
-    const rows = Math.ceil(visible.length / cols)
-    const gapX = 24
-    const gapY = 30
-    const panelW = Math.max(360, cols * cardW + Math.max(0, cols - 1) * gapX + 72)
-    const panelH = 110 + rows * cardH + Math.max(0, rows - 1) * gapY
-    this._effectChoiceModal = this.add.container(width / 2, height / 2).setDepth(132)
+    const { width, height } = this.cameras.main;
+    const visible = cards.slice(0, maxVisible);
+    const cardW = 78;
+    const cardH = 109;
+    const cols = Math.min(5, visible.length);
+    const rows = Math.ceil(visible.length / cols);
+    const gapX = 24;
+    const gapY = 30;
+    const panelW = Math.max(
+      360,
+      cols * cardW + Math.max(0, cols - 1) * gapX + 72,
+    );
+    const panelH = 110 + rows * cardH + Math.max(0, rows - 1) * gapY;
+    this._effectChoiceModal = this.add
+      .container(width / 2, height / 2)
+      .setDepth(132);
 
-    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.58).setInteractive()
-    const panel = this.add.rectangle(0, 0, panelW, panelH, 0x071018, 0.97).setStrokeStyle(2, accent)
-    const titleText = this.add.text(0, -panelH / 2 + 22, title, {
-      fontSize: '15px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
-    this._effectChoiceModal.add([overlay, panel, titleText])
+    const overlay = this.add
+      .rectangle(0, 0, width, height, 0x000000, 0.58)
+      .setInteractive();
+    const panel = this.add
+      .rectangle(0, 0, panelW, panelH, 0x071018, 0.97)
+      .setStrokeStyle(2, accent);
+    const titleText = this.add
+      .text(0, -panelH / 2 + 22, title, {
+        fontSize: "15px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    this._effectChoiceModal.add([overlay, panel, titleText]);
 
-    const totalW = cols * cardW + Math.max(0, cols - 1) * gapX
-    const startX = -totalW / 2 + cardW / 2
-    const startY = -panelH / 2 + 82
+    const totalW = cols * cardW + Math.max(0, cols - 1) * gapX;
+    const startX = -totalW / 2 + cardW / 2;
+    const startY = -panelH / 2 + 82;
 
     visible.forEach((entry, i) => {
-      const card = entry.card ?? entry
-      const col = i % cols
-      const row = Math.floor(i / cols)
+      const card = entry.card ?? entry;
+      const col = i % cols;
+      const row = Math.floor(i / cols);
       const thumb = this._createCardThumbnail(
         card,
         startX + col * (cardW + gapX),
         startY + row * (cardH + gapY),
         cardW,
         cardH,
-        accent
-      )
-      thumb.setInteractive({ useHandCursor: true })
-      thumb.on('pointerover', () => thumb.setScale(1.05))
-      thumb.on('pointerout', () => thumb.setScale(1))
-      thumb.on('pointerdown', () => {
-        this._closeEffectChoiceModal()
-        onSelect?.(entry, i)
-      })
-      this._effectChoiceModal.add(thumb)
-    })
+        accent,
+      );
+      thumb.setInteractive({ useHandCursor: true });
+      thumb.on("pointerover", () => thumb.setScale(1.05));
+      thumb.on("pointerout", () => thumb.setScale(1));
+      thumb.on("pointerdown", () => {
+        this._closeEffectChoiceModal();
+        onSelect?.(entry, i);
+      });
+      this._effectChoiceModal.add(thumb);
+    });
   }
 
   _requestCardChoiceAsync(options = {}) {
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
       this._requestCardChoice({
         ...options,
         onSelect: (entry, index) => {
-          options.onSelect?.(entry, index)
-          resolve(entry)
+          options.onSelect?.(entry, index);
+          resolve(entry);
         },
         onEmpty: () => {
-          options.onEmpty?.()
-          resolve(null)
+          options.onEmpty?.();
+          resolve(null);
         },
-      })
-    })
+      });
+    });
   }
 
-  _requestDeckCardChoice({ filter = {}, title = 'Escolha uma carta do baralho', onSelect, ...options } = {}) {
-    const cards = this.myDeck.filter(card => this._matchesCardRule(card, filter))
+  _requestDeckCardChoice({
+    filter = {},
+    title = "Escolha uma carta do baralho",
+    onSelect,
+    ...options
+  } = {}) {
+    const cards = this.myDeck.filter((card) =>
+      this._matchesCardRule(card, filter),
+    );
     this._requestCardChoice({
       title,
       cards,
-      emptyMessage: 'Nenhuma carta válida encontrada no baralho.',
+      emptyMessage: "Nenhuma carta válida encontrada no baralho.",
       onSelect,
       ...options,
-    })
+    });
   }
 
-  _requestDiscardCardChoice({ filter = {}, title = 'Escolha uma carta do descarte', owner = 'my', onSelect, ...options } = {}) {
-    const discard = owner === 'opp' ? this.oppDiscard : this.myDiscard
-    const cards = discard.filter(card => this._matchesCardRule(card, filter))
+  _requestDiscardCardChoice({
+    filter = {},
+    title = "Escolha uma carta do descarte",
+    owner = "my",
+    onSelect,
+    ...options
+  } = {}) {
+    const discard = owner === "opp" ? this.oppDiscard : this.myDiscard;
+    const cards = discard.filter((card) => this._matchesCardRule(card, filter));
     this._requestCardChoice({
       title,
       cards,
-      emptyMessage: 'Nenhuma carta válida encontrada no descarte.',
+      emptyMessage: "Nenhuma carta válida encontrada no descarte.",
       onSelect,
       ...options,
-    })
+    });
   }
 
   _requestCreatureSlotChoice({
-    title = 'Escolha uma criatura',
-    side = 'my',
+    title = "Escolha uma criatura",
+    side = "my",
     slots = null,
     color = 0x44aaff,
     onSelect,
     onEmpty,
   } = {}) {
-    const availableSlots = slots ?? (side === 'opp' ? this._slotsOpp : this._slotsMy).filter(slot => slot.card)
+    const availableSlots =
+      slots ??
+      (side === "opp" ? this._slotsOpp : this._slotsMy).filter(
+        (slot) => slot.card,
+      );
     if (!availableSlots.length) {
-      this._toast('Não há criatura válida para escolher.')
-      onEmpty?.()
-      return
+      this._toast("Não há criatura válida para escolher.");
+      onEmpty?.();
+      return;
     }
 
-    this._clearGenericSlotChoice()
+    this._clearGenericSlotChoice();
     this._pendingSlotChoice = {
       title,
       slots: availableSlots,
       onSelect,
-    }
+    };
 
-    availableSlots.forEach(slot => {
-      const highlight = this.add.rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
+    availableSlots.forEach((slot) => {
+      const highlight = this.add
+        .rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
         .setStrokeStyle(3, color)
-        .setDepth(7)
-      slot.choiceHighlight = highlight
+        .setDepth(7);
+      slot.choiceHighlight = highlight;
       this.tweens.add({
         targets: highlight,
         scaleX: 1.08,
@@ -3159,42 +3864,47 @@ export default class GameScene extends Scene {
         duration: 380,
         yoyo: true,
         repeat: -1,
-        ease: 'Sine.easeInOut',
-      })
-    })
+        ease: "Sine.easeInOut",
+      });
+    });
 
-    this._toast(title)
+    this._toast(title);
   }
 
   _requestCreatureSlotChoiceAsync(options = {}) {
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
       this._requestCreatureSlotChoice({
         ...options,
         onSelect: (slot, meta) => {
-          options.onSelect?.(slot, meta)
-          resolve(slot)
+          options.onSelect?.(slot, meta);
+          resolve(slot);
         },
         onEmpty: () => {
-          options.onEmpty?.()
-          resolve(null)
+          options.onEmpty?.();
+          resolve(null);
         },
-      })
-    })
+      });
+    });
   }
 
   _commandResponseCandidates() {
-    if (this._activePlayer !== 'opp') return []
+    if (this._activePlayer !== "opp") return [];
     return this._handContainers
-      .map(object => ({ object, card: object.getData('cardData') }))
-      .filter(entry => entry.card?.card_type === 'comando' && (entry.card.effects ?? []).length)
+      .map((object) => ({ object, card: object.getData("cardData") }))
+      .filter(
+        (entry) =>
+          entry.card?.card_type === "comando" &&
+          (entry.card.effects ?? []).length,
+      );
   }
 
   _highlightCommandResponseCards(candidates) {
-    this._clearCommandResponseHighlights()
+    this._clearCommandResponseHighlights();
     candidates.forEach(({ object }) => {
-      const glow = this.add.rectangle(object.x, object.y, 92, 124, 0x000000, 0)
+      const glow = this.add
+        .rectangle(object.x, object.y, 92, 124, 0x000000, 0)
         .setStrokeStyle(3, 0xffdd44)
-        .setDepth(44)
+        .setDepth(44);
       this.tweens.add({
         targets: glow,
         scaleX: 1.08,
@@ -3203,86 +3913,96 @@ export default class GameScene extends Scene {
         duration: 360,
         yoyo: true,
         repeat: -1,
-        ease: 'Sine.easeInOut',
-      })
-      this._commandResponseHighlights.push(glow)
-    })
+        ease: "Sine.easeInOut",
+      });
+      this._commandResponseHighlights.push(glow);
+    });
   }
 
   _clearCommandResponseHighlights() {
-    this._commandResponseHighlights?.forEach(glow => {
-      this.tweens.killTweensOf(glow)
-      glow.destroy()
-    })
-    this._commandResponseHighlights = []
+    this._commandResponseHighlights?.forEach((glow) => {
+      this.tweens.killTweensOf(glow);
+      glow.destroy();
+    });
+    this._commandResponseHighlights = [];
   }
 
-  async _offerCommandResponseWindow(actionLabel = 'ação do oponente') {
-    const candidates = this._commandResponseCandidates()
-    if (!candidates.length) return false
+  async _offerCommandResponseWindow(actionLabel = "ação do oponente") {
+    const candidates = this._commandResponseCandidates();
+    if (!candidates.length) return false;
 
-    this._highlightCommandResponseCards(candidates)
+    this._highlightCommandResponseCards(candidates);
     const wantsResponse = await this._requestTimedYesNoChoiceAsync({
-      title: 'Responder com comando?',
+      title: "Responder com comando?",
       message: `O oponente fez: ${actionLabel}. Você tem 7 segundos para responder.`,
       seconds: 7,
-    })
+    });
 
     if (!wantsResponse) {
-      this._clearCommandResponseHighlights()
-      return false
+      this._clearCommandResponseHighlights();
+      return false;
     }
 
-    const selected = candidates.length === 1
-      ? candidates[0]
-      : await this._requestCardChoiceAsync({
-          title: 'Escolha o comando para responder',
-          cards: candidates,
-          emptyMessage: 'Nenhum comando disponível.',
-          accent: 0xffcc44,
-          buttonColor: '#8a4a12',
-          maxVisible: 7,
-          labelForCard: card => card.name,
-        })
+    const selected =
+      candidates.length === 1
+        ? candidates[0]
+        : await this._requestCardChoiceAsync({
+            title: "Escolha o comando para responder",
+            cards: candidates,
+            emptyMessage: "Nenhum comando disponível.",
+            accent: 0xffcc44,
+            buttonColor: "#8a4a12",
+            maxVisible: 7,
+            labelForCard: (card) => card.name,
+          });
 
-    this._clearCommandResponseHighlights()
-    if (!selected?.object) return false
+    this._clearCommandResponseHighlights();
+    if (!selected?.object) return false;
 
-    await this._resolveCommandQueued(selected.object)
-    return true
+    await this._resolveCommandQueued(selected.object);
+    return true;
   }
 
   _selectGenericSlotChoice(side, slotIndex) {
-    if (!this._pendingSlotChoice) return
-    const slot = side === 'opp' ? this._slotsOpp[slotIndex] : this._slotsMy[slotIndex]
-    if (!slot || !this._pendingSlotChoice.slots.includes(slot)) return
+    if (!this._pendingSlotChoice) return;
+    const slot =
+      side === "opp" ? this._slotsOpp[slotIndex] : this._slotsMy[slotIndex];
+    if (!slot || !this._pendingSlotChoice.slots.includes(slot)) return;
 
-    const onSelect = this._pendingSlotChoice.onSelect
-    this._clearGenericSlotChoice()
-    onSelect?.(slot, { side, slotIndex })
+    const onSelect = this._pendingSlotChoice.onSelect;
+    this._clearGenericSlotChoice();
+    onSelect?.(slot, { side, slotIndex });
   }
 
   _clearGenericSlotChoice() {
-    ;[...(this._slotsMy ?? []), ...(this._slotsOpp ?? [])].forEach(slot => {
-      if (!slot.choiceHighlight) return
-      this.tweens.killTweensOf(slot.choiceHighlight)
-      slot.choiceHighlight.destroy()
-      slot.choiceHighlight = null
-    })
-    this._pendingSlotChoice = null
+    [...(this._slotsMy ?? []), ...(this._slotsOpp ?? [])].forEach((slot) => {
+      if (!slot.choiceHighlight) return;
+      this.tweens.killTweensOf(slot.choiceHighlight);
+      slot.choiceHighlight.destroy();
+      slot.choiceHighlight = null;
+    });
+    this._pendingSlotChoice = null;
   }
 
   _startOnAttachAbilityTargetSelection(sourceSlot, attachment, effect) {
-    const side = effect.target === 'enemy_creature' ? 'opp' : 'my'
-    const targets = (side === 'opp' ? this._slotsOpp : this._slotsMy).filter(slot => slot.card)
+    const side = effect.target === "enemy_creature" ? "opp" : "my";
+    const targets = (side === "opp" ? this._slotsOpp : this._slotsMy).filter(
+      (slot) => slot.card,
+    );
 
     this._requestCreatureSlotChoice({
-      title: 'Escolha o alvo da habilidade.',
+      title: "Escolha o alvo da habilidade.",
       side,
       slots: targets,
       color: 0x44aaff,
-      onSelect: targetSlot => this._resolveTargetedAbilityEffect(sourceSlot, attachment, effect, targetSlot),
-    })
+      onSelect: (targetSlot) =>
+        this._resolveTargetedAbilityEffect(
+          sourceSlot,
+          attachment,
+          effect,
+          targetSlot,
+        ),
+    });
   }
 
   _resolveTargetedAbilityEffect(sourceSlot, attachment, effect, targetSlot) {
@@ -3292,20 +4012,25 @@ export default class GameScene extends Scene {
       targetSlot,
       yourField: this._slotsMy,
       enemyField: this._slotsOpp,
-    })
+    });
 
-    this._recalculateAllFieldCreatures()
-    this._toast(applied ? 'Habilidade resolvida.' : 'Não foi possível resolver a habilidade.')
+    this._recalculateAllFieldCreatures();
+    this._toast(
+      applied
+        ? "Habilidade resolvida."
+        : "Não foi possível resolver a habilidade.",
+    );
   }
 
   _highlightAbilityTargets(targets) {
-    this._clearAbilityTargets()
+    this._clearAbilityTargets();
 
-    targets.forEach(slot => {
-      const highlight = this.add.rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
+    targets.forEach((slot) => {
+      const highlight = this.add
+        .rectangle(slot.x, slot.y, slot.w + 18, slot.h + 18, 0x000000, 0)
         .setStrokeStyle(3, 0x44aaff)
-        .setDepth(7)
-      slot.abilityHighlight = highlight
+        .setDepth(7);
+      slot.abilityHighlight = highlight;
       this.tweens.add({
         targets: highlight,
         scaleX: 1.08,
@@ -3314,18 +4039,19 @@ export default class GameScene extends Scene {
         duration: 360,
         yoyo: true,
         repeat: -1,
-        ease: 'Sine.easeInOut',
-      })
-    })
+        ease: "Sine.easeInOut",
+      });
+    });
   }
 
   _selectAbilityTarget(side, slotIndex) {
-    if (!this._pendingAbilityEffect) return
+    if (!this._pendingAbilityEffect) return;
 
-    const slot = side === 'enemy' || side === 'opp'
-      ? this._slotsOpp[slotIndex]
-      : this._slotsMy[slotIndex]
-    if (!slot?.card) return
+    const slot =
+      side === "enemy" || side === "opp"
+        ? this._slotsOpp[slotIndex]
+        : this._slotsMy[slotIndex];
+    if (!slot?.card) return;
 
     const applied = applyTargetedAbilityEffect(this._pendingAbilityEffect, {
       source: this._pendingAbilitySource,
@@ -3333,579 +4059,687 @@ export default class GameScene extends Scene {
       targetSlot: slot,
       yourField: this._slotsMy,
       enemyField: this._slotsOpp,
-    })
+    });
 
-    this._clearAbilityTargets()
-    this._pendingAbilityEffect = null
-    this._pendingAbilitySourceSlot = null
-    this._pendingAbilitySource = null
-    this._recalculateAllFieldCreatures()
-    this._toast(applied ? 'Habilidade resolvida.' : 'Não foi possível resolver a habilidade.')
+    this._clearAbilityTargets();
+    this._pendingAbilityEffect = null;
+    this._pendingAbilitySourceSlot = null;
+    this._pendingAbilitySource = null;
+    this._recalculateAllFieldCreatures();
+    this._toast(
+      applied
+        ? "Habilidade resolvida."
+        : "Não foi possível resolver a habilidade.",
+    );
   }
 
   _openOnAttachElementChoice(slot, effect) {
-    const choices = effect.choose ?? []
-    if (!slot?.card || !choices.length) return
+    const choices = effect.choose ?? [];
+    if (!slot?.card || !choices.length) return;
 
-    if (this._elementChoiceMenu) this._elementChoiceMenu.destroy(true)
+    if (this._elementChoiceMenu) this._elementChoiceMenu.destroy(true);
 
-    this._elementChoiceMenu = this.add.container(slot.x, slot.y - 96).setDepth(45)
+    this._elementChoiceMenu = this.add
+      .container(slot.x, slot.y - 96)
+      .setDepth(45);
     choices.forEach((element, i) => {
-      const col = i % 4
-      const row = Math.floor(i / 4)
-      const btn = this.add.text((col - 1.5) * 70, row * 28, ELEMENT_LABEL[element] ?? element, {
-        fontSize: '10px',
-        color: '#ffffff',
-        backgroundColor: '#1a3650',
-        padding: { x: 8, y: 5 },
-        fixedWidth: 64,
-        align: 'center',
-      }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-      btn.on('pointerover', () => btn.setStyle({ backgroundColor: '#2f6f8f' }))
-      btn.on('pointerout',  () => btn.setStyle({ backgroundColor: '#1a3650' }))
-      btn.on('pointerdown', () => this._applyOnAttachElementChoice(slot, effect, element))
-      this._elementChoiceMenu.add(btn)
-    })
+      const col = i % 4;
+      const row = Math.floor(i / 4);
+      const btn = this.add
+        .text((col - 1.5) * 70, row * 28, ELEMENT_LABEL[element] ?? element, {
+          fontSize: "10px",
+          color: "#ffffff",
+          backgroundColor: "#1a3650",
+          padding: { x: 8, y: 5 },
+          fixedWidth: 64,
+          align: "center",
+        })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+      btn.on("pointerover", () => btn.setStyle({ backgroundColor: "#2f6f8f" }));
+      btn.on("pointerout", () => btn.setStyle({ backgroundColor: "#1a3650" }));
+      btn.on("pointerdown", () =>
+        this._applyOnAttachElementChoice(slot, effect, element),
+      );
+      this._elementChoiceMenu.add(btn);
+    });
 
-    this._toast('Escolha o elemento da criatura.')
+    this._toast("Escolha o elemento da criatura.");
   }
 
   _applyOnAttachElementChoice(slot, effect, element) {
-    if (!slot?.card || !effect.choose?.includes(element)) return
+    if (!slot?.card || !effect.choose?.includes(element)) return;
 
-    const previousElement = slot.card.element
-    slot.card.element = element
+    const previousElement = slot.card.element;
+    slot.card.element = element;
     if (this._elementChoiceMenu) {
-      this._elementChoiceMenu.destroy(true)
-      this._elementChoiceMenu = null
+      this._elementChoiceMenu.destroy(true);
+      this._elementChoiceMenu = null;
     }
 
-    this._resolveCreatureElementChanged(slot, previousElement, element)
-    this._recalculateAllFieldCreatures()
-    this._toast(`Elemento alterado para ${ELEMENT_LABEL[element] ?? element}.`)
+    this._resolveCreatureElementChanged(slot, previousElement, element);
+    this._recalculateAllFieldCreatures();
+    this._toast(`Elemento alterado para ${ELEMENT_LABEL[element] ?? element}.`);
   }
 
   _scheduleDelayedEffect(slot, source, delayedEffect) {
-    const resolveTurn = delayedEffect.trigger === 'end_of_next_turn'
-      ? this._turnNumber + 1
-      : this._turnNumber
+    const resolveTurn =
+      delayedEffect.trigger === "end_of_next_turn"
+        ? this._turnNumber + 1
+        : this._turnNumber;
 
     this._delayedEffects.push({
       ...delayedEffect,
       source,
       slot,
       resolveTurn,
-    })
+    });
   }
 
   _summonTokenToFirstEmptyZone(tokenCard) {
-    const slot = this._slotsMy.find(s => !s.card)
+    const slot = this._slotsMy.find((s) => !s.card);
     if (!slot) {
-      this._toast('Sem zona vazia para criar ficha.')
-      return false
+      this._toast("Sem zona vazia para criar ficha.");
+      return false;
     }
 
-    const creature = createCreatureInstance(tokenCard)
-    const tokenObject = this._createCardObject(tokenCard, slot.x, slot.y, false)
-    tokenObject.setDepth(8)
-    tokenObject.setData('source', 'field')
-    tokenObject.setData('slot', slot)
-    tokenObject.setData('abilityState', { usedAbilities: {} })
-    tokenObject.setInteractive({ useHandCursor: true })
-    tokenObject.on('pointerdown', () => this._handleCardClick(tokenObject))
+    const creature = createCreatureInstance(tokenCard);
+    const tokenObject = this._createCardObject(
+      tokenCard,
+      slot.x,
+      slot.y,
+      false,
+    );
+    tokenObject.setDepth(8);
+    tokenObject.setData("source", "field");
+    tokenObject.setData("slot", slot);
+    tokenObject.setData("abilityState", { usedAbilities: {} });
+    tokenObject.setInteractive({ useHandCursor: true });
+    tokenObject.on("pointerdown", () => this._handleCardClick(tokenObject));
 
-    this._addFieldStatsOverlay(tokenObject, creature)
-    slot.card = creature
-    slot.cardObject = tokenObject
-    slot.attachments = slot.attachments ?? []
+    this._addFieldStatsOverlay(tokenObject, creature);
+    slot.card = creature;
+    slot.cardObject = tokenObject;
+    slot.attachments = slot.attachments ?? [];
 
-    this._resolveCreatureEnterField(slot)
-    this._recalculateAllFieldCreatures()
-    this._toast(`${tokenCard.name} criada.`)
-    return true
+    this._resolveCreatureEnterField(slot);
+    this._recalculateAllFieldCreatures();
+    this._toast(`${tokenCard.name} criada.`);
+    return true;
   }
 
   _recalculateAllFieldCreatures() {
-    this._recalculateFieldCreatures(this._slotsMy)
-    this._recalculateFieldCreatures(this._slotsOpp)
+    this._recalculateFieldCreatures(this._slotsMy);
+    this._recalculateFieldCreatures(this._slotsOpp);
   }
 
   _recalculateFieldCreatures(slots) {
-    slots.forEach(slot => {
-      if (!slot.card) return
-      recalculateCreatureStats(slot.card, slot.attachments.map(entry => entry.card), {
-        yourField: slots,
-      })
-      this._refreshFieldStatsOverlay(slot)
-    })
+    slots.forEach((slot) => {
+      if (!slot.card) return;
+      recalculateCreatureStats(
+        slot.card,
+        slot.attachments.map((entry) => entry.card),
+        {
+          yourField: slots,
+        },
+      );
+      this._refreshFieldStatsOverlay(slot);
+    });
   }
 
   _fieldCreatureAbilities(cardObject) {
-    const card = cardObject.getData('cardData')
-    const slot = cardObject.getData('slot')
-    const sourceState = cardObject.getData('abilityState') ?? { usedAbilities: {} }
-    if (!slot?.card) return []
+    const card = cardObject.getData("cardData");
+    const slot = cardObject.getData("slot");
+    const sourceState = cardObject.getData("abilityState") ?? {
+      usedAbilities: {},
+    };
+    if (!slot?.card) return [];
 
-    return (card.activatedAbilities ?? []).filter(ability => {
-      if (ability.source !== 'field_creature') return false
-      if (ability.condition?.active_player === 'opponent' && this._activePlayer !== 'opp') return false
+    return (card.activatedAbilities ?? []).filter((ability) => {
+      if (ability.source !== "field_creature") return false;
+      if (
+        ability.condition?.active_player === "opponent" &&
+        this._activePlayer !== "opp"
+      )
+        return false;
       return canActivateAbility(ability, {
         creature: slot.card,
         source: card,
         sourceState,
         turn: this._turnNumber,
-      })
-    })
+      });
+    });
   }
 
   _activateFieldCreatureAbility(cardObject) {
-    const ability = this._fieldCreatureAbilities(cardObject)[0]
-    const slot = cardObject.getData('slot')
-    const sourceState = cardObject.getData('abilityState') ?? { usedAbilities: {} }
+    const ability = this._fieldCreatureAbilities(cardObject)[0];
+    const slot = cardObject.getData("slot");
+    const sourceState = cardObject.getData("abilityState") ?? {
+      usedAbilities: {},
+    };
     if (!ability || !slot?.card) {
-      this._toast('Habilidade indisponível.')
-      return
+      this._toast("Habilidade indisponível.");
+      return;
     }
 
-    const resolved = this._payCreatureAbilityCost(slot, ability.cost)
-      && this._resolveCreatureAbilityAction(slot, ability.action)
+    const resolved =
+      this._payCreatureAbilityCost(slot, ability.cost) &&
+      this._resolveCreatureAbilityAction(slot, ability.action);
     if (!resolved) {
-      this._toast('Não foi possível ativar.')
-      return
+      this._toast("Não foi possível ativar.");
+      return;
     }
 
-    if (ability.timing === 'once_per_turn') {
-      sourceState.usedAbilities = sourceState.usedAbilities ?? {}
-      sourceState.usedAbilities[ability.id] = this._turnNumber
-      cardObject.setData('abilityState', sourceState)
+    if (ability.timing === "once_per_turn") {
+      sourceState.usedAbilities = sourceState.usedAbilities ?? {};
+      sourceState.usedAbilities[ability.id] = this._turnNumber;
+      cardObject.setData("abilityState", sourceState);
     }
 
-    this._recalculateAllFieldCreatures()
-    this._toast('Habilidade ativada.')
-    this._logAction(`${slot.card?.name ?? 'Criatura'} ativou uma habilidade.`)
+    this._recalculateAllFieldCreatures();
+    this._toast("Habilidade ativada.");
+    this._logAction(`${slot.card?.name ?? "Criatura"} ativou uma habilidade.`);
   }
 
   _payCreatureAbilityCost(slot, cost) {
-    if (!cost) return true
+    if (!cost) return true;
 
-    if (cost.type === 'destroy_attachment') {
-      const index = (slot.attachments ?? []).findIndex(entry => {
-        const name = String(entry.card?.name ?? entry.card?.nome ?? '').toLowerCase()
-        return name.includes(String(cost.name_includes ?? '').toLowerCase())
-      })
-      if (index === -1) return false
-      this._discardAttachment(slot, index)
-      return true
+    if (cost.type === "destroy_attachment") {
+      const index = (slot.attachments ?? []).findIndex((entry) => {
+        const name = String(
+          entry.card?.name ?? entry.card?.nome ?? "",
+        ).toLowerCase();
+        return name.includes(String(cost.name_includes ?? "").toLowerCase());
+      });
+      if (index === -1) return false;
+      this._discardAttachment(slot, index);
+      return true;
     }
 
-    if (cost.type === 'sacrifice_self') {
-      this._sendFieldCreatureToDiscard(slot, 'my', 'efeito')
-      return true
+    if (cost.type === "sacrifice_self") {
+      this._sendFieldCreatureToDiscard(slot, "my", "efeito");
+      return true;
     }
 
-    return false
+    return false;
   }
 
   _resolveCreatureAbilityAction(sourceSlot, action) {
-    if (!action) return true
+    if (!action) return true;
 
-    if (action.type === 'cannot_attack_next_turn') {
-      sourceSlot.card.cannotAttackUntilTurn = this._turnNumber + 1
-      return true
+    if (action.type === "cannot_attack_next_turn") {
+      sourceSlot.card.cannotAttackUntilTurn = this._turnNumber + 1;
+      return true;
     }
 
-    if (action.type === 'summon_from_discard') {
-      const slot = this._slotsMy.find(s => !s.card)
-      if (!slot) return false
-      const index = this.myDiscard.findIndex(card => this._matchesCardRule(card, action.filter ?? {}))
-      if (index === -1) return false
-      const [card] = this.myDiscard.splice(index, 1)
-      this._summonCreatureToSlot(card, slot)
-      this._renderDiscardPile()
-      return true
+    if (action.type === "summon_from_discard") {
+      const slot = this._slotsMy.find((s) => !s.card);
+      if (!slot) return false;
+      const index = this.myDiscard.findIndex((card) =>
+        this._matchesCardRule(card, action.filter ?? {}),
+      );
+      if (index === -1) return false;
+      const [card] = this.myDiscard.splice(index, 1);
+      this._summonCreatureToSlot(card, slot);
+      this._renderDiscardPile();
+      return true;
     }
 
-    this._toast('Efeito preparado para a próxima camada de regras.')
-    return true
+    this._toast("Efeito preparado para a próxima camada de regras.");
+    return true;
   }
 
   _resolveCreatureEnterField(enteredSlot) {
-    if (!enteredSlot?.card) return
-    const card = enteredSlot.card
+    if (!enteredSlot?.card) return;
+    const card = enteredSlot.card;
 
     for (const effect of card.onEnter ?? []) {
-      if (effect.type === 'discard_hand_card_then_search_deck') {
+      if (effect.type === "discard_hand_card_then_search_deck") {
         if (effect.optional) {
-          this._openOptionalDiscardSearchPrompt(effect)
+          this._openOptionalDiscardSearchPrompt(effect);
         } else {
-          this._resolveDiscardHandCardThenSearch(effect)
+          this._resolveDiscardHandCardThenSearch(effect);
         }
-      } else if (effect.type === 'mill_then_gain_defense_per_discard_element') {
-        this._resolveMillThenGainDefense(card, effect)
-      } else if (effect.type === 'shuffle_discard_creature_then_debuff_enemy') {
-        this._resolveShuffleDiscardCreatureThenDebuff(effect)
+      } else if (effect.type === "mill_then_gain_defense_per_discard_element") {
+        this._resolveMillThenGainDefense(card, effect);
+      } else if (effect.type === "shuffle_discard_creature_then_debuff_enemy") {
+        this._resolveShuffleDiscardCreatureThenDebuff(effect);
       }
     }
 
-    this._resolveOtherCreatureEnterTriggers(enteredSlot)
+    this._resolveOtherCreatureEnterTriggers(enteredSlot);
   }
 
   _resolveDiscardHandCardThenSearch(effect) {
-    const discardIndex = this.myHand.findIndex(card => this._matchesCardRule(card, effect.discard ?? {}))
-    if (discardIndex === -1) return
+    const discardIndex = this.myHand.findIndex((card) =>
+      this._matchesCardRule(card, effect.discard ?? {}),
+    );
+    if (discardIndex === -1) return;
 
-    const [discarded] = this.myHand.splice(discardIndex, 1)
-    this.myDiscard.push(discarded)
+    const [discarded] = this.myHand.splice(discardIndex, 1);
+    this.myDiscard.push(discarded);
 
-    const searchIndex = this.myDeck.findIndex(card => this._matchesCardRule(card, effect.search ?? {}))
+    const searchIndex = this.myDeck.findIndex((card) =>
+      this._matchesCardRule(card, effect.search ?? {}),
+    );
     if (searchIndex !== -1 && this.myHand.length < MAX_HAND_SIZE) {
-      const [found] = this.myDeck.splice(searchIndex, 1)
-      this.myHand.push(found)
-      this._toast(`${found.name} adicionada à mão.`)
+      const [found] = this.myDeck.splice(searchIndex, 1);
+      this.myHand.push(found);
+      this._toast(`${found.name} adicionada à mão.`);
     }
 
-    this._renderHand(this.myHand)
-    this._renderDeckPile()
-    this._renderDiscardPile()
-    this._playDiscardSmoke()
+    this._renderHand(this.myHand);
+    this._renderDeckPile();
+    this._renderDiscardPile();
+    this._playDiscardSmoke();
   }
 
   _openOptionalDiscardSearchPrompt(effect) {
-    const discardCards = this.myHand.filter(card => this._matchesCardRule(card, effect.discard ?? {}))
-    if (!discardCards.length) return
+    const discardCards = this.myHand.filter((card) =>
+      this._matchesCardRule(card, effect.discard ?? {}),
+    );
+    if (!discardCards.length) return;
 
     this._requestYesNoChoice({
-      title: 'Ativar efeito?',
-      message: 'Descartar uma carta com Tridente para buscar uma carta com Atlantis no baralho.',
+      title: "Ativar efeito?",
+      message:
+        "Descartar uma carta com Tridente para buscar uma carta com Atlantis no baralho.",
       onConfirm: () => this._openDiscardCardChoice(effect, discardCards),
-      onCancel: () => this._toast('Efeito não ativado.'),
-    })
+      onCancel: () => this._toast("Efeito não ativado."),
+    });
   }
 
   _openDiscardCardChoice(effect, discardCards) {
     this._requestCardChoice({
-      title: 'Escolha o Tridente para descartar',
+      title: "Escolha o Tridente para descartar",
       cards: discardCards,
-      emptyMessage: 'Você não tem Tridente na mão.',
+      emptyMessage: "Você não tem Tridente na mão.",
       accent: 0x4caf50,
-      buttonColor: '#16385c',
+      buttonColor: "#16385c",
       maxVisible: 6,
-      labelForCard: card => card.name,
-      onSelect: card => this._payAtlasDiscardAndChooseSearch(effect, card),
-    })
+      labelForCard: (card) => card.name,
+      onSelect: (card) => this._payAtlasDiscardAndChooseSearch(effect, card),
+    });
   }
 
   _payAtlasDiscardAndChooseSearch(effect, discardCard) {
-    const discardIndex = this.myHand.findIndex(card => card === discardCard)
+    const discardIndex = this.myHand.findIndex((card) => card === discardCard);
     if (discardIndex === -1) {
-      this._closeEffectChoiceModal()
-      return
+      this._closeEffectChoiceModal();
+      return;
     }
 
-    const [discarded] = this.myHand.splice(discardIndex, 1)
-    this.myDiscard.push(discarded)
-    this._renderHand(this.myHand)
-    this._renderDiscardPile()
-    this._playDiscardSmoke()
-    this._openDeckSearchChoice(effect)
+    const [discarded] = this.myHand.splice(discardIndex, 1);
+    this.myDiscard.push(discarded);
+    this._renderHand(this.myHand);
+    this._renderDiscardPile();
+    this._playDiscardSmoke();
+    this._openDeckSearchChoice(effect);
   }
 
   _openDeckSearchChoice(effect) {
     this._requestDeckCardChoice({
-      title: 'Escolha uma carta Atlantis',
+      title: "Escolha uma carta Atlantis",
       filter: effect.search ?? {},
-      emptyMessage: 'Nenhuma carta com Atlantis encontrada no baralho.',
+      emptyMessage: "Nenhuma carta com Atlantis encontrada no baralho.",
       accent: 0x4caf50,
-      buttonColor: '#16385c',
+      buttonColor: "#16385c",
       maxVisible: 10,
-      labelForCard: card => `${card.name} (${card.card_type})`,
-      onSelect: card => {
-        const deckIndex = this.myDeck.findIndex(deckCard => deckCard === card)
+      labelForCard: (card) => `${card.name} (${card.card_type})`,
+      onSelect: (card) => {
+        const deckIndex = this.myDeck.findIndex(
+          (deckCard) => deckCard === card,
+        );
         if (deckIndex !== -1) {
-          const [found] = this.myDeck.splice(deckIndex, 1)
-          this.myHand.push(found)
-          this._renderDeckPile()
-          this._renderHand(this.myHand)
-          this._toast(`${found.name} adicionada à mão.`)
-          this._logAction(`${found.name} foi buscada do baralho.`)
+          const [found] = this.myDeck.splice(deckIndex, 1);
+          this.myHand.push(found);
+          this._renderDeckPile();
+          this._renderHand(this.myHand);
+          this._toast(`${found.name} adicionada à mão.`);
+          this._logAction(`${found.name} foi buscada do baralho.`);
         }
       },
-    })
+    });
   }
 
   _closeEffectChoiceModal() {
-    if (!this._effectChoiceModal) return
-    this._effectChoiceModal.destroy(true)
-    this._effectChoiceModal = null
+    if (!this._effectChoiceModal) return;
+    this._effectChoiceModal.destroy(true);
+    this._effectChoiceModal = null;
   }
 
   _resolveMillThenGainDefense(creature, effect) {
-    const count = Math.min(Number(effect.mill) || 0, this.myDeck.length)
+    const count = Math.min(Number(effect.mill) || 0, this.myDeck.length);
     for (let i = 0; i < count; i++) {
-      this.myDiscard.push(this.myDeck.shift())
+      this.myDiscard.push(this.myDeck.shift());
     }
 
-    const elements = new Set(this.myDiscard.map(card => card.element ?? card.elemento).filter(Boolean))
-    this._addPermanentMarker(creature, ['defense'], elements.size * (Number(effect.value) || 0))
-    this._renderDeckPile()
-    this._renderDiscardPile()
-    this._playDiscardSmoke()
+    const elements = new Set(
+      this.myDiscard
+        .map((card) => card.element ?? card.elemento)
+        .filter(Boolean),
+    );
+    this._addPermanentMarker(
+      creature,
+      ["defense"],
+      elements.size * (Number(effect.value) || 0),
+    );
+    this._renderDeckPile();
+    this._renderDiscardPile();
+    this._playDiscardSmoke();
   }
 
   _resolveShuffleDiscardCreatureThenDebuff(effect) {
-    const discardIndex = this.myDiscard.findIndex(card => (
-      card.card_type === 'criatura' && this._matchesCardRule(card, effect.discardFilter ?? {})
-    ))
-    const targetSlot = this._slotsOpp.find(slot => slot.card)
-    if (discardIndex === -1 || !targetSlot?.card) return
+    const discardIndex = this.myDiscard.findIndex(
+      (card) =>
+        card.card_type === "criatura" &&
+        this._matchesCardRule(card, effect.discardFilter ?? {}),
+    );
+    const targetSlot = this._slotsOpp.find((slot) => slot.card);
+    if (discardIndex === -1 || !targetSlot?.card) return;
 
-    const [shuffled] = this.myDiscard.splice(discardIndex, 1)
-    this.myDeck.push(shuffled)
-    this.myDeck = this._shuffleCards(this.myDeck)
+    const [shuffled] = this.myDiscard.splice(discardIndex, 1);
+    this.myDeck.push(shuffled);
+    this.myDeck = this._shuffleCards(this.myDeck);
 
-    const value = Number(shuffled.attack ?? shuffled.ataque) || 0
-    targetSlot.card.tempModifiers = [...(targetSlot.card.tempModifiers ?? []), {
-      expiresOnTurn: this._turnNumber,
-      attack: -value,
-      defense: 0,
-    }]
-    this._renderDeckPile()
-    this._renderDiscardPile()
-    this._logAction(`${shuffled.name} voltou ao baralho e reduziu ATQ inimigo.`)
+    const value = Number(shuffled.attack ?? shuffled.ataque) || 0;
+    targetSlot.card.tempModifiers = [
+      ...(targetSlot.card.tempModifiers ?? []),
+      {
+        expiresOnTurn: this._turnNumber,
+        attack: -value,
+        defense: 0,
+      },
+    ];
+    this._renderDeckPile();
+    this._renderDiscardPile();
+    this._logAction(
+      `${shuffled.name} voltou ao baralho e reduziu ATQ inimigo.`,
+    );
   }
 
   _resolveOtherCreatureEnterTriggers(enteredSlot) {
     for (const sourceSlot of this._slotsMy) {
-      if (!sourceSlot.card || sourceSlot === enteredSlot) continue
+      if (!sourceSlot.card || sourceSlot === enteredSlot) continue;
       for (const ability of sourceSlot.card.triggeredAbilities ?? []) {
-        if (ability.trigger !== 'other_creature_enters') continue
-        if (!matchesCreatureRule(enteredSlot.card, ability.filter ?? {})) continue
-        this._resolveCreatureTriggerAction(sourceSlot, ability.action, enteredSlot.card)
+        if (ability.trigger !== "other_creature_enters") continue;
+        if (!matchesCreatureRule(enteredSlot.card, ability.filter ?? {}))
+          continue;
+        this._resolveCreatureTriggerAction(
+          sourceSlot,
+          ability.action,
+          enteredSlot.card,
+        );
       }
     }
   }
 
   _resolveCreatureElementChanged(changedSlot, previousElement, newElement) {
-    if (!changedSlot?.card || previousElement === newElement) return
+    if (!changedSlot?.card || previousElement === newElement) return;
 
     for (const sourceSlot of this._slotsMy) {
-      if (!sourceSlot.card) continue
+      if (!sourceSlot.card) continue;
       for (const ability of sourceSlot.card.triggeredAbilities ?? []) {
-        const ownChange = ability.trigger === 'your_creature_element_changed'
-        const selfChange = ability.trigger === 'self_element_changed' && sourceSlot === changedSlot
-        if (!ownChange && !selfChange) continue
-        if (!matchesCreatureRule(changedSlot.card, ability.filter ?? {})) continue
-        this._resolveCreatureTriggerAction(sourceSlot, ability.action, changedSlot.card)
+        const ownChange = ability.trigger === "your_creature_element_changed";
+        const selfChange =
+          ability.trigger === "self_element_changed" &&
+          sourceSlot === changedSlot;
+        if (!ownChange && !selfChange) continue;
+        if (!matchesCreatureRule(changedSlot.card, ability.filter ?? {}))
+          continue;
+        this._resolveCreatureTriggerAction(
+          sourceSlot,
+          ability.action,
+          changedSlot.card,
+        );
       }
     }
   }
 
   _resolveCreatureSentToDiscard(card, owner) {
-    if (owner !== 'my') return
+    if (owner !== "my") return;
 
     for (const ability of card.triggeredAbilities ?? []) {
-      if (ability.trigger === 'sent_from_field_to_your_discard') {
-        this._resolveCreatureTriggerAction(null, ability.action, card)
+      if (ability.trigger === "sent_from_field_to_your_discard") {
+        this._resolveCreatureTriggerAction(null, ability.action, card);
       }
     }
 
     for (const sourceSlot of this._slotsMy) {
-      if (!sourceSlot.card) continue
+      if (!sourceSlot.card) continue;
       for (const ability of sourceSlot.card.triggeredAbilities ?? []) {
-        if (ability.trigger !== 'other_creature_sent_to_your_discard') continue
-        if (!matchesCreatureRule(card, ability.filter ?? {})) continue
-        this._resolveCreatureTriggerAction(sourceSlot, ability.action, card)
+        if (ability.trigger !== "other_creature_sent_to_your_discard") continue;
+        if (!matchesCreatureRule(card, ability.filter ?? {})) continue;
+        this._resolveCreatureTriggerAction(sourceSlot, ability.action, card);
       }
     }
   }
 
   _resolveDestroyedByCreatureTriggers(card, destroyerSlot) {
-    if (!destroyerSlot?.card) return
+    if (!destroyerSlot?.card) return;
     for (const ability of card.triggeredAbilities ?? []) {
-      if (ability.trigger !== 'destroyed_by_creature') continue
-      if (ability.action?.type !== 'deal_damage_to_destroyer') continue
-      this._dealDamageToCreature(destroyerSlot, ability.action.damage ?? 0, this._slotsMy.includes(destroyerSlot) ? this._slotsMy : this._slotsOpp)
+      if (ability.trigger !== "destroyed_by_creature") continue;
+      if (ability.action?.type !== "deal_damage_to_destroyer") continue;
+      this._dealDamageToCreature(
+        destroyerSlot,
+        ability.action.damage ?? 0,
+        this._slotsMy.includes(destroyerSlot) ? this._slotsMy : this._slotsOpp,
+      );
     }
   }
 
   _resolveCreatureTriggerAction(sourceSlot, action, triggerCard) {
-    if (!action) return false
+    if (!action) return false;
 
-    if (action.type === 'add_permanent_marker') {
-      const target = action.target === 'self' ? sourceSlot?.card : triggerCard
-      return this._addPermanentMarker(target, action.stats, action.value)
+    if (action.type === "add_permanent_marker") {
+      const target = action.target === "self" ? sourceSlot?.card : triggerCard;
+      return this._addPermanentMarker(target, action.stats, action.value);
     }
 
-    if (action.type === 'add_marker_to_your_creature') {
-      const targetSlot = this._slotsMy.find(slot => slot.card)
-      return this._addPermanentMarker(targetSlot?.card, action.stats, action.value)
+    if (action.type === "add_marker_to_your_creature") {
+      const targetSlot = this._slotsMy.find((slot) => slot.card);
+      return this._addPermanentMarker(
+        targetSlot?.card,
+        action.stats,
+        action.value,
+      );
     }
 
-    if (action.type === 'summon_from_deck') {
-      const count = Number(action.count) || 1
-      let summoned = 0
+    if (action.type === "summon_from_deck") {
+      const count = Number(action.count) || 1;
+      let summoned = 0;
       for (let i = this.myDeck.length - 1; i >= 0 && summoned < count; i--) {
-        if (!this._matchesCardRule(this.myDeck[i], action.filter ?? {})) continue
-        const slot = this._slotsMy.find(s => !s.card)
-        if (!slot) break
-        const [card] = this.myDeck.splice(i, 1)
-        this._summonCreatureToSlot(card, slot)
-        summoned += 1
+        if (!this._matchesCardRule(this.myDeck[i], action.filter ?? {}))
+          continue;
+        const slot = this._slotsMy.find((s) => !s.card);
+        if (!slot) break;
+        const [card] = this.myDeck.splice(i, 1);
+        this._summonCreatureToSlot(card, slot);
+        summoned += 1;
       }
-      this._renderDeckPile()
-      return summoned > 0
+      this._renderDeckPile();
+      return summoned > 0;
     }
 
-    if (action.type === 'summon_token') {
-      const token = applySummonToken({ token: action.token })
-      return token ? this._summonTokenToFirstEmptyZone(token) : false
+    if (action.type === "summon_token") {
+      const token = applySummonToken({ token: action.token });
+      return token ? this._summonTokenToFirstEmptyZone(token) : false;
     }
 
-    if (action.type === 'choose_enemy_creature_prevent_attack_next_turn') {
-      const targetSlot = this._slotsOpp.find(slot => slot.card)
-      if (!targetSlot?.card) return false
-      targetSlot.card.cannotAttackUntilTurn = this._turnNumber + 1
-      return true
+    if (action.type === "choose_enemy_creature_prevent_attack_next_turn") {
+      const targetSlot = this._slotsOpp.find((slot) => slot.card);
+      if (!targetSlot?.card) return false;
+      targetSlot.card.cannotAttackUntilTurn = this._turnNumber + 1;
+      return true;
     }
 
-    this._logAction('Efeito de criatura registrado para implementação de escolha/resposta.')
-    return false
+    this._logAction(
+      "Efeito de criatura registrado para implementação de escolha/resposta.",
+    );
+    return false;
   }
 
-  _sendFieldCreatureToDiscard(slot, owner, reason = 'efeito') {
-    if (!slot?.card) return false
-    const card = slot.card
-    const cardObject = slot.cardObject
-    const attachments = [...(slot.attachments ?? [])]
-    const discard = owner === 'my' ? this.myDiscard : this.oppDiscard
+  _sendFieldCreatureToDiscard(slot, owner, reason = "efeito") {
+    if (!slot?.card) return false;
+    const card = slot.card;
+    const cardObject = slot.cardObject;
+    const attachments = [...(slot.attachments ?? [])];
+    const discard = owner === "my" ? this.myDiscard : this.oppDiscard;
 
     if (!card.isToken) {
-      discard.push(card)
-      this._animateFieldObjectToDiscard(cardObject, owner)
+      discard.push(card);
+      this._animateFieldObjectToDiscard(cardObject, owner);
     } else {
-      this._animateFieldObjectVanish(cardObject)
+      this._animateFieldObjectVanish(cardObject);
     }
     attachments.forEach((attachment, index) => {
-      if (attachment.card) discard.push(attachment.card)
-      this._animateFieldObjectToDiscard(attachment.object, owner, { delay: 80 + index * 70, scale: 0.58 })
-    })
-    slot.card = null
-    slot.cardObject = null
-    slot.attachments = []
+      if (attachment.card) discard.push(attachment.card);
+      this._animateFieldObjectToDiscard(attachment.object, owner, {
+        delay: 80 + index * 70,
+        scale: 0.58,
+      });
+    });
+    slot.card = null;
+    slot.cardObject = null;
+    slot.attachments = [];
 
-    if (!card.isToken) this._resolveCreatureSentToDiscard(card, owner)
-    this._logAction(card.isToken ? `${card.name} desapareceu por ${reason}.` : `${card.name} foi enviada ao descarte por ${reason}.`)
-    return true
+    if (!card.isToken) this._resolveCreatureSentToDiscard(card, owner);
+    this._logAction(
+      card.isToken
+        ? `${card.name} desapareceu por ${reason}.`
+        : `${card.name} foi enviada ao descarte por ${reason}.`,
+    );
+    return true;
   }
 
   _addPermanentMarker(creature, stats = [], value = 0) {
-    if (!creature) return false
-    const amount = Number(value) || 0
-    if (!amount) return false
-    const list = Array.isArray(stats) ? stats : [stats]
-    creature.permanentModifiers = [...(creature.permanentModifiers ?? []), {
-      attack: list.includes('attack') ? amount : 0,
-      defense: list.includes('defense') ? amount : 0,
-    }]
-    return true
+    if (!creature) return false;
+    const amount = Number(value) || 0;
+    if (!amount) return false;
+    const list = Array.isArray(stats) ? stats : [stats];
+    creature.permanentModifiers = [
+      ...(creature.permanentModifiers ?? []),
+      {
+        attack: list.includes("attack") ? amount : 0,
+        defense: list.includes("defense") ? amount : 0,
+      },
+    ];
+    return true;
   }
 
   _matchesCardRule(card, rule = {}) {
-    return matchesCardRule(card, rule)
+    return matchesCardRule(card, rule);
   }
 
   _processDelayedEffects(trigger) {
-    const remaining = []
+    const remaining = [];
 
     for (const delayed of this._delayedEffects) {
-      const shouldResolve = delayed.trigger === trigger && this._turnNumber >= delayed.resolveTurn
+      const shouldResolve =
+        delayed.trigger === trigger && this._turnNumber >= delayed.resolveTurn;
       if (!shouldResolve) {
-        remaining.push(delayed)
-        continue
+        remaining.push(delayed);
+        continue;
       }
 
-      this._resolveDelayedEffect(delayed)
+      this._resolveDelayedEffect(delayed);
     }
 
-    this._delayedEffects = remaining
+    this._delayedEffects = remaining;
   }
 
   _resolveDelayedEffect(delayed) {
-    if (delayed.target !== 'attached_creature') return
-    const slot = delayed.slot
-    if (!slot?.card) return
+    if (delayed.target !== "attached_creature") return;
+    const slot = delayed.slot;
+    if (!slot?.card) return;
 
-    if (delayed.effect?.type === 'deal_damage') {
-      this._dealDamageToCreature(slot, delayed.effect.value ?? 0)
+    if (delayed.effect?.type === "deal_damage") {
+      this._dealDamageToCreature(slot, delayed.effect.value ?? 0);
     }
   }
 
   _dealDamageToCreature(slot, value, ownerSlots = this._slotsMy) {
-    const damage = Number(value) || 0
-    if (!slot?.card || damage <= 0) return
+    const damage = Number(value) || 0;
+    if (!slot?.card || damage <= 0) return;
 
-    slot.card.damageTaken = (slot.card.damageTaken ?? 0) + damage
-    recalculateCreatureStats(slot.card, slot.attachments.map(entry => entry.card), {
-      yourField: ownerSlots,
-    })
-    this._refreshFieldStatsOverlay(slot)
-    this._toast(`${slot.card.name} recebeu ${damage} de dano.`)
+    slot.card.damageTaken = (slot.card.damageTaken ?? 0) + damage;
+    recalculateCreatureStats(
+      slot.card,
+      slot.attachments.map((entry) => entry.card),
+      {
+        yourField: ownerSlots,
+      },
+    );
+    this._refreshFieldStatsOverlay(slot);
+    this._toast(`${slot.card.name} recebeu ${damage} de dano.`);
     if ((slot.card.currentStats?.defense ?? 1) <= 0) {
-      this._destroyCreatureInBattle(slot, ownerSlots === this._slotsMy ? 'my' : 'opp')
+      this._destroyCreatureInBattle(
+        slot,
+        ownerSlots === this._slotsMy ? "my" : "opp",
+      );
     }
   }
 
   _activatableAbilities(cardObject) {
-    const card = cardObject.getData('cardData')
-    const slot = cardObject.getData('slot')
-    const sourceState = cardObject.getData('abilityState')
-    if (!slot?.card) return []
+    const card = cardObject.getData("cardData");
+    const slot = cardObject.getData("slot");
+    const sourceState = cardObject.getData("abilityState");
+    if (!slot?.card) return [];
 
-    return (card.activatedAbilities ?? []).filter(ability => canActivateAbility(ability, {
-      creature: slot.card,
-      source: card,
-      sourceState,
-      turn: this._turnNumber,
-    }))
+    return (card.activatedAbilities ?? []).filter((ability) =>
+      canActivateAbility(ability, {
+        creature: slot.card,
+        source: card,
+        sourceState,
+        turn: this._turnNumber,
+      }),
+    );
   }
 
   _openAbilityElementChoice(cardObject) {
-    const ability = this._activatableAbilities(cardObject)[0]
+    const ability = this._activatableAbilities(cardObject)[0];
     if (!ability) {
-      this._toast('Habilidade indisponível.')
-      return
+      this._toast("Habilidade indisponível.");
+      return;
     }
 
-    if (ability.action?.type !== 'change_element') return
+    if (ability.action?.type !== "change_element") return;
 
-    this._clearCardActionMenu()
-    if (this._elementChoiceMenu) this._elementChoiceMenu.destroy(true)
+    this._clearCardActionMenu();
+    if (this._elementChoiceMenu) this._elementChoiceMenu.destroy(true);
 
-    const choices = ability.action.choose ?? []
-    this._elementChoiceMenu = this.add.container(cardObject.x, cardObject.y - 96).setDepth(45)
+    const choices = ability.action.choose ?? [];
+    this._elementChoiceMenu = this.add
+      .container(cardObject.x, cardObject.y - 96)
+      .setDepth(45);
     choices.forEach((element, i) => {
-      const col = i % 4
-      const row = Math.floor(i / 4)
-      const btn = this.add.text((col - 1.5) * 70, row * 28, ELEMENT_LABEL[element] ?? element, {
-        fontSize: '10px',
-        color: '#ffffff',
-        backgroundColor: '#1a3650',
-        padding: { x: 8, y: 5 },
-        fixedWidth: 64,
-        align: 'center',
-      }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-      btn.on('pointerover', () => btn.setStyle({ backgroundColor: '#2f6f8f' }))
-      btn.on('pointerout',  () => btn.setStyle({ backgroundColor: '#1a3650' }))
-      btn.on('pointerdown', () => this._activateChangeElement(cardObject, ability, element))
-      this._elementChoiceMenu.add(btn)
-    })
+      const col = i % 4;
+      const row = Math.floor(i / 4);
+      const btn = this.add
+        .text((col - 1.5) * 70, row * 28, ELEMENT_LABEL[element] ?? element, {
+          fontSize: "10px",
+          color: "#ffffff",
+          backgroundColor: "#1a3650",
+          padding: { x: 8, y: 5 },
+          fixedWidth: 64,
+          align: "center",
+        })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+      btn.on("pointerover", () => btn.setStyle({ backgroundColor: "#2f6f8f" }));
+      btn.on("pointerout", () => btn.setStyle({ backgroundColor: "#1a3650" }));
+      btn.on("pointerdown", () =>
+        this._activateChangeElement(cardObject, ability, element),
+      );
+      this._elementChoiceMenu.add(btn);
+    });
   }
 
   _activateChangeElement(cardObject, ability, element) {
-    const slot = cardObject.getData('slot')
-    const card = cardObject.getData('cardData')
-    const sourceState = cardObject.getData('abilityState')
-    const previousElement = slot?.card?.element
+    const slot = cardObject.getData("slot");
+    const card = cardObject.getData("cardData");
+    const sourceState = cardObject.getData("abilityState");
+    const previousElement = slot?.card?.element;
 
     const applied = activateAbility(ability, {
       creature: slot.card,
@@ -3913,123 +4747,152 @@ export default class GameScene extends Scene {
       sourceState,
       turn: this._turnNumber,
       choice: { element },
-    })
+    });
 
     if (!applied) {
-      this._toast('Não foi possível ativar.')
-      return
+      this._toast("Não foi possível ativar.");
+      return;
     }
 
     if (this._elementChoiceMenu) {
-      this._elementChoiceMenu.destroy(true)
-      this._elementChoiceMenu = null
+      this._elementChoiceMenu.destroy(true);
+      this._elementChoiceMenu = null;
     }
-    this._resolveCreatureElementChanged(slot, previousElement, element)
-    this._recalculateAllFieldCreatures()
-    this._toast(`Elemento alterado para ${ELEMENT_LABEL[element] ?? element}.`)
+    this._resolveCreatureElementChanged(slot, previousElement, element);
+    this._recalculateAllFieldCreatures();
+    this._toast(`Elemento alterado para ${ELEMENT_LABEL[element] ?? element}.`);
   }
 
   _placePendingSummon(slotIndex) {
-    if (!this._pendingSummonCard) return
+    if (!this._pendingSummonCard) return;
 
-    const slot = this._slotsMy[slotIndex]
-    if (!slot || slot.card) return
+    const slot = this._slotsMy[slotIndex];
+    if (!slot || slot.card) return;
 
-    const cardObject = this._pendingSummonCard
-    const cardData = cardObject.getData('cardData')
-    this._pendingSummonCard = null
-    this._clearSummonZones()
+    const cardObject = this._pendingSummonCard;
+    const cardData = cardObject.getData("cardData");
+    this._pendingSummonCard = null;
+    this._clearSummonZones();
 
     this._animateExistingCardTo(cardObject, slot.x, slot.y, {
       scale: 1,
       depth: 92,
       onComplete: () => {
-        const creature = this._placeCreatureObjectInSlot(cardData, cardObject, slot)
+        const creature = this._placeCreatureObjectInSlot(
+          cardData,
+          cardObject,
+          slot,
+        );
+        this._recordPlayedCard(cardData);
 
-        this._handContainers = this._handContainers.filter(card => card !== cardObject)
-        const handIndex = this.myHand.findIndex(card => card.id === cardData.id)
-        if (handIndex !== -1) this.myHand.splice(handIndex, 1)
-        this._turnActions.summoned = true
+        this._handContainers = this._handContainers.filter(
+          (card) => card !== cardObject,
+        );
+        const handIndex = this.myHand.findIndex(
+          (card) => card.id === cardData.id,
+        );
+        if (handIndex !== -1) this.myHand.splice(handIndex, 1);
+        this._turnActions.summoned = true;
 
-        this._resolveCreatureEnterField(slot)
-        this._recalculateAllFieldCreatures()
-        this._playSummonImpact(creature, slot)
+        this._resolveCreatureEnterField(slot);
+        this._recalculateAllFieldCreatures();
+        this._playSummonImpact(creature, slot);
 
-        this._sendAction('play_card', {
+        this._sendAction("play_card", {
           card_id: cardData.id,
           slot: slotIndex,
-        })
-        this._logAction(`${cardData.name} foi invocada.`)
+        });
+        this._logAction(`${cardData.name} foi invocada.`);
       },
-    })
+    });
   }
 
   _summonCreatureToSlot(cardData, slot, options = {}) {
-    const cardObject = this._createCardObject(cardData, slot.x, slot.y, false)
-    const creature = this._placeCreatureObjectInSlot(cardData, cardObject, slot, options)
-    this._resolveCreatureEnterField(slot)
-    this._recalculateAllFieldCreatures()
-    return creature
+    const cardObject = this._createCardObject(cardData, slot.x, slot.y, false);
+    const creature = this._placeCreatureObjectInSlot(
+      cardData,
+      cardObject,
+      slot,
+      options,
+    );
+    this._resolveCreatureEnterField(slot);
+    this._recalculateAllFieldCreatures();
+    return creature;
   }
 
   _summonOpponentCreatureToSlot(cardData, slot, options = {}) {
-    const cardObject = this._createCardObject(cardData, slot.x, slot.y, false)
-    const creature = createCreatureInstance(cardData)
-    const hasAptidao = String(cardData.efeito ?? cardData.effect ?? '').toLowerCase().includes('aptidão')
-      || String(cardData.efeito ?? cardData.effect ?? '').toLowerCase().includes('aptidao')
+    const cardObject = this._createCardObject(cardData, slot.x, slot.y, false);
+    const creature = createCreatureInstance(cardData);
+    const hasAptidao =
+      String(cardData.efeito ?? cardData.effect ?? "")
+        .toLowerCase()
+        .includes("aptidão") ||
+      String(cardData.efeito ?? cardData.effect ?? "")
+        .toLowerCase()
+        .includes("aptidao");
 
-    creature.summonedTurn = this._turnNumber
-    creature.canAttackFromTurn = options.canAttackFromTurn ?? (hasAptidao ? this._turnNumber : this._turnNumber + 1)
+    creature.summonedTurn = this._turnNumber;
+    creature.canAttackFromTurn =
+      options.canAttackFromTurn ??
+      (hasAptidao ? this._turnNumber : this._turnNumber + 1);
 
-    cardObject.setPosition(slot.x, slot.y)
-    cardObject.setDepth(8)
-    cardObject.setData('source', 'field')
-    cardObject.setData('slot', slot)
-    cardObject.setData('abilityState', { usedAbilities: {} })
-    cardObject.removeAllListeners('pointerdown')
-    cardObject.setInteractive({ useHandCursor: true })
-    cardObject.on('pointerdown', () => this._handleCardClick(cardObject))
+    cardObject.setPosition(slot.x, slot.y);
+    cardObject.setDepth(8);
+    cardObject.setData("source", "field");
+    cardObject.setData("slot", slot);
+    cardObject.setData("abilityState", { usedAbilities: {} });
+    cardObject.removeAllListeners("pointerdown");
+    cardObject.setInteractive({ useHandCursor: true });
+    cardObject.on("pointerdown", () => this._handleCardClick(cardObject));
 
-    this._addFieldStatsOverlay(cardObject, creature)
-    slot.card = creature
-    slot.cardObject = cardObject
-    slot.attachments = slot.attachments ?? []
-    this._recalculateAllFieldCreatures()
-    return creature
+    this._addFieldStatsOverlay(cardObject, creature);
+    slot.card = creature;
+    slot.cardObject = cardObject;
+    slot.attachments = slot.attachments ?? [];
+    this._recalculateAllFieldCreatures();
+    return creature;
   }
 
   _placeCreatureObjectInSlot(cardData, cardObject, slot, options = {}) {
-    const creature = createCreatureInstance(cardData)
-    const hasAptidao = String(cardData.efeito ?? cardData.effect ?? '').toLowerCase().includes('aptidão')
-      || String(cardData.efeito ?? cardData.effect ?? '').toLowerCase().includes('aptidao')
+    const creature = createCreatureInstance(cardData);
+    const hasAptidao =
+      String(cardData.efeito ?? cardData.effect ?? "")
+        .toLowerCase()
+        .includes("aptidão") ||
+      String(cardData.efeito ?? cardData.effect ?? "")
+        .toLowerCase()
+        .includes("aptidao");
 
-    creature.summonedTurn = this._turnNumber
-    creature.canAttackFromTurn = options.canAttackFromTurn ?? (hasAptidao ? this._turnNumber : this._turnNumber + 1)
+    creature.summonedTurn = this._turnNumber;
+    creature.canAttackFromTurn =
+      options.canAttackFromTurn ??
+      (hasAptidao ? this._turnNumber : this._turnNumber + 1);
 
-    cardObject.setPosition(slot.x, slot.y)
-    cardObject.setDepth(8)
-    cardObject.setData('source', 'field')
-    cardObject.setData('slot', slot)
-    cardObject.setData('abilityState', { usedAbilities: {} })
-    cardObject.removeAllListeners('pointerdown')
-    cardObject.setInteractive({ useHandCursor: true })
-    cardObject.on('pointerdown', () => this._handleCardClick(cardObject))
-    this._addFieldStatsOverlay(cardObject, creature)
-    slot.card = creature
-    slot.cardObject = cardObject
-    slot.attachments = slot.attachments ?? []
+    cardObject.setPosition(slot.x, slot.y);
+    cardObject.setDepth(8);
+    cardObject.setData("source", "field");
+    cardObject.setData("slot", slot);
+    cardObject.setData("abilityState", { usedAbilities: {} });
+    cardObject.removeAllListeners("pointerdown");
+    cardObject.setInteractive({ useHandCursor: true });
+    cardObject.on("pointerdown", () => this._handleCardClick(cardObject));
+    this._addFieldStatsOverlay(cardObject, creature);
+    slot.card = creature;
+    slot.cardObject = cardObject;
+    slot.attachments = slot.attachments ?? [];
 
-    return creature
+    return creature;
   }
 
   _playSummonImpact(card, slot) {
-    const rarity = card.raridade ?? card.rarity
-    if (!['lendario', 'lendaria', 'legendary'].includes(rarity)) return
+    const rarity = card.raridade ?? card.rarity;
+    if (!["lendario", "lendaria", "legendary"].includes(rarity)) return;
 
-    this.cameras.main.shake(250, 0.002)
-    const pulse = this.add.rectangle(slot.x, slot.y, slot.w + 26, slot.h + 26, 0xff44ff, 0.22)
+    this.cameras.main.shake(250, 0.002);
+    const pulse = this.add
+      .rectangle(slot.x, slot.y, slot.w + 26, slot.h + 26, 0xff44ff, 0.22)
       .setStrokeStyle(3, 0xffccff)
-      .setDepth(7)
+      .setDepth(7);
 
     this.tweens.add({
       targets: pulse,
@@ -4037,448 +4900,566 @@ export default class GameScene extends Scene {
       scaleY: 1.25,
       alpha: 0,
       duration: 420,
-      ease: 'Cubic.easeOut',
+      ease: "Cubic.easeOut",
       onComplete: () => pulse.destroy(),
-    })
+    });
   }
 
   _addFieldStatsOverlay(cardObject, card) {
-    if (card.card_type !== 'criatura') return
+    if (card.card_type !== "criatura") return;
 
-    const existing = cardObject.getData('statsOverlay')
-    if (existing) existing.destroy(true)
+    const existing = cardObject.getData("statsOverlay");
+    if (existing) existing.destroy(true);
 
     const stats = card.currentStats ?? {
-      attack: card.attack ?? '-',
-      defense: card.defense ?? '-',
-    }
-    const overlay = this.add.container(0, -48)
-    const bg = this.add.rectangle(0, 0, 64, 24, 0x000000, 0.78)
-      .setStrokeStyle(1, 0xffcc00)
-    const atk = this.add.text(-17, 0, String(stats.attack ?? '-'), {
-      fontSize: '14px',
-      color: '#ffdd66',
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
-    const life = this.add.text(17, 0, String(stats.defense ?? '-'), {
-      fontSize: '14px',
-      color: '#88ddff',
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
+      attack: card.attack ?? "-",
+      defense: card.defense ?? "-",
+    };
+    const overlay = this.add.container(0, -48);
+    const bg = this.add
+      .rectangle(0, 0, 64, 24, 0x000000, 0.78)
+      .setStrokeStyle(1, 0xffcc00);
+    const atk = this.add
+      .text(-17, 0, String(stats.attack ?? "-"), {
+        fontSize: "14px",
+        color: "#ffdd66",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    const life = this.add
+      .text(17, 0, String(stats.defense ?? "-"), {
+        fontSize: "14px",
+        color: "#88ddff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
 
-    overlay.add([bg, atk, life])
-    cardObject.add(overlay)
-    cardObject.setData('statsOverlay', overlay)
+    overlay.add([bg, atk, life]);
+    cardObject.add(overlay);
+    cardObject.setData("statsOverlay", overlay);
   }
 
   _refreshFieldStatsOverlay(slot) {
-    if (!slot?.cardObject || !slot?.card) return
-    this._addFieldStatsOverlay(slot.cardObject, slot.card)
+    if (!slot?.cardObject || !slot?.card) return;
+    this._addFieldStatsOverlay(slot.cardObject, slot.card);
   }
 
   _openCardInspectPanel(card) {
     if (this._cardInspectPanel) {
-      this._cardInspectPanel.destroy(true)
+      this._cardInspectPanel.destroy(true);
     }
 
-    const panelX = 176
-    const panelY = 380
-    const panelW = 260
-    const panelH = 610
-    const imgKey = `card_${card.id}`
-    const hasImage = this.textures.exists(imgKey)
+    const panelX = 176;
+    const panelY = 380;
+    const panelW = 260;
+    const panelH = 610;
+    const imgKey = `card_${card.id}`;
+    const hasImage = this.textures.exists(imgKey);
 
-    this._cardInspectPanel = this.add.container(panelX, panelY).setDepth(25)
+    this._cardInspectPanel = this.add.container(panelX, panelY).setDepth(25);
 
-    const bg = this.add.rectangle(0, 0, panelW, panelH, 0x071018, 0.95)
-      .setStrokeStyle(2, 0x4caf50)
-    const close = this.add.text(panelW / 2 - 18, -panelH / 2 + 16, 'X', {
-      fontSize: '14px',
-      color: '#ff7777',
-      fontStyle: 'bold',
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    close.on('pointerdown', () => {
-      this._cardInspectPanel.destroy(true)
-      this._cardInspectPanel = null
-    })
+    const bg = this.add
+      .rectangle(0, 0, panelW, panelH, 0x071018, 0.95)
+      .setStrokeStyle(2, 0x4caf50);
+    const close = this.add
+      .text(panelW / 2 - 18, -panelH / 2 + 16, "X", {
+        fontSize: "14px",
+        color: "#ff7777",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    close.on("pointerdown", () => {
+      this._cardInspectPanel.destroy(true);
+      this._cardInspectPanel = null;
+    });
 
-    const title = this.add.text(0, -panelH / 2 + 28, card.name, {
-      fontSize: '13px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-      wordWrap: { width: panelW - 28 },
-      align: 'center',
-    }).setOrigin(0.5, 0)
+    const title = this.add
+      .text(0, -panelH / 2 + 28, card.name, {
+        fontSize: "13px",
+        color: "#ffffff",
+        fontStyle: "bold",
+        wordWrap: { width: panelW - 28 },
+        align: "center",
+      })
+      .setOrigin(0.5, 0);
 
-    let art
+    let art;
     if (hasImage) {
-      art = this.add.image(0, -panelH / 2 + 158, imgKey).setDisplaySize(150, 210)
+      art = this.add
+        .image(0, -panelH / 2 + 158, imgKey)
+        .setDisplaySize(150, 210);
     } else {
-      art = this.add.rectangle(0, -panelH / 2 + 158, 150, 210, card.color ?? 0x1a1a2e)
-        .setStrokeStyle(1, 0x4caf50)
+      art = this.add
+        .rectangle(0, -panelH / 2 + 158, 150, 210, card.color ?? 0x1a1a2e)
+        .setStrokeStyle(1, 0x4caf50);
     }
 
     const infoLines = [
       `Tipo: ${card.card_type}`,
-      `Elemento: ${ELEMENT_LABEL[card.element] ?? card.element ?? '-'}`,
-      `Raridade: ${card.raridade ?? card.rarity ?? '-'}`,
-    ]
-    if (card.card_type === 'criatura') {
-      infoLines.push(`ATQ: ${card.attack ?? '-'}   VIDA: ${card.defense ?? '-'}`)
+      `Elemento: ${ELEMENT_LABEL[card.element] ?? card.element ?? "-"}`,
+      `Raridade: ${card.raridade ?? card.rarity ?? "-"}`,
+    ];
+    if (card.card_type === "criatura") {
+      infoLines.push(
+        `ATQ: ${card.attack ?? "-"}   VIDA: ${card.defense ?? "-"}`,
+      );
     }
 
-    const info = this.add.text(-panelW / 2 + 18, -panelH / 2 + 282, infoLines.join('\n'), {
-      fontSize: '12px',
-      color: '#cfe8cf',
-      lineSpacing: 5,
-    }).setOrigin(0, 0)
+    const info = this.add
+      .text(-panelW / 2 + 18, -panelH / 2 + 282, infoLines.join("\n"), {
+        fontSize: "12px",
+        color: "#cfe8cf",
+        lineSpacing: 5,
+      })
+      .setOrigin(0, 0);
 
-    const effectTitle = this.add.text(-panelW / 2 + 18, -panelH / 2 + 372, 'EFEITO', {
-      fontSize: '12px',
-      color: '#8fb8ff',
-      fontStyle: 'bold',
-    }).setOrigin(0, 0)
+    const effectTitle = this.add
+      .text(-panelW / 2 + 18, -panelH / 2 + 372, "EFEITO", {
+        fontSize: "12px",
+        color: "#8fb8ff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0, 0);
 
-    const effectText = this.add.text(-panelW / 2 + 18, -panelH / 2 + 394, card.efeito ?? card.effect ?? '-', {
-      fontSize: '11px',
-      color: '#dddddd',
-      wordWrap: { width: panelW - 36 },
-      lineSpacing: 4,
-    }).setOrigin(0, 0)
+    const effectText = this.add
+      .text(
+        -panelW / 2 + 18,
+        -panelH / 2 + 394,
+        card.efeito ?? card.effect ?? "-",
+        {
+          fontSize: "11px",
+          color: "#dddddd",
+          wordWrap: { width: panelW - 36 },
+          lineSpacing: 4,
+        },
+      )
+      .setOrigin(0, 0);
 
-    this._cardInspectPanel.add([bg, close, title, art, info, effectTitle, effectText])
+    this._cardInspectPanel.add([
+      bg,
+      close,
+      title,
+      art,
+      info,
+      effectTitle,
+      effectText,
+    ]);
   }
 
   _openMulliganModal() {
-    if (this._mulliganOffered || this._mulliganModal) return
-    this._mulliganOffered = true
+    if (this._mulliganOffered || this._mulliganModal) return;
+    this._mulliganOffered = true;
 
-    const { width, height } = this.cameras.main
-    const cardW = 96
-    const cardH = 134
-    const gap = 18
-    const totalW = this.myHand.length * cardW + (this.myHand.length - 1) * gap
-    const startX = (width - totalW) / 2
-    let remaining = 15
+    const { width, height } = this.cameras.main;
+    const cardW = 96;
+    const cardH = 134;
+    const gap = 18;
+    const totalW = this.myHand.length * cardW + (this.myHand.length - 1) * gap;
+    const startX = (width - totalW) / 2;
+    let remaining = 15;
 
-    this._mulliganModal = this.add.container(0, 0).setDepth(80)
-    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.72)
+    this._mulliganModal = this.add.container(0, 0).setDepth(80);
+    const overlay = this.add
+      .rectangle(0, 0, width, height, 0x000000, 0.72)
       .setOrigin(0)
-      .setInteractive()
-    const panel = this.add.rectangle(width / 2, height / 2, 760, 330, 0x071018, 0.96)
-      .setStrokeStyle(2, 0x4caf50)
-    const title = this.add.text(width / 2, height / 2 - 132, 'MULLIGAN', {
-      fontSize: '22px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
-    const subtitle = this.add.text(width / 2, height / 2 - 106, 'Escolha manter sua mão inicial ou comprar 5 novas cartas.', {
-      fontSize: '13px',
-      color: '#cccccc',
-    }).setOrigin(0.5)
-    const countdown = this.add.text(width / 2, height / 2 + 104, `Fechando em ${remaining}s`, {
-      fontSize: '12px',
-      color: '#8fb8ff',
-    }).setOrigin(0.5)
+      .setInteractive();
+    const panel = this.add
+      .rectangle(width / 2, height / 2, 760, 330, 0x071018, 0.96)
+      .setStrokeStyle(2, 0x4caf50);
+    const title = this.add
+      .text(width / 2, height / 2 - 132, "MULLIGAN", {
+        fontSize: "22px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    const subtitle = this.add
+      .text(
+        width / 2,
+        height / 2 - 106,
+        "Escolha manter sua mão inicial ou comprar 5 novas cartas.",
+        {
+          fontSize: "13px",
+          color: "#cccccc",
+        },
+      )
+      .setOrigin(0.5);
+    const countdown = this.add
+      .text(width / 2, height / 2 + 104, `Fechando em ${remaining}s`, {
+        fontSize: "12px",
+        color: "#8fb8ff",
+      })
+      .setOrigin(0.5);
 
-    this._mulliganModal.add([overlay, panel, title, subtitle, countdown])
+    this._mulliganModal.add([overlay, panel, title, subtitle, countdown]);
 
     this.myHand.forEach((card, i) => {
-      const x = startX + i * (cardW + gap) + cardW / 2
-      const preview = this._createCardObject(card, x, height / 2 - 16, false)
-      preview.setScale(cardW / 80, cardH / 112)
-      this._mulliganModal.add(preview)
-    })
+      const x = startX + i * (cardW + gap) + cardW / 2;
+      const preview = this._createCardObject(card, x, height / 2 - 16, false);
+      preview.setScale(cardW / 80, cardH / 112);
+      this._mulliganModal.add(preview);
+    });
 
-    const keepBtn = this.add.text(width / 2 - 90, height / 2 + 142, 'MANTER MÃO', {
-      fontSize: '13px',
-      color: '#ffffff',
-      backgroundColor: '#1b5e20',
-      padding: { x: 16, y: 8 },
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    keepBtn.on('pointerover', () => keepBtn.setStyle({ backgroundColor: '#2e7d32' }))
-    keepBtn.on('pointerout',  () => keepBtn.setStyle({ backgroundColor: '#1b5e20' }))
-    keepBtn.on('pointerdown', () => this._closeMulliganModal())
+    const keepBtn = this.add
+      .text(width / 2 - 90, height / 2 + 142, "MANTER MÃO", {
+        fontSize: "13px",
+        color: "#ffffff",
+        backgroundColor: "#1b5e20",
+        padding: { x: 16, y: 8 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    keepBtn.on("pointerover", () =>
+      keepBtn.setStyle({ backgroundColor: "#2e7d32" }),
+    );
+    keepBtn.on("pointerout", () =>
+      keepBtn.setStyle({ backgroundColor: "#1b5e20" }),
+    );
+    keepBtn.on("pointerdown", () => this._closeMulliganModal());
 
-    const mulliganBtn = this.add.text(width / 2 + 90, height / 2 + 142, 'MULIGAR', {
-      fontSize: '13px',
-      color: '#ffffff',
-      backgroundColor: '#8a4a12',
-      padding: { x: 16, y: 8 },
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    mulliganBtn.on('pointerover', () => mulliganBtn.setStyle({ backgroundColor: '#b86418' }))
-    mulliganBtn.on('pointerout',  () => mulliganBtn.setStyle({ backgroundColor: '#8a4a12' }))
-    mulliganBtn.on('pointerdown', () => this._mulliganHand())
+    const mulliganBtn = this.add
+      .text(width / 2 + 90, height / 2 + 142, "MULIGAR", {
+        fontSize: "13px",
+        color: "#ffffff",
+        backgroundColor: "#8a4a12",
+        padding: { x: 16, y: 8 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    mulliganBtn.on("pointerover", () =>
+      mulliganBtn.setStyle({ backgroundColor: "#b86418" }),
+    );
+    mulliganBtn.on("pointerout", () =>
+      mulliganBtn.setStyle({ backgroundColor: "#8a4a12" }),
+    );
+    mulliganBtn.on("pointerdown", () => this._mulliganHand());
 
-    this._mulliganModal.add([keepBtn, mulliganBtn])
+    this._mulliganModal.add([keepBtn, mulliganBtn]);
 
     this._mulliganTimer = this.time.addEvent({
       delay: 1000,
       repeat: 14,
       callback: () => {
-        remaining--
-        countdown.setText(`Fechando em ${remaining}s`)
-        if (remaining <= 0) this._closeMulliganModal()
+        remaining--;
+        countdown.setText(`Fechando em ${remaining}s`);
+        if (remaining <= 0) this._closeMulliganModal();
       },
-    })
+    });
   }
 
   _closeMulliganModal() {
     if (this._mulliganTimer) {
-      this._mulliganTimer.remove(false)
-      this._mulliganTimer = null
+      this._mulliganTimer.remove(false);
+      this._mulliganTimer = null;
     }
     if (this._mulliganModal) {
-      this._mulliganModal.destroy(true)
-      this._mulliganModal = null
+      this._mulliganModal.destroy(true);
+      this._mulliganModal = null;
     }
-    this._startMatchTurns()
+    this._startMatchTurns();
   }
 
   _startMatchTurns() {
-    if (this._currentPhase !== 'setup') return
+    if (this._currentPhase !== "setup") return;
 
-    this._activePlayer = Math.random() < 0.5 ? 'my' : 'opp'
-    this._turnNumber = 1
-    this._beginTurn(this._activePlayer)
+    this._activePlayer = this._isSoloMode()
+      ? Math.random() < 0.5
+        ? "my"
+        : "opp"
+      : this._getActivePlayerSideFromRoom();
+    this._turnNumber = Number(this.room?.game_state?.turn_number) || 1;
+    this._beginTurn(this._activePlayer, this._getCurrentPhaseFromRoom());
   }
 
-  _beginTurn(player) {
-    if (this._gameOver) return
+  _beginTurn(player, phase = "main") {
+    if (this._gameOver) return;
 
-    this._activePlayer = player
-    this._currentPhase = 'main'
-    this._turnActions = { summoned: false, attached: false }
-    this._clearExpiredTemporaryEffects()
-    this._updateTurnUi()
-    this._logAction(player === 'my' ? 'Seu turno começou.' : 'Turno do oponente começou.')
-    this._showTurnBanner(player === 'my' ? 'SEU TURNO!' : 'TURNO INIMIGO!')
-    this._startTurnFuse()
+    this._activePlayer = player;
+    this._currentPhase = phase === "battle" ? "battle" : "main";
+    this._turnActions = { summoned: false, attached: false };
+    this._clearExpiredTemporaryEffects();
+    this._updateTurnUi();
+    this._logAction(
+      player === "my" ? "Seu turno começou." : "Turno do oponente começou.",
+    );
+    this._showTurnBanner(player === "my" ? "SEU TURNO!" : "TURNO INIMIGO!");
+    this._startTurnFuse();
+    if (this._currentPhase === "battle" && player === "my")
+      this._renderBattleAttackButtons();
 
     if (this._turnNumber > 1) {
-      if (player === 'my') {
-        this._animateDrawCardsFromDeck(1)
+      if (player === "my") {
+        this._animateDrawCardsFromDeck(1);
       } else {
-        this._opponentDrawCard()
+        this._opponentDrawCard();
       }
     }
 
-    if (this._isSoloMode() && player === 'opp') {
-      this.time.delayedCall(900, () => this._runSoloOpponentTurn())
+    if (this._isSoloMode() && player === "opp") {
+      this.time.delayedCall(900, () => this._runSoloOpponentTurn());
     }
   }
 
   _advancePhase() {
-    if (this._gameOver) return
-    if (this._activePlayer !== 'my' && this._isSoloMode()) return
+    if (this._gameOver) return;
+    if (this._activePlayer !== "my") return;
 
-    if (this._currentPhase === 'main') {
-      this._currentPhase = 'battle'
-      this._updateTurnUi()
-      this._showTurnBanner('FASE DE BATALHA')
-      this._renderBattleAttackButtons()
-      return
+    if (this._currentPhase === "main") {
+      this._currentPhase = "battle";
+      this._updateTurnUi();
+      this._showTurnBanner("FASE DE BATALHA");
+      this._renderBattleAttackButtons();
+      this._sendAction("phase_change", { phase: "battle" });
+      return;
     }
 
-    if (this._currentPhase === 'battle') {
-      this._endTurn()
+    if (this._currentPhase === "battle") {
+      this._endTurn();
     }
   }
 
   _endTurn() {
-    if (this._gameOver) return
-    this._stopTurnFuse()
-    this._clearBattleAttackButtons()
-    this._processDelayedEffects('end_of_next_turn')
-    this._clearExpiredTemporaryEffects()
-    this._sendAction('end_turn', {})
+    if (this._gameOver) return;
+    this._stopTurnFuse();
+    this._clearBattleAttackButtons();
+    this._processDelayedEffects("end_of_next_turn");
+    this._clearExpiredTemporaryEffects();
+    this._sendAction("end_turn", {});
 
-    this._turnNumber += 1
-    this._beginTurn(this._activePlayer === 'my' ? 'opp' : 'my')
+    this._turnNumber += 1;
+    this._beginTurn(this._activePlayer === "my" ? "opp" : "my");
   }
 
   _updateTurnUi() {
-    const phaseLabel = this._currentPhase === 'battle' ? 'Batalha' : 'Principal'
-    const playerLabel = this._activePlayer === 'my' ? 'Seu turno' : 'Turno inimigo'
-    if (this._turnText) this._turnText.setText(`${playerLabel} - ${phaseLabel}`)
-    if (this._roundText) this._roundText.setText(`[Turno: ${this._turnNumber} | ${phaseLabel}]`)
-    if (this._phaseButton) this._phaseButton.setText(this._currentPhase === 'main' ? 'BATALHA' : 'FIM DE TURNO')
+    const phaseLabel =
+      this._currentPhase === "battle" ? "Batalha" : "Principal";
+    const playerLabel =
+      this._activePlayer === "my" ? "Seu turno" : "Turno inimigo";
+    if (this._turnText)
+      this._turnText.setText(`${playerLabel} - ${phaseLabel}`);
+    if (this._roundText)
+      this._roundText.setText(`[Turno: ${this._turnNumber} | ${phaseLabel}]`);
+    if (this._phaseButton) {
+      const canControlPhase =
+        this._activePlayer === "my" &&
+        !this._gameOver &&
+        this._currentPhase !== "setup";
+      this._phaseButton.setText(
+        this._currentPhase === "main" ? "BATALHA" : "FIM DE TURNO",
+      );
+      this._phaseButton.setVisible(canControlPhase);
+      if (canControlPhase) {
+        this._phaseButton.setInteractive({ useHandCursor: true });
+      } else {
+        this._phaseButton.disableInteractive();
+      }
+    }
   }
 
   _showTurnBanner(text) {
-    const { width, height } = this.cameras.main
-    if (this._turnBanner) this._turnBanner.destroy(true)
+    const { width, height } = this.cameras.main;
+    if (this._turnBanner) this._turnBanner.destroy(true);
 
-    this._turnBanner = this.add.container(width / 2, height / 2).setDepth(120)
-    const bg = this.add.rectangle(0, 0, 420, 92, 0x071018, 0.9)
-      .setStrokeStyle(2, this._activePlayer === 'my' ? 0x4caf50 : 0xaa3333)
-    const label = this.add.text(0, 0, text, {
-      fontSize: '30px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-    }).setOrigin(0.5)
-    this._turnBanner.add([bg, label])
+    this._turnBanner = this.add.container(width / 2, height / 2).setDepth(120);
+    const bg = this.add
+      .rectangle(0, 0, 420, 92, 0x071018, 0.9)
+      .setStrokeStyle(2, this._activePlayer === "my" ? 0x4caf50 : 0xaa3333);
+    const label = this.add
+      .text(0, 0, text, {
+        fontSize: "30px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+    this._turnBanner.add([bg, label]);
     this.tweens.add({
       targets: this._turnBanner,
       alpha: 0,
       scale: 1.08,
       delay: 720,
       duration: 360,
-      ease: 'Cubic.easeOut',
+      ease: "Cubic.easeOut",
       onComplete: () => {
-        this._turnBanner?.destroy(true)
-        this._turnBanner = null
+        this._turnBanner?.destroy(true);
+        this._turnBanner = null;
       },
-    })
+    });
   }
 
   _opponentDrawCard() {
-    if (!this.oppDeck.length) return
-    this.oppHand.push(this.oppDeck.shift())
-    this._discardRandomOpponentIfHandOverflow()
-    this.oppHandCount = this.oppHand.length
-    this._renderOpponentDeckPile()
-    this._renderOpponentHand()
-    this._logAction('Oponente comprou 1 carta.')
+    if (!this.oppDeck.length) return;
+    this.oppHand.push(this.oppDeck.shift());
+    this._discardRandomOpponentIfHandOverflow();
+    this.oppHandCount = this.oppHand.length;
+    this._renderOpponentDeckPile();
+    this._renderOpponentHand();
+    this._logAction("Oponente comprou 1 carta.");
   }
 
   async _runSoloOpponentTurn() {
-    if (this._gameOver || this._activePlayer !== 'opp') return
-    await this._runSoloMainPhase()
-    await this._wait(700)
-    if (this._gameOver || this._activePlayer !== 'opp') return
-    this._currentPhase = 'battle'
-    this._updateTurnUi()
-    this._showTurnBanner('FASE DE BATALHA')
-    await this._runSoloBattlePhase()
-    await this._wait(900)
-    if (!this._gameOver && this._activePlayer === 'opp') this._endTurn()
+    if (this._gameOver || this._activePlayer !== "opp") return;
+    await this._runSoloMainPhase();
+    await this._wait(700);
+    if (this._gameOver || this._activePlayer !== "opp") return;
+    this._currentPhase = "battle";
+    this._updateTurnUi();
+    this._showTurnBanner("FASE DE BATALHA");
+    await this._runSoloBattlePhase();
+    await this._wait(900);
+    if (!this._gameOver && this._activePlayer === "opp") this._endTurn();
   }
 
   async _runSoloMainPhase() {
-    if (this._gameOver || this._activePlayer !== 'opp') return
+    if (this._gameOver || this._activePlayer !== "opp") return;
     if (this._soloSummonCreature()) {
-      await this._wait(460)
-      await this._offerCommandResponseWindow('invocou uma criatura')
+      await this._wait(460);
+      await this._offerCommandResponseWindow("invocou uma criatura");
     }
     if (this._soloAttachCard()) {
-      await this._wait(420)
-      await this._offerCommandResponseWindow('anexou uma carta')
+      await this._wait(420);
+      await this._offerCommandResponseWindow("anexou uma carta");
     }
-    this.oppHandCount = this.oppHand.length
-    this._renderOpponentHand()
-    this._renderOpponentDeckPile()
-    this._renderOpponentDiscardPile()
+    this.oppHandCount = this.oppHand.length;
+    this._renderOpponentHand();
+    this._renderOpponentDeckPile();
+    this._renderOpponentDiscardPile();
   }
 
   _soloSummonCreature() {
-    if (this._turnActions.summoned) return false
-    const emptySlot = aiChooseFirstEmptySlot(this._slotsOpp)
-    if (!emptySlot) return false
+    if (this._turnActions.summoned) return false;
+    const emptySlot = aiChooseFirstEmptySlot(this._slotsOpp);
+    if (!emptySlot) return false;
 
-    const handIndex = this.oppHand.findIndex(card => (
-      card.card_type === 'criatura' && this._canNormalSummonCard(card)
-    ))
-    if (handIndex === -1) return false
+    const handIndex = this.oppHand.findIndex(
+      (card) =>
+        card.card_type === "criatura" && this._canNormalSummonCard(card),
+    );
+    if (handIndex === -1) return false;
 
-    const [card] = this.oppHand.splice(handIndex, 1)
-    const from = this._opponentHandAnimationStart()
-    this._animateCardPreviewTo(card, from, { x: emptySlot.x, y: emptySlot.y }, {
-      onComplete: () => this._summonOpponentCreatureToSlot(card, emptySlot),
-    })
-    this._turnActions.summoned = true
-    this._logAction(`Oponente invocou ${card.name}.`)
-    return true
+    const [card] = this.oppHand.splice(handIndex, 1);
+    const from = this._opponentHandAnimationStart();
+    this._animateCardPreviewTo(
+      card,
+      from,
+      { x: emptySlot.x, y: emptySlot.y },
+      {
+        onComplete: () => this._summonOpponentCreatureToSlot(card, emptySlot),
+      },
+    );
+    this._turnActions.summoned = true;
+    this._logAction(`Oponente invocou ${card.name}.`);
+    return true;
   }
 
   _soloAttachCard() {
-    if (this._turnActions.attached) return false
+    if (this._turnActions.attached) return false;
     const candidates = this.oppHand
       .map((card, index) => ({ card, index }))
-      .filter(entry => this._isAttachmentCard(entry.card))
+      .filter((entry) => this._isAttachmentCard(entry.card));
 
-    const play = aiChooseFirstCard(candidates.map(entry => {
-      const targets = attachmentTargets(entry.card, this._slotsOpp)
-      return targets.length ? { ...entry, target: targets[0] } : null
-    }).filter(Boolean))
-    if (!play) return false
+    const play = aiChooseFirstCard(
+      candidates
+        .map((entry) => {
+          const targets = attachmentTargets(entry.card, this._slotsOpp);
+          return targets.length ? { ...entry, target: targets[0] } : null;
+        })
+        .filter(Boolean),
+    );
+    if (!play) return false;
 
-    const [attachment] = this.oppHand.splice(play.index, 1)
-    const from = this._opponentHandAnimationStart()
-    this._animateCardPreviewTo(attachment, from, { x: play.target.x, y: play.target.y + 9 }, {
-      endScale: 0.98,
-      duration: 320,
-      onComplete: () => this._placeOpponentAttachment(play.target, attachment),
-    })
-    this._turnActions.attached = true
-    return true
+    const [attachment] = this.oppHand.splice(play.index, 1);
+    const from = this._opponentHandAnimationStart();
+    this._animateCardPreviewTo(
+      attachment,
+      from,
+      { x: play.target.x, y: play.target.y + 9 },
+      {
+        endScale: 0.98,
+        duration: 320,
+        onComplete: () =>
+          this._placeOpponentAttachment(play.target, attachment),
+      },
+    );
+    this._turnActions.attached = true;
+    return true;
   }
 
   _opponentHandAnimationStart() {
     return this._oppHandContainer
       ? { x: this.cameras.main.width / 2, y: 130 }
-      : { x: this.cameras.main.width / 2, y: 130 }
+      : { x: this.cameras.main.width / 2, y: 130 };
   }
 
   async _runSoloBattlePhase() {
-    const attackers = this._slotsOpp.filter(slot => canCreatureAttack({
-      activePlayer: this._activePlayer,
-      currentPhase: 'battle',
-      gameOver: this._gameOver,
-      turnNumber: this._turnNumber,
-      actor: 'opp',
-    }, slot.card))
+    const attackers = this._slotsOpp.filter((slot) =>
+      canCreatureAttack(
+        {
+          activePlayer: this._activePlayer,
+          currentPhase: "battle",
+          gameOver: this._gameOver,
+          turnNumber: this._turnNumber,
+          actor: "opp",
+        },
+        slot.card,
+      ),
+    );
 
     for (const attackerSlot of attackers) {
-      await this._wait(260)
-      if (this._gameOver || this._activePlayer !== 'opp' || !attackerSlot.card) continue
-      const yourCreatures = this._slotsMy.filter(slot => slot.card)
-      const target = aiChooseFirstSlot(yourCreatures.filter(slot => this._canBeAttackTarget(slot)))
+      await this._wait(260);
+      if (this._gameOver || this._activePlayer !== "opp" || !attackerSlot.card)
+        continue;
+      const yourCreatures = this._slotsMy.filter((slot) => slot.card);
+      const target = aiChooseFirstSlot(
+        yourCreatures.filter((slot) => this._canBeAttackTarget(slot)),
+      );
       if (target) {
-        this._resolveOpponentCreatureAttack(attackerSlot, target)
-        await this._offerCommandResponseWindow('atacou uma criatura')
+        this._resolveOpponentCreatureAttack(attackerSlot, target);
+        await this._offerCommandResponseWindow("atacou uma criatura");
       } else if (!yourCreatures.length) {
-        this._resolveOpponentDirectAttack(attackerSlot)
-        await this._offerCommandResponseWindow('atacou diretamente')
+        this._resolveOpponentDirectAttack(attackerSlot);
+        await this._offerCommandResponseWindow("atacou diretamente");
       } else {
-        this._logAction(`${attackerSlot.card.name} não encontrou alvo válido para atacar.`)
+        this._logAction(
+          `${attackerSlot.card.name} não encontrou alvo válido para atacar.`,
+        );
       }
     }
   }
 
   _wait(ms) {
-    return new Promise(resolve => this.time.delayedCall(ms, resolve))
+    return new Promise((resolve) => this.time.delayedCall(ms, resolve));
   }
 
   _mulliganHand() {
-    const cards = this._shuffleCards([...this.myHand, ...this.myDeck])
-    this.myHand = cards.slice(0, 5)
-    this.myDeck = cards.slice(5)
-    this._renderDeckPile()
-    this._renderHand(this.myHand)
-    this._closeMulliganModal()
-    this._toast('Nova mão comprada!')
+    const cards = this._shuffleCards([...this.myHand, ...this.myDeck]);
+    this.myHand = cards.slice(0, 5);
+    this.myDeck = cards.slice(5);
+    this._renderDeckPile();
+    this._renderHand(this.myHand);
+    this._closeMulliganModal();
+    this._toast("Nova mão comprada!");
   }
 
   _discardFromHand(cardObject) {
-    const card = cardObject.getData('cardData')
-    const handIndex = this.myHand.findIndex(c => c.id === card.id)
-    if (handIndex !== -1) this.myHand.splice(handIndex, 1)
+    const card = cardObject.getData("cardData");
+    const handIndex = this.myHand.findIndex((c) => c.id === card.id);
+    if (handIndex !== -1) this.myHand.splice(handIndex, 1);
 
-    this._mustDiscardBeforeDraw = false
-    this._handContainers = this._handContainers.filter(c => c !== cardObject)
-    this._renderHand(this.myHand)
-    this._animateCardToDiscard(cardObject, card)
-    this._toast(`${card.name} descartada da mão.`)
+    this._mustDiscardBeforeDraw = false;
+    this._handContainers = this._handContainers.filter((c) => c !== cardObject);
+    this._renderHand(this.myHand);
+    this._animateCardToDiscard(cardObject, card);
+    this._toast(`${card.name} descartada da mão.`);
   }
 
   _animateCardToDiscard(cardObject, card, onComplete) {
     const target = this._discardPileContainer
       ? { x: this._discardPileContainer.x, y: this._discardPileContainer.y }
-      : { x: this.cameras.main.width - 238, y: this.cameras.main.height - 228 }
+      : { x: this.cameras.main.width - 238, y: this.cameras.main.height - 228 };
 
-    cardObject.disableInteractive()
-    cardObject.setDepth(95)
+    cardObject.disableInteractive();
+    cardObject.setDepth(95);
 
     this.tweens.add({
       targets: cardObject,
@@ -4488,69 +5469,83 @@ export default class GameScene extends Scene {
       angle: cardObject.angle + 8,
       alpha: 0.92,
       duration: 420,
-      ease: 'Cubic.easeInOut',
+      ease: "Cubic.easeInOut",
       onComplete: () => {
-        this.myDiscard.push(card)
-        cardObject.destroy(true)
-        this._renderDiscardPile()
-        this._playDiscardSmoke()
-        if (onComplete) onComplete()
+        this.myDiscard.push(card);
+        cardObject.destroy(true);
+        this._renderDiscardPile();
+        this._playDiscardSmoke();
+        this._syncPublicZoneState("discard_cards", {
+          cards: [this._publicCardPayload(card)],
+          from: "hand",
+        });
+        if (onComplete) onComplete();
       },
-    })
+    });
   }
 
   _drawCard() {
     if (!this._isMyMainPhase()) {
-      this._toast('Compra manual apenas no seu turno principal.')
-      return
+      this._toast("Compra manual apenas no seu turno principal.");
+      return;
     }
     if (!this.myDeck.length) {
-      this._toast('Baralho vazio!')
-      return
+      this._toast("Baralho vazio!");
+      return;
     }
 
-    this._mustDiscardBeforeDraw = false
-    this._animateDrawCardsFromDeck(1)
+    this._mustDiscardBeforeDraw = false;
+    this._animateDrawCardsFromDeck(1);
   }
 
   _discardRandomIfHandOverflow() {
-    if (this.myHand.length <= MAX_HAND_SIZE) return
+    if (this.myHand.length <= MAX_HAND_SIZE) return;
 
-    const index = this._randInt(0, this.myHand.length - 1)
-    const [discarded] = this.myHand.splice(index, 1)
-    this.myDiscard.push(discarded)
-    this._renderDiscardPile()
-    this._playDiscardSmoke()
-    this._renderHand(this.myHand)
-    this._toast(`Mão excedeu 8 cartas. ${discarded.name} foi descartada aleatoriamente.`)
-    this._logAction(`${discarded.name} foi descartada aleatoriamente por limite de mao.`)
+    const index = this._randInt(0, this.myHand.length - 1);
+    const [discarded] = this.myHand.splice(index, 1);
+    this.myDiscard.push(discarded);
+    this._renderDiscardPile();
+    this._playDiscardSmoke();
+    this._renderHand(this.myHand);
+    this._toast(
+      `Mão excedeu 8 cartas. ${discarded.name} foi descartada aleatoriamente.`,
+    );
+    this._logAction(
+      `${discarded.name} foi descartada aleatoriamente por limite de mao.`,
+    );
+    this._syncPublicZoneState("discard_cards", {
+      cards: [this._publicCardPayload(discarded)],
+      from: "hand",
+    });
   }
 
   _discardRandomOpponentIfHandOverflow() {
-    if (this.oppHand.length <= MAX_HAND_SIZE) return
+    if (this.oppHand.length <= MAX_HAND_SIZE) return;
 
-    const index = this._randInt(0, this.oppHand.length - 1)
-    const [discarded] = this.oppHand.splice(index, 1)
-    this.oppDiscard.push(discarded)
-    this._renderOpponentDiscardPile()
-    this._logAction(`Oponente descartou uma carta aleatoria por limite de mao.`)
+    const index = this._randInt(0, this.oppHand.length - 1);
+    const [discarded] = this.oppHand.splice(index, 1);
+    this.oppDiscard.push(discarded);
+    this._renderOpponentDiscardPile();
+    this._logAction(
+      `Oponente descartou uma carta aleatoria por limite de mao.`,
+    );
   }
 
   _shuffleDeck() {
-    this._deckActionsOpen = false
-    this._clearDeckActions()
-    this.myDeck = this._shuffleCards(this.myDeck)
-    this._animateDeckShuffle()
+    this._deckActionsOpen = false;
+    this._clearDeckActions();
+    this.myDeck = this._shuffleCards(this.myDeck);
+    this._animateDeckShuffle();
   }
 
   _animateDeckShuffle() {
     if (!this._deckPileContainer) {
-      this._renderDeckPile()
-      this._toast('Baralho embaralhado!')
-      return
+      this._renderDeckPile();
+      this._toast("Baralho embaralhado!");
+      return;
     }
 
-    const pile = this._deckPileContainer
+    const pile = this._deckPileContainer;
     this.tweens.add({
       targets: pile,
       x: pile.x - 18,
@@ -4558,7 +5553,7 @@ export default class GameScene extends Scene {
       duration: 70,
       yoyo: true,
       repeat: 2,
-      ease: 'Sine.easeInOut',
+      ease: "Sine.easeInOut",
       onComplete: () => {
         this.tweens.add({
           targets: pile,
@@ -4567,235 +5562,464 @@ export default class GameScene extends Scene {
           duration: 70,
           yoyo: true,
           repeat: 2,
-          ease: 'Sine.easeInOut',
+          ease: "Sine.easeInOut",
           onComplete: () => {
-            pile.setAngle(0)
-            this._renderDeckPile()
-            this._toast('Baralho embaralhado!')
+            pile.setAngle(0);
+            this._renderDeckPile();
+            this._toast("Baralho embaralhado!");
           },
-        })
+        });
       },
-    })
+    });
   }
 
   _discardTop() {
-    const card = this.myDeck.shift()
+    const card = this.myDeck.shift();
     if (!card) {
-      this._toast('Baralho vazio!')
-      return
+      this._toast("Baralho vazio!");
+      return;
     }
-    this.myDiscard.push(card)
-    this._renderDeckPile()
-    this._renderDiscardPile()
-    this._playDiscardSmoke()
-    this._toast(`${card.name} descartada.`)
+    this.myDiscard.push(card);
+    this._renderDeckPile();
+    this._renderDiscardPile();
+    this._playDiscardSmoke();
+    this._syncPublicZoneState("discard_cards", {
+      cards: [this._publicCardPayload(card)],
+      from: "deck",
+    });
+    this._toast(`${card.name} descartada.`);
   }
 
   _exileTop() {
-    const card = this.myDeck.shift()
+    const card = this.myDeck.shift();
     if (!card) {
-      this._toast('Baralho vazio!')
-      return
+      this._toast("Baralho vazio!");
+      return;
     }
-    this._renderDeckPile()
-    this._toast(`${card.name} exilada.`)
+    this._renderDeckPile();
+    this._toast(`${card.name} exilada.`);
   }
 
   _viewDeck() {
-    console.table(this.myDeck.map((card, i) => ({
-      posicao: i + 1,
-      id: card.id,
-      nome: card.name,
-    })))
-    this._toast(`Baralho com ${this.myDeck.length} carta(s). Lista no console.`)
+    console.table(
+      this.myDeck.map((card, i) => ({
+        posicao: i + 1,
+        id: card.id,
+        nome: card.name,
+      })),
+    );
+    this._toast(
+      `Baralho com ${this.myDeck.length} carta(s). Lista no console.`,
+    );
   }
 
   _revealTop() {
-    const card = this.myDeck[0]
-    this._toast(card ? `Topo: ${card.name}` : 'Baralho vazio!')
+    const card = this.myDeck[0];
+    this._toast(card ? `Topo: ${card.name}` : "Baralho vazio!");
   }
 
   // ────── Objeto Carta ──────
 
   _createCardObject(cardData, x, y, draggable = false) {
-    const cardW = 80
-    const cardH = 112
+    const cardW = 80;
+    const cardH = 112;
 
-    const container = this.add.container(x, y)
-    const imgKey = `card_${cardData.id}`
-    const hasImage = this.textures.exists(imgKey)
+    const container = this.add.container(x, y);
+    const imgKey = `card_${cardData.id}`;
+    const hasImage = this.textures.exists(imgKey);
 
-    let bg
-    const elements = []
+    let bg;
+    const elements = [];
     if (hasImage) {
-      bg = this.add.image(0, 0, imgKey).setDisplaySize(cardW, cardH)
-      const border = this.add.rectangle(0, 0, cardW, cardH, 0x000000, 0)
-      border.setStrokeStyle(1.5, 0x4caf50)
-      elements.push(bg, border)
+      bg = this.add.image(0, 0, imgKey).setDisplaySize(cardW, cardH);
+      const border = this.add.rectangle(0, 0, cardW, cardH, 0x000000, 0);
+      border.setStrokeStyle(1.5, 0x4caf50);
+      elements.push(bg, border);
     } else {
-      bg = this.add.rectangle(0, 0, cardW, cardH, cardData.color ?? 0x1a1a2e)
-      bg.setStrokeStyle(1.5, 0x4caf50)
-      elements.push(bg)
+      bg = this.add.rectangle(0, 0, cardW, cardH, cardData.color ?? 0x1a1a2e);
+      bg.setStrokeStyle(1.5, 0x4caf50);
+      elements.push(bg);
     }
 
     // Nome
     const name = this.add
       .text(0, -42, cardData.name, {
-        fontSize: '8px',
-        color: '#ffffff',
+        fontSize: "8px",
+        color: "#ffffff",
         wordWrap: { width: cardW - 6 },
-        align: 'center',
+        align: "center",
       })
-      .setOrigin(0.5, 0)
+      .setOrigin(0.5, 0);
 
     // Tipo
     const type = this.add
       .text(0, -28, cardData.card_type, {
-        fontSize: '7px',
-        color: '#aaaaaa',
+        fontSize: "7px",
+        color: "#aaaaaa",
       })
-      .setOrigin(0.5)
+      .setOrigin(0.5);
 
     // ATK/DEF
     const stats =
       cardData.attack !== null
         ? `ATK ${cardData.attack} / DEF ${cardData.defense}`
-        : cardData.card_type.toUpperCase()
+        : cardData.card_type.toUpperCase();
     const statsText = this.add
-      .text(0, 38, stats, { fontSize: '7px', color: '#ffcc00' })
-      .setOrigin(0.5)
+      .text(0, 38, stats, { fontSize: "7px", color: "#ffcc00" })
+      .setOrigin(0.5);
 
-    if (!hasImage) elements.push(name, type, statsText)
-    container.add(elements)
-    container.setData('cardData', cardData)
-    container.setData('source', draggable ? 'hand' : 'preview')
-    container.setSize(cardW, cardH)
+    if (!hasImage) elements.push(name, type, statsText);
+    container.add(elements);
+    container.setData("cardData", cardData);
+    container.setData("source", draggable ? "hand" : "preview");
+    container.setSize(cardW, cardH);
 
     if (draggable) {
-      container.setInteractive({ useHandCursor: true })
-      container.on('pointerdown', () => this._handleCardClick(container))
+      container.setInteractive({ useHandCursor: true });
+      container.on("pointerdown", () => this._handleCardClick(container));
     }
 
-    return container
+    return container;
   }
 
   // ────── Drag & Drop ──────
 
   _onDragStart(pointer, gameObject) {
-    this._clearMagnifier()
-    this.dragCard = gameObject
-    gameObject.setDepth(10)
+    this._clearMagnifier();
+    this.dragCard = gameObject;
+    gameObject.setDepth(10);
   }
 
   _onDrag(pointer, gameObject, dragX, dragY) {
-    gameObject.setPosition(dragX, dragY)
+    gameObject.setPosition(dragX, dragY);
   }
 
   _onDragEnd(pointer, gameObject) {
-    gameObject.setDepth(0)
-    this.dragCard = null
+    gameObject.setDepth(0);
+    this.dragCard = null;
   }
 
   _onDrop(pointer, gameObject, dropZone) {
-    const side = dropZone.getData('side')
-    const slotIndex = dropZone.getData('slotIndex')
-    if (side !== 'my') return // só pode jogar no próprio campo
+    const side = dropZone.getData("side");
+    const slotIndex = dropZone.getData("slotIndex");
+    if (side !== "my") return; // só pode jogar no próprio campo
 
-    const slot = this._slotsMy[slotIndex]
-    if (slot.card) return // slot ocupado
+    const slot = this._slotsMy[slotIndex];
+    if (slot.card) return; // slot ocupado
 
-    const cardData = gameObject.getData('cardData')
-    gameObject.setPosition(slot.x, slot.y)
-    this.input.setDraggable(gameObject, false)
-    slot.card = cardData
-    this._handContainers = this._handContainers.filter(card => card !== gameObject)
-    const handIndex = this.myHand.findIndex(card => card.id === cardData.id)
-    if (handIndex !== -1) this.myHand.splice(handIndex, 1)
+    const cardData = gameObject.getData("cardData");
+    gameObject.setPosition(slot.x, slot.y);
+    this.input.setDraggable(gameObject, false);
+    slot.card = cardData;
+    this._handContainers = this._handContainers.filter(
+      (card) => card !== gameObject,
+    );
+    const handIndex = this.myHand.findIndex((card) => card.id === cardData.id);
+    if (handIndex !== -1) this.myHand.splice(handIndex, 1);
 
     // Enviar ação ao servidor
-    this._sendAction('play_card', {
+    this._sendAction("play_card", {
       card_id: cardData.id,
       slot: slotIndex,
-    })
+    });
   }
 
   // ────── WebSocket ──────
 
   _listenChannel() {
-    if (!this.room?.id) return
-    const channel = echo.private(`game.${this.room.id}`)
+    if (!this.room?.id) return;
+    const channel = echo.channel(`game.${this.room.id}`);
 
-    channel.listen('GameActionBroadcast', (event) => {
-      if (event.user_id === this._getMyUserId()) return // ignora ações próprias
-      this._handleRemoteAction(event)
-    })
+    channel.listen("GameActionBroadcast", (event) => {
+      if (event.user_id === this._getMyUserId()) return; // ignora ações próprias
+      this._handleRemoteAction(event);
+    });
   }
 
   _handleRemoteAction(event) {
     switch (event.action_type) {
-      case 'play_card':
-        // Renderizar carta do adversário no campo dele
-        const slot = this._slotsOpp[event.payload.slot]
-        if (slot && !slot.card) {
-          slot.card = event.payload
-          // TODO: renderizar sprite
-        }
-        break
-      case 'end_turn':
-        this._turnText.setText('Seu turno!')
-        break
+      case "play_card":
+        this._renderRemotePlayCard(event.payload);
+        break;
+      case "end_turn":
+        this._handleRemoteEndTurn();
+        break;
+      case "phase_change":
+        this._handleRemotePhaseChange(event.payload);
+        break;
+      case "field_destroyed":
+        this._handleRemoteFieldDestroyed(event.payload);
+        break;
+      case "draw_cards":
+        this._handleRemoteDrawCards(event.payload);
+        break;
+      case "discard_cards":
+        this._handleRemoteDiscardCards(event.payload);
+        break;
+      case "surrender":
+        this._finishGame("my");
+        break;
     }
   }
 
+  _renderRemotePlayCard(payload = {}) {
+    const card = ALL_CARDS.find(
+      (c) => Number(c.id) === Number(payload.card_id),
+    );
+    if (!card) return;
+
+    if (card.card_type === "criatura") {
+      const slot = this._slotsOpp[payload.slot];
+      if (slot && !slot.card) {
+        this.oppHandCount = Math.max(0, this.oppHandCount - 1);
+        this._renderOpponentHand();
+        this._summonOpponentCreatureToSlot(card, slot, {
+          canAttackFromTurn: this._turnNumber + 1,
+        });
+        this._recordPlayedCard(card);
+        this._logAction(`Oponente invocou ${card.name}.`);
+      }
+      return;
+    }
+  }
+
+  _handleRemoteEndTurn() {
+    if (this._gameOver || this._activePlayer !== "opp") return;
+    this._stopTurnFuse();
+    this._clearBattleAttackButtons();
+    this._turnNumber += 1;
+    this._beginTurn("my");
+    this._logAction("Oponente finalizou o turno.");
+  }
+
+  _handleRemotePhaseChange(payload = {}) {
+    if (this._gameOver || this._activePlayer !== "opp") return;
+    if (payload.phase !== "battle") return;
+
+    this._currentPhase = "battle";
+    this._clearBattleAttackButtons();
+    this._updateTurnUi();
+    this._showTurnBanner("FASE DE BATALHA INIMIGA");
+    this._logAction("Oponente entrou na fase de batalha.");
+  }
+
+  _handleRemoteFieldDestroyed(payload = {}) {
+    const remoteOwner = payload.owner === "my" ? "opp" : "my";
+    const slots = remoteOwner === "my" ? this._slotsMy : this._slotsOpp;
+    const slot = slots?.[payload.slot];
+    if (!slot?.card) return;
+
+    if (payload.card_id && Number(slot.card.id) !== Number(payload.card_id)) {
+      console.warn(
+        "Destruição remota ignorada: carta divergente.",
+        payload,
+        slot.card,
+      );
+      return;
+    }
+
+    this._destroyCreatureInBattle(slot, remoteOwner, null, { sync: false });
+    this._renderBattleAttackButtons();
+  }
+
+  _handleRemoteDrawCards(payload = {}) {
+    const count = Math.max(1, Number(payload.count) || 1);
+    this._animateOpponentDrawCardsFromDeck(count, payload);
+  }
+
+  _animateOpponentDrawCardsFromDeck(count = 1, payload = {}) {
+    const start = this._oppDeckPileContainer
+      ? { x: this._oppDeckPileContainer.x, y: this._oppDeckPileContainer.y }
+      : { x: 238, y: 118 };
+    const target = this._opponentHandAnimationStart();
+
+    this.oppDeckCount = Math.max(
+      0,
+      Number(payload.deck_count ?? this.oppDeckCount - count),
+    );
+    this.oppHandCount = Math.max(
+      0,
+      Number(payload.hand_count ?? this.oppHandCount + count),
+    );
+    this._renderOpponentDeckPile();
+
+    let completed = 0;
+    for (let i = 0; i < count; i++) {
+      const preview = this.textures.exists(CARD_BACK_KEY)
+        ? this.add.image(start.x, start.y, CARD_BACK_KEY).setDisplaySize(58, 82)
+        : this.add.rectangle(start.x, start.y, 58, 82, 0x111820);
+      preview.setDepth(96).setAlpha(0.94);
+      this.tweens.add({
+        targets: preview,
+        x: target.x + (i - (count - 1) / 2) * 18,
+        y: target.y,
+        scale: 1.08,
+        alpha: 1,
+        delay: i * 90,
+        duration: 360,
+        ease: "Cubic.easeOut",
+        onComplete: () => {
+          preview.destroy();
+          completed += 1;
+          if (completed === count) {
+            this._renderOpponentHand();
+            this._logAction(`Oponente comprou ${count} carta(s).`);
+          }
+        },
+      });
+    }
+  }
+
+  _handleRemoteDiscardCards(payload = {}) {
+    const cards = (payload.cards ?? [])
+      .map((entry) =>
+        ALL_CARDS.find((card) => Number(card.id) === Number(entry.id)),
+      )
+      .filter(Boolean);
+    const count = cards.length || Math.max(1, Number(payload.count) || 1);
+
+    this.oppHandCount = Math.max(
+      0,
+      Number(
+        payload.hand_count ??
+          this.oppHandCount - (payload.from === "hand" ? count : 0),
+      ),
+    );
+    this.oppDeckCount = Math.max(
+      0,
+      Number(
+        payload.deck_count ??
+          this.oppDeckCount - (payload.from === "deck" ? count : 0),
+      ),
+    );
+    this._renderOpponentHand();
+    this._renderOpponentDeckPile();
+
+    if (!cards.length) {
+      this._renderOpponentDiscardPile();
+      return;
+    }
+
+    cards.forEach((card, index) => {
+      this.oppDiscard.push(card);
+      this.time.delayedCall(index * 100, () => {
+        const from =
+          payload.from === "deck"
+            ? this._oppDeckPileContainer
+              ? {
+                  x: this._oppDeckPileContainer.x,
+                  y: this._oppDeckPileContainer.y,
+                }
+              : { x: 238, y: 118 }
+            : this._opponentHandAnimationStart();
+        this._animateCardPreviewToDiscard(card, from, "opp", {
+          delay: index * 60,
+          onComplete: () => this._renderOpponentDiscardPile(),
+        });
+      });
+    });
+  }
+
   async _sendAction(actionType, payload) {
-    if (!this.room?.id) return
+    if (!this.room?.id) return;
 
     try {
       await api.post(`/rooms/${this.room.id}/actions`, {
         action_type: actionType,
         payload,
-      })
+      });
     } catch (e) {
-      console.error('Erro ao enviar ação:', e)
+      console.error("Erro ao enviar ação:", e);
     }
   }
 
+  _publicCardPayload(card) {
+    return {
+      id: card?.id,
+      name: card?.name ?? card?.nome,
+      card_type: card?.card_type,
+    };
+  }
+
+  _syncPublicZoneState(actionType, payload = {}) {
+    if (this._isSoloMode() || !this.room?.id) return;
+    this._sendAction(actionType, {
+      ...payload,
+      hand_count: this.myHand.length,
+      deck_count: this.myDeck.length,
+      discard_count: this.myDiscard.length,
+    });
+  }
+
+  _configureEchoAuth() {
+    const token = localStorage.getItem("auth_token");
+    const auth = echo?.connector?.pusher?.config?.auth;
+    if (!auth) return;
+    auth.headers = {
+      ...(auth.headers ?? {}),
+      Accept: "application/json",
+      Authorization: token ? `Bearer ${token}` : "",
+    };
+  }
+
   _clearExpiredTemporaryEffects() {
-    this._slotsMy.forEach(slot => {
-      if (!slot.card?.tempModifiers?.length) return
-      slot.card.tempModifiers = slot.card.tempModifiers.filter(modifier => modifier.expiresOnTurn > this._turnNumber)
-    })
-    this._recalculateAllFieldCreatures()
+    this._slotsMy.forEach((slot) => {
+      if (!slot.card?.tempModifiers?.length) return;
+      slot.card.tempModifiers = slot.card.tempModifiers.filter(
+        (modifier) => modifier.expiresOnTurn > this._turnNumber,
+      );
+    });
+    this._recalculateAllFieldCreatures();
   }
 
   _surrender() {
-    this._stopTurnFuse()
-    clearScene()
-    this.scene.start('MenuScene')
+    this._stopTurnFuse();
+    this._sendAction("surrender", {});
+    this._finishRemoteRoom();
+    clearScene();
+    this.scene.start("MenuScene");
   }
 
   _getMyUserId() {
     try {
-      return JSON.parse(localStorage.getItem('user'))?.id
+      return Number(
+        JSON.parse(localStorage.getItem("auth_user"))?.id ??
+          JSON.parse(localStorage.getItem("ez_user"))?.id ??
+          JSON.parse(localStorage.getItem("user"))?.id,
+      );
     } catch {
-      return null
+      return null;
+    }
+  }
+
+  async _finishRemoteRoom() {
+    if (!this.room?.id || this._isSoloMode() || this._remoteRoomFinished)
+      return;
+    this._remoteRoomFinished = true;
+    try {
+      await api.post(`/rooms/${this.room.id}/finish`);
+    } catch (error) {
+      console.error("Erro ao finalizar sala:", error);
     }
   }
 
   _toast(msg) {
-    if (this._toastText) this._toastText.destroy()
-    const { width, height } = this.cameras.main
-    this._toastText = this.add.text(width / 2, height - 150, msg, {
-      fontSize: '13px',
-      color: '#ffffff',
-      backgroundColor: '#1b5e20',
-      padding: { x: 14, y: 7 },
-    }).setOrigin(0.5).setDepth(40)
+    if (this._toastText) this._toastText.destroy();
+    const { width, height } = this.cameras.main;
+    this._toastText = this.add
+      .text(width / 2, height - 150, msg, {
+        fontSize: "13px",
+        color: "#ffffff",
+        backgroundColor: "#1b5e20",
+        padding: { x: 14, y: 7 },
+      })
+      .setOrigin(0.5)
+      .setDepth(40);
     this.time.delayedCall(1800, () => {
       if (this._toastText) {
-        this._toastText.destroy()
-        this._toastText = null
+        this._toastText.destroy();
+        this._toastText = null;
       }
-    })
+    });
   }
 }

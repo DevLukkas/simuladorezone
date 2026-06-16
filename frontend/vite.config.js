@@ -12,6 +12,14 @@ export default defineConfig({
         target: 'http://127.0.0.1:8005',
         changeOrigin: true,
       },
+      '/broadcasting': {
+        target: 'http://127.0.0.1:8005',
+        changeOrigin: true,
+      },
+      '/storage': {
+        target: 'http://127.0.0.1:8005',
+        changeOrigin: true,
+      },
     },
   },
   build: {

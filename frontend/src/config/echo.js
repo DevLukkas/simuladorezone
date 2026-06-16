@@ -12,6 +12,15 @@ const echo = new Echo({
   wssPort: import.meta.env.VITE_REVERB_PORT || 8080,
   forceTLS: (import.meta.env.VITE_REVERB_SCHEME ?? 'http') === 'https',
   enabledTransports: ['ws', 'wss'],
+  authEndpoint: '/broadcasting/auth',
+  auth: {
+    headers: {
+      Accept: 'application/json',
+      Authorization: localStorage.getItem('auth_token')
+        ? `Bearer ${localStorage.getItem('auth_token')}`
+        : '',
+    },
+  },
 })
 
 export default echo

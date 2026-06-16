@@ -5,6 +5,7 @@ import { habilidades } from '../data/habilidades.js'
 import { itens } from '../data/itens.js'
 import { comandos } from '../data/comandos.js'
 import { cenarios } from '../data/cenarios.js'
+import { getPlayerCards, shareBuild } from '../api/gameApi.js'
 
 const LOCAL_DECK_KEY = 'ezone_deck_builder_draft'
 const MAX_DECK = 40
@@ -35,6 +36,7 @@ const RARITY_COLOR = {
 function normalize(cards, cardType) {
   return cards.map(card => ({
     ...card,
+    uid: `${cardType}:${card.id}`,
     name: card.nome ?? card.name,
     card_type: cardType,
     attack: card.ataque ?? 0,
@@ -65,6 +67,7 @@ export default class DeckBuilderScene extends Scene {
     this._scroll = 0
     this._deckScroll = 0
     this._htmlElements = []
+    this._collectionLoaded = false
   }
 
   preload() {
@@ -80,16 +83,17 @@ export default class DeckBuilderScene extends Scene {
 
     const { width, height } = this.cameras.main
 
-    this._allCards = [...ALL_CARDS]
-    this._filtered = [...ALL_CARDS]
+    this._allCards = []
+    this._filtered = []
 
     this._buildBackground(width, height)
     this._buildHeader(width)
     this._buildPanels(width, height)
-    this._loadLocalDeck()
+    this._renderCollection()
     this._renderCollection()
     this._renderDeck()
     this._showPreview(null)
+    this._loadPlayerCollection()
 
  this.input.on('wheel', (pointer, gameObjects, deltaX, deltaY) => {
   const l = this._layout
@@ -309,10 +313,12 @@ export default class DeckBuilderScene extends Scene {
       fontStyle: 'bold',
     }).setOrigin(0.5)
 
-    this._addNeonButton(l.deckX + 55, l.deckY + l.deckH - 38, 100, 'SALVAR', 0x8dff9d, () => this._saveDeck())
-    this._addNeonButton(l.deckX + 165, l.deckY + l.deckH - 38, 100, 'EXPORTAR', 0x64e8ff, () => this._exportDecklist())
-    this._addNeonButton(l.deckX + 275, l.deckY + l.deckH - 38, 100, 'IMPORTAR', 0xd58dff, () => this._fileInput?.click())
-    this._addNeonButton(l.deckX + 385, l.deckY + l.deckH - 38, 100, 'LIMPAR', 0xff7777, () => {
+    const btnY = l.deckY + l.deckH - 38
+    this._addNeonButton(l.deckX + 42, btnY, 76, 'SALVAR', 0x8dff9d, () => this._saveDeck())
+    this._addNeonButton(l.deckX + 124, btnY, 82, 'EXPORT', 0x64e8ff, () => this._exportDecklist())
+    this._addNeonButton(l.deckX + 212, btnY, 86, 'IMPORT', 0xd58dff, () => this._fileInput?.click())
+    this._addNeonButton(l.deckX + 304, btnY, 92, '↗ SHARE', 0xffdd77, () => this._shareCurrentBuild())
+    this._addNeonButton(l.deckX + 396, btnY, 76, 'LIMPAR', 0xff7777, () => {
       this._deck = []
       this._refreshDeck()
     })
@@ -398,9 +404,64 @@ export default class DeckBuilderScene extends Scene {
     this._renderCollection()
   }
 
+  async _loadPlayerCollection() {
+    try {
+      const response = await getPlayerCards()
+      const owned = response.data.data ?? response.data ?? []
+      const ownedByUid = new Map(owned.map(entry => [entry.uid ?? `${entry.type}:${entry.id}`, entry]))
+
+      this._allCards = ALL_CARDS
+        .map(card => {
+          const ownedEntry = ownedByUid.get(card.uid)
+          if (!ownedEntry) return null
+          return {
+            ...card,
+            owned_qty: Number(ownedEntry.quantity ?? 0),
+          }
+        })
+        .filter(Boolean)
+
+      this._collectionLoaded = true
+      this._scroll = 0
+      this._applyFilter()
+      this._loadLocalDeck()
+      this._renderDeck()
+      this._renderCollection()
+    } catch (error) {
+      console.warn('Erro ao carregar coleção do jogador:', error)
+      this._allCards = []
+      this._filtered = []
+      this._collectionLoaded = true
+      this._loadLocalDeck()
+      this._applyFilter()
+      this._toast('Não foi possível carregar sua coleção.')
+    }
+  }
+
   _renderCollection() {
   const l = this._layout
   this._collectionContainer.removeAll(true)
+
+  if (!this._collectionLoaded) {
+    this._collectionContainer.add(
+      this.add.text(l.collectionX + l.collectionW / 2, l.collectionY + 260, 'Carregando coleção...', {
+        fontSize: '14px',
+        color: '#8fe8ff',
+        align: 'center',
+      }).setOrigin(0.5)
+    )
+    return
+  }
+
+  if (!this._filtered.length) {
+    this._collectionContainer.add(
+      this.add.text(l.collectionX + l.collectionW / 2, l.collectionY + 260, 'Nenhuma carta disponível\nna sua coleção.', {
+        fontSize: '14px',
+        color: '#8fe8ff',
+        align: 'center',
+      }).setOrigin(0.5)
+    )
+  }
 
   const visibleCards = this._filtered.slice(this._scroll, this._scroll + 15)
 
@@ -443,8 +504,10 @@ export default class DeckBuilderScene extends Scene {
 _createCollectionCard(card, x, y, w, h) {
   const tile = this.add.container(x, y)
 
-  const copies = this._deckCount(card.id)
-  const maxed = copies >= MAX_COPIES || this._deckTotal() >= MAX_DECK
+  const copies = this._deckCount(card)
+  const ownedQty = Number(card.owned_qty ?? MAX_COPIES)
+  const maxCopies = Math.min(MAX_COPIES, ownedQty)
+  const maxed = copies >= maxCopies || this._deckTotal() >= MAX_DECK
 
   const key = `deck_card_${card.id}`
 
@@ -454,12 +517,12 @@ _createCollectionCard(card, x, y, w, h) {
 
   tile.add(art)
 
-  if (copies > 0) {
+  if (ownedQty > 0) {
     const badge = this.add.rectangle(w / 2 - 9, -h / 2 + 10, 22, 22, 0x000000, 0.85)
       .setStrokeStyle(1, 0x64e8ff)
 
-    const badgeText = this.add.text(w / 2 - 9, -h / 2 + 10, String(copies), {
-      fontSize: '12px',
+    const badgeText = this.add.text(w / 2 - 9, -h / 2 + 10, `${copies}/${ownedQty}`, {
+      fontSize: '9px',
       color: '#8dff9d',
       fontStyle: 'bold',
     }).setOrigin(0.5)
@@ -671,8 +734,12 @@ _createCollectionCard(card, x, y, w, h) {
     return this._deck.reduce((sum, entry) => sum + entry.qty, 0)
   }
 
-  _deckCount(cardId) {
-    return this._deck.find(entry => Number(entry.card.id) === Number(cardId))?.qty ?? 0
+  _deckCount(cardOrId) {
+    const uid = typeof cardOrId === 'object' ? cardOrId.uid : null
+    const id = typeof cardOrId === 'object' ? cardOrId.id : cardOrId
+    return this._deck.find(entry => (
+      uid ? entry.card.uid === uid : Number(entry.card.id) === Number(id)
+    ))?.qty ?? 0
   }
 
   _addCardToDeck(card) {
@@ -681,11 +748,13 @@ _createCollectionCard(card, x, y, w, h) {
       return
     }
 
-    const entry = this._deck.find(item => Number(item.card.id) === Number(card.id))
+    const entry = this._deck.find(item => item.card.uid === card.uid)
+    const ownedQty = Number(card.owned_qty ?? MAX_COPIES)
+    const maxCopies = Math.min(MAX_COPIES, ownedQty)
 
     if (entry) {
-      if (entry.qty >= MAX_COPIES) {
-        this._toast('Máximo de 3 cópias dessa carta.')
+      if (entry.qty >= maxCopies) {
+        this._toast(`Você possui ${ownedQty} cópia(s) dessa carta.`)
         return
       }
 
@@ -698,7 +767,7 @@ _createCollectionCard(card, x, y, w, h) {
   }
 
   _removeCardFromDeck(card) {
-    const index = this._deck.findIndex(item => Number(item.card.id) === Number(card.id))
+    const index = this._deck.findIndex(item => item.card.uid === card.uid)
     if (index === -1) return
 
     this._deck[index].qty--
@@ -730,6 +799,8 @@ _createCollectionCard(card, x, y, w, h) {
     return {
       name: this._deckNameInput?.value?.trim() || this._deckName || 'Novo Baralho',
       cards: this._deck.map(entry => ({
+        uid: entry.card.uid,
+        type: entry.card.card_type,
         id: entry.card.id,
         qty: entry.qty,
       })),
@@ -764,7 +835,8 @@ _createCollectionCard(card, x, y, w, h) {
       saved.cards.forEach(item => {
         const id = Number(item.id)
         const qty = Math.min(Number(item.qty), MAX_COPIES, MAX_DECK - total)
-        const card = this._allCards.find(c => Number(c.id) === id)
+        const uid = item.uid ?? (item.type ? `${item.type}:${id}` : null)
+        const card = this._findCardByUidOrId(uid, id)
 
         if (!card || qty <= 0) return
 
@@ -784,12 +856,12 @@ _createCollectionCard(card, x, y, w, h) {
     const lines = [
       '# Ezone decklist',
       `# Nome: ${name}`,
-      '# Formato: id;quantidade;nome',
+      '# Formato: uid;quantidade;nome',
       '',
     ]
 
     this._deck.forEach(entry => {
-      lines.push(`${entry.card.id};${entry.qty};${entry.card.name}`)
+      lines.push(`${entry.card.uid};${entry.qty};${entry.card.name}`)
     })
 
     return lines.join('\n') + '\n'
@@ -827,6 +899,43 @@ _createCollectionCard(card, x, y, w, h) {
     URL.revokeObjectURL(url)
 
     this._toast('Decklist exportada.')
+  }
+
+  async _shareCurrentBuild() {
+    if (!this._deck.length) {
+      this._toast('Monte um baralho antes de compartilhar.')
+      return
+    }
+
+    const name = this._deckNameInput?.value?.trim() || this._deckName || 'Build EZone'
+    const coverCard = this._pickSharedBuildCover()
+
+    try {
+      await shareBuild({
+        name,
+        cover_image: coverCard ? `${String(coverCard.id).padStart(2, '0')}.png` : null,
+        decklist: this._deck.map(entry => ({
+          uid: entry.card.uid,
+          type: entry.card.card_type,
+          id: entry.card.id,
+          qty: entry.qty,
+          name: entry.card.name,
+          rarity: entry.card.rarity,
+        })),
+      })
+      this._toast('Build compartilhada no perfil.')
+    } catch (error) {
+      this._toast(error?.response?.data?.message ?? 'Não foi possível compartilhar a build.')
+    }
+  }
+
+  _pickSharedBuildCover() {
+    return this._deck.find(entry => (
+      entry.card.card_type === 'criatura' && entry.card.rarity === 'lendaria'
+    ))?.card
+      ?? this._deck.find(entry => entry.card.card_type === 'criatura')?.card
+      ?? this._deck[0]?.card
+      ?? null
   }
 
   _importDecklist(file) {
@@ -867,9 +976,11 @@ _createCollectionCard(card, x, y, w, h) {
 
       const parts = line.split(';').map(part => part.trim())
 
-      const id = Number(parts[0])
+      const rawId = parts[0]
+      const uid = rawId.includes(':') ? rawId : null
+      const id = Number(uid ? rawId.split(':')[1] : rawId)
       const qty = Number(parts[1])
-      const card = this._allCards.find(c => Number(c.id) === id)
+      const card = this._findCardByUidOrId(uid, id)
 
       if (!Number.isInteger(id) || !Number.isInteger(qty) || qty <= 0) {
         errors.push(`Linha ${index + 1}: formato inválido.`)
@@ -881,9 +992,9 @@ _createCollectionCard(card, x, y, w, h) {
         return
       }
 
-      entries.set(card.id, {
+      entries.set(card.uid, {
         card,
-        qty: (entries.get(card.id)?.qty ?? 0) + qty,
+        qty: (entries.get(card.uid)?.qty ?? 0) + qty,
       })
     })
 
@@ -905,6 +1016,11 @@ _createCollectionCard(card, x, y, w, h) {
     }
 
     return { deck, total, errors }
+  }
+
+  _findCardByUidOrId(uid, id) {
+    if (uid) return this._allCards.find(card => card.uid === uid)
+    return this._allCards.find(card => Number(card.id) === Number(id))
   }
 
   _toast(message) {

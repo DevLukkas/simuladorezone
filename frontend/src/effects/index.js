@@ -4,6 +4,7 @@ import { applyDelayedEffect } from './delayedEffect.js'
 import { applyModifyStat } from './modifyStat.js'
 import { applySummonToken } from './summonToken.js'
 
+
 const EFFECT_HANDLERS = {
   modify_stat: applyModifyStat,
 }

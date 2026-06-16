@@ -23,6 +23,7 @@ const ALL_CARDS = [
   ...normalize(cenarios, 'cenario'),
 ]
 const CARD_BACK_KEY = 'status_card_back'
+const LOCAL_DECK_KEY = 'ezone_deck_builder_draft'
 
 function topEntry(map = {}) {
   return Object.entries(map).sort((a, b) => b[1] - a[1])[0] ?? ['-', 0]
@@ -58,8 +59,7 @@ export default class StatusGameScene extends Scene {
   create() {
     const { width, height } = this.cameras.main
     const victory = this.result === 'victory'
-    const [topDamageCard, topDamage] = topEntry(this.stats.damageDealt)
-    const mvpCard = ALL_CARDS.find(card => card.name === topDamageCard)
+    const { card: mvpCard, label: topDamageCard, value: topDamage } = this._resolveMvpCard()
 
     this._buildAnimatedBackground(width, height, victory)
     this._buildTitle(width, victory)
@@ -67,6 +67,45 @@ export default class StatusGameScene extends Scene {
     this._buildMvpCard(width, height, mvpCard, topDamageCard, topDamage, victory)
     this._buildLogsCollapse(width, height, victory)
     this._buildDoneButton(width, height)
+  }
+
+  _resolveMvpCard() {
+    const [topDamageCard, topDamage] = topEntry(this.stats.damageDealt)
+    const damageCard = ALL_CARDS.find(card => card.name === topDamageCard)
+    if (damageCard && topDamage > 0) {
+      return { card: damageCard, label: damageCard.name, value: topDamage }
+    }
+
+    const playedCreature = [...(this.stats.playedCards ?? [])]
+      .reverse()
+      .map(entry => ALL_CARDS.find(card => Number(card.id) === Number(entry.id)))
+      .find(card => card?.card_type === 'criatura')
+    if (playedCreature) {
+      return { card: playedCreature, label: playedCreature.name, value: 'jogada' }
+    }
+
+    const deckCreature = this._randomCreatureFromSavedDeck()
+    if (deckCreature) {
+      return { card: deckCreature, label: deckCreature.name, value: 'deck' }
+    }
+
+    const allCreatures = ALL_CARDS.filter(card => card.card_type === 'criatura')
+    const randomCreature = allCreatures[Math.floor(Math.random() * allCreatures.length)] ?? ALL_CARDS[0]
+    return { card: randomCreature, label: randomCreature?.name ?? 'Carta', value: 'fallback' }
+  }
+
+  _randomCreatureFromSavedDeck() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LOCAL_DECK_KEY))
+      const entries = Array.isArray(saved?.cards) ? saved.cards : []
+      const creatures = entries
+        .map(entry => ALL_CARDS.find(card => Number(card.id) === Number(entry.id)))
+        .filter(card => card?.card_type === 'criatura')
+      if (!creatures.length) return null
+      return creatures[Math.floor(Math.random() * creatures.length)]
+    } catch {
+      return null
+    }
   }
 
   _buildAnimatedBackground(width, height, victory) {
@@ -200,7 +239,8 @@ export default class StatusGameScene extends Scene {
       color: '#9eefff',
       fontStyle: 'bold',
     }).setOrigin(0.5)
-    this.add.text(x, y + 178, `${cardName} (${damage})`, {
+    const suffix = typeof damage === 'number' ? `${damage}` : String(damage).toUpperCase()
+    this.add.text(x, y + 178, `${cardName} (${suffix})`, {
       fontSize: '13px',
       color: '#ffffff',
       wordWrap: { width: 260 },

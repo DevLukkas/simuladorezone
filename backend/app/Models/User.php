@@ -11,7 +11,23 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['name', 'email', 'password'])]
+#[Fillable([
+    'name',
+    'email',
+    'password',
+    'starter_deck_key',
+    'starter_deck_chosen_at',
+    'crystals',
+    'ez_coins',
+    'avatar_card_id',
+    'avatar_url',
+    'level',
+    'ranking_points',
+    'ranking_position',
+    'wins',
+    'losses',
+    'gifts_sent',
+])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -28,6 +44,36 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'starter_deck_chosen_at' => 'datetime',
+            'crystals' => 'integer',
+            'ez_coins' => 'integer',
+            'avatar_card_id' => 'integer',
+            'level' => 'integer',
+            'ranking_points' => 'integer',
+            'ranking_position' => 'integer',
+            'wins' => 'integer',
+            'losses' => 'integer',
+            'gifts_sent' => 'integer',
         ];
+    }
+
+    public function playerCards()
+    {
+        return $this->hasMany(PlayerCard::class);
+    }
+
+    public function decks()
+    {
+        return $this->hasMany(Deck::class);
+    }
+
+    public function friendships()
+    {
+        return $this->hasMany(Friendship::class);
+    }
+
+    public function sharedDeckBuilds()
+    {
+        return $this->hasMany(SharedDeckBuild::class);
     }
 }

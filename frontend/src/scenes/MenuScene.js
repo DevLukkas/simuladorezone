@@ -6,8 +6,13 @@ import { itens } from '../data/itens.js'
 import { comandos } from '../data/comandos.js'
 import { cenarios } from '../data/cenarios.js'
 import { saveScene } from '../utils/session.js'
+import { avatarTextureKey, avatarUrlFor } from '../utils/avatar.js'
 
 const CARD_BACK_KEY = 'menu_card_back'
+const ACTIVE_EVENT = {
+  name: 'Beta Teste: Abertura do Servidor',
+  scene: 'EventScene',
+}
 
 function normalize(cards, cardType) {
   return cards.map(card => ({
@@ -155,7 +160,7 @@ export default class MenuScene extends Scene {
     try {
       const response = await me()
       this._saveAuth(response.data)
-      this._showMainMenu()
+      this._goAfterAuth()
     } catch {
       localStorage.removeItem('auth_token')
       localStorage.removeItem('auth_user')
@@ -215,7 +220,7 @@ export default class MenuScene extends Scene {
       const response = await login(email, password)
       this._saveAuth(response.data)
       this._clearLoginForm()
-      this._showMainMenu()
+      this._goAfterAuth()
       this._toast('Login realizado.')
     } catch (error) {
       this._toast(this._errorMessage(error, 'Não foi possível entrar.'))
@@ -275,7 +280,7 @@ export default class MenuScene extends Scene {
       this._saveAuth(response.data)
       this._closeRegisterModal()
       this._clearLoginForm()
-      this._showMainMenu()
+      this._goAfterAuth()
       this._toast('Conta criada.')
     } catch (error) {
       this._toast(this._errorMessage(error, 'Não foi possível cadastrar.'))
@@ -289,37 +294,47 @@ export default class MenuScene extends Scene {
     const { width, height } = this.cameras.main
     this._menuContainer = this.add.container(0, 0).setDepth(10)
     const user = this._authUser()
+    const isAdmin = this._isAdminUser(user)
 
     const panelY = height * 0.57
-    const panel = this.add.rectangle(width / 2, panelY, 520, 370, 0x06111f, 0.6)
+    const panel = this.add.rectangle(width / 2, panelY, 520, isAdmin ? 452 : 398, 0x06111f, 0.6)
       .setStrokeStyle(1, 0x1e9cc1)
-    const topLine = this.add.rectangle(width / 2, panelY - 184, 470, 2, 0x9df7ff, 0.85)
-    const playerText = this.add.text(width / 2, height * 0.275, user?.name ?? 'Convidado', {
-      fontSize: '21px',
-      color: '#ffffff',
-      fontStyle: 'bold',
-      stroke: '#06111f',
-      strokeThickness: 4,
-    }).setOrigin(0.5)
-    this._menuContainer.add([panel, topLine, playerText])
+    const topLine = this.add.rectangle(width / 2, panelY - (isAdmin ? 225 : 198), 470, 2, 0x9df7ff, 0.85)
+    const playerHeader = this._buildPlayerHeader(width / 2, 44, user)
+    this._menuContainer.add([panel, topLine, playerHeader])
 
     const buttons = [
       { label: 'PARTIDA AMISTOSA', scene: 'LobbyScene', accent: 0x64e8ff },
-      { label: 'MARKETPLACE GLOBAL', scene: 'LibraryScene', accent: 0xffcc66 },
+      { label: 'MARKETPLACE GLOBAL', scene: null, accent: 0xffcc66, message: 'Marketplace global será criado como loja de comércio entre jogadores.' },
       { label: 'DECK BUILDER', scene: 'DeckBuilderScene', accent: 0x8dff9d },
+      { label: 'LABORATÓRIO', scene: 'LaboratoryScene', accent: 0xff77b7 },
       { label: 'PERFIL', scene: 'ProfileScene', accent: 0xb78dff },
     ]
+    if (isAdmin) {
+      buttons.push({ label: 'ADMINISTRADOR', scene: 'AdminPanelScene', accent: 0xff7777 })
+    }
 
     buttons.forEach((btn, i) => {
-      const b = this._addMainMenuButton(width / 2, height * 0.405 + i * 68, btn, () => {
-        if (this.scene.get(btn.scene)) {
-          this.scene.start(btn.scene)
+      const b = this._addMainMenuButton(width / 2, height * 0.352 + i * 58, btn, () => {
+        if (!btn.scene) {
+          this._toast(btn.message ?? 'Essa área ainda não foi criada.')
+        } else if (this.scene.get(btn.scene)) {
+          this.scene.start(btn.scene, btn.scene === 'ProfileScene' ? { userId: null } : undefined)
         } else {
           this._toast(`Cena ${btn.scene} ainda não implementada.`)
         }
       })
       this._menuContainer.add(b)
     })
+
+    const eventButton = this._addEventButton(width / 2 + 392, panelY - 46, ACTIVE_EVENT, () => {
+      if (this.scene.get(ACTIVE_EVENT.scene)) {
+        this.scene.start(ACTIVE_EVENT.scene)
+        return
+      }
+      this._toast('Evento de abertura criado. A cena do evento será conectada no próximo passo.')
+    })
+    this._menuContainer.add(eventButton)
 
     const logoutBtn = this.add.container(width / 2, height - 54)
     const logoutBg = this.add.rectangle(0, 0, 178, 34, 0x180c10, 0.86)
@@ -341,6 +356,74 @@ export default class MenuScene extends Scene {
     })
     logoutBtn.on('pointerdown', () => this._logout())
     this._menuContainer.add(logoutBtn)
+  }
+
+  _buildPlayerHeader(x, y, user) {
+    const header = this.add.container(x, y)
+    const w = 690
+    const bg = this.add.rectangle(0, 0, w, 58, 0x06111f, 0.82)
+      .setStrokeStyle(1, 0x64e8ff)
+    const top = this.add.rectangle(0, -29, w - 18, 2, 0x9df7ff, 0.8)
+    const bottom = this.add.rectangle(0, 29, w - 18, 1, 0x1e9cc1, 0.78)
+
+    const avatarRing = this.add.circle(-w / 2 + 42, 0, 25, 0x071523, 1)
+      .setStrokeStyle(2, 0xd8ff66)
+    const avatar = this.add.image(-w / 2 + 42, 0, CARD_BACK_KEY).setDisplaySize(46, 46)
+    avatar.setMask(this._createCircleMask(x - w / 2 + 42, y, 23))
+    this._loadAvatarTexture(avatarUrlFor(user), key => {
+      avatar.setTexture(key)
+      avatar.setDisplaySize(46, 46)
+    })
+
+    const name = this.add.text(-w / 2 + 82, -12, user?.name ?? 'Convidado', {
+      fontSize: '16px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0, 0.5)
+    const level = this.add.text(-w / 2 + 82, 13, `Nível ${user?.level ?? 1}`, {
+      fontSize: '11px',
+      color: '#8fe8ff',
+      fontStyle: 'bold',
+    }).setOrigin(0, 0.5)
+
+    const rank = this._headerMetric(-104, 'RANK', `#${user?.ranking_position ?? '--'}`, '#d8ff66')
+    const wins = this._headerMetric(20, 'VITÓRIAS', String(user?.wins ?? 0), '#8dff9d')
+    const crystals = this._headerMetric(158, 'CRISTAIS', String(user?.crystals ?? 0), '#d8ff66')
+    const coins = this._headerMetric(296, 'EZ-COIN', String(user?.ez_coins ?? 0), '#64e8ff')
+
+    header.add([bg, top, bottom, avatarRing, avatar, name, level, rank, wins, crystals, coins])
+    return header
+  }
+
+  _headerMetric(x, label, value, color) {
+    const group = this.add.container(x, 0)
+    const labelText = this.add.text(0, -12, label, {
+      fontSize: '9px',
+      color: '#9fd6e8',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const valueText = this.add.text(0, 10, value, {
+      fontSize: '14px',
+      color,
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    group.add([labelText, valueText])
+    return group
+  }
+
+  _loadAvatarTexture(url, onReady) {
+    const key = avatarTextureKey(url)
+    if (this.textures.exists(key)) {
+      onReady(key)
+      return
+    }
+
+    this.load.image(key, url)
+    this.load.once('complete', () => {
+      if (this.textures.exists(key)) onReady(key)
+    })
+    this.load.once('loaderror', () => onReady(CARD_BACK_KEY))
+    this.load.start()
   }
 
   _addMainMenuButton(x, y, config, onClick) {
@@ -378,6 +461,60 @@ export default class MenuScene extends Scene {
     })
     button.on('pointerdown', onClick)
     return button
+  }
+
+  _addEventButton(x, y, event, onClick) {
+    const button = this.add.container(x, y)
+    const bg = this.add.rectangle(0, 0, 258, 88, 0x071523, 0.92)
+      .setStrokeStyle(1, 0xffcc66)
+    const strip = this.add.rectangle(-125, 0, 5, 58, 0xffcc66, 0.95)
+    const eyebrow = this.add.text(-96, -25, 'EVENTO ATIVO', {
+      fontSize: '10px',
+      color: '#ffdd77',
+      fontStyle: 'bold',
+    }).setOrigin(0, 0.5)
+    const title = this.add.text(-96, 2, event.name, {
+      fontSize: '13px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      wordWrap: { width: 176 },
+    }).setOrigin(0, 0.5)
+    const arrow = this.add.text(102, 0, '>', {
+      fontSize: '20px',
+      color: '#ffdd77',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    button.add([bg, strip, eyebrow, title, arrow])
+    button.setSize(258, 88).setInteractive({ useHandCursor: true })
+    button.on('pointerover', () => {
+      bg.setFillStyle(0x1f2330, 0.98)
+      this.tweens.add({ targets: button, scaleX: 1.03, scaleY: 1.03, duration: 120, ease: 'Sine.easeOut' })
+    })
+    button.on('pointerout', () => {
+      bg.setFillStyle(0x071523, 0.92)
+      this.tweens.add({ targets: button, scaleX: 1, scaleY: 1, duration: 120, ease: 'Sine.easeOut' })
+    })
+    button.on('pointerdown', onClick)
+    this.tweens.add({
+      targets: strip,
+      alpha: 0.45,
+      duration: 900,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    })
+    return button
+  }
+
+  _createCircleMask(x, y, radius) {
+    const shape = this.make.graphics({ add: false })
+    shape.fillStyle(0xffffff, 1)
+    shape.fillCircle(x, y, radius)
+    return shape.createGeometryMask()
+  }
+
+  _isAdminUser(user) {
+    return Boolean(user?.is_admin || user?.role === 'admin' || String(user?.name ?? '').toLowerCase() === 'xlukao')
   }
 
   async _logout() {
@@ -484,6 +621,16 @@ export default class MenuScene extends Scene {
   _saveAuth(payload = {}) {
     if (payload.token) localStorage.setItem('auth_token', payload.token)
     if (payload.user) localStorage.setItem('auth_user', JSON.stringify(payload.user))
+  }
+
+  _goAfterAuth() {
+    const user = this._authUser()
+    if (user && !user.starter_deck_chosen_at) {
+      this.scene.start('StarterDeckScene')
+      return
+    }
+
+    this._showMainMenu()
   }
 
   _authUser() {
