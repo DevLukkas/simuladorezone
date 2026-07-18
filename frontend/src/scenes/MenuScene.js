@@ -695,16 +695,22 @@ export default class MenuScene extends Scene {
   }
 
   _saveAuth(payload = {}) {
+    // A API local responde { token, user }; algumas versões já publicadas
+    // respondem { data: { token, user } }. Normalizamos os dois formatos.
+    const auth = payload?.data?.token || payload?.data?.user ? payload.data : payload
+
     clearScene()
     localStorage.removeItem('ez_user')
     localStorage.removeItem('user')
-    if (payload.token) localStorage.setItem('auth_token', payload.token)
-    if (payload.user) localStorage.setItem('auth_user', JSON.stringify(payload.user))
+    if (auth.token) localStorage.setItem('auth_token', auth.token)
+    if (auth.user) localStorage.setItem('auth_user', JSON.stringify(auth.user))
     this._authLog('auth_saved', {
-      hasToken: Boolean(payload.token),
-      userId: payload.user?.id ?? null,
+      hasToken: Boolean(auth.token),
+      userId: auth.user?.id ?? null,
+      responseKeys: Object.keys(payload ?? {}),
+      hasNestedAuth: auth !== payload,
     })
-    return payload.user ?? null
+    return auth.user ?? null
   }
 
   _goAfterAuth(authenticatedUser = this._authUser()) {
