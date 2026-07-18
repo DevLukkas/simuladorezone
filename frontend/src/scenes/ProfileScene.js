@@ -1,4 +1,5 @@
 import { Scene } from 'phaser'
+import { createIcons, icons } from 'lucide'
 import { saveScene } from '../utils/session.js'
 import {
   addFriend,
@@ -251,7 +252,7 @@ export default class ProfileScene extends Scene {
     this._panel(x, y, w, h, 'AMIGOS')
 
     if (!isPublicView) {
-      this._htmlIconButton(x + w - 44, y + 28, 34, 'fa-user-plus', 0x8dff9d, () => this._promptAddFriend(), 'Adicionar amigo')
+      this._htmlIconButton(x + w - 44, y + 28, 34, 'user-plus', 0x8dff9d, () => this._promptAddFriend(), 'Adicionar amigo')
     }
 
     if (!friends.length) {
@@ -278,20 +279,20 @@ export default class ProfileScene extends Scene {
         color: '#d8ff66',
       })
 
-      this._htmlIconButton(x + w - 128, rowY - 17, 34, 'fa-user', 0x64e8ff, () => this.scene.start('ProfileScene', { userId: friend.id }), 'Ver perfil')
-      this._htmlIconButton(x + w - 88, rowY - 17, 34, 'fa-comments', 0x8dff9d, () => this._toast('Chat será ativado com o social backend.'), 'Chat')
+      this._htmlIconButton(x + w - 128, rowY - 17, 34, 'user', 0x64e8ff, () => this.scene.start('ProfileScene', { userId: friend.id }), 'Ver perfil')
+      this._htmlIconButton(x + w - 88, rowY - 17, 34, 'message-circle', 0x8dff9d, () => this._toast('Chat será ativado com o social backend.'), 'Chat')
       this._htmlIconButton(
         x + w - 128,
         rowY + 19,
         34,
-        'fa-gift',
+        'gift',
         friend.can_send_gift === false ? 0x6e7880 : 0xd8ff66,
         () => friend.can_send_gift === false
           ? this._toast('Presente disponível novamente após o reset diário às 00:01.')
           : this._sendGift(friend.id),
         'Enviar presente'
       )
-      this._htmlIconButton(x + w - 88, rowY + 19, 34, 'fa-trash-o', 0xff7777, () => this._removeFriend(friend.id), 'Excluir amigo')
+      this._htmlIconButton(x + w - 88, rowY + 19, 34, 'trash-2', 0xff7777, () => this._removeFriend(friend.id), 'Excluir amigo')
     })
   }
 
@@ -329,9 +330,9 @@ export default class ProfileScene extends Scene {
         color: '#9fd6e8',
       })
       const downloadX = build.is_owner ? x + w - 82 : x + w - 48
-      this._htmlIconButton(downloadX, rowY, 34, 'fa-download', 0x64e8ff, () => this._exportBuild(build.id), 'Baixar TXT')
+      this._htmlIconButton(downloadX, rowY, 34, 'download', 0x64e8ff, () => this._exportBuild(build.id), 'Baixar TXT')
       if (build.is_owner) {
-        this._htmlIconButton(x + w - 42, rowY, 34, 'fa-trash-o', 0xff7777, () => this._deleteBuild(build.id), 'Apagar build')
+        this._htmlIconButton(x + w - 42, rowY, 34, 'trash-2', 0xff7777, () => this._deleteBuild(build.id), 'Apagar build')
       }
     })
   }
@@ -462,7 +463,7 @@ export default class ProfileScene extends Scene {
     return btn
   }
 
-  _htmlIconButton(x, y, size, iconClass, accent, onClick, title = '') {
+  _htmlIconButton(x, y, size, iconName, accent, onClick, title = '') {
     const canvas = this.sys.game.canvas.getBoundingClientRect()
     const gameSize = this.scale.gameSize
     const scaleX = canvas.width / gameSize.width
@@ -471,7 +472,7 @@ export default class ProfileScene extends Scene {
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.title = title
-    btn.innerHTML = `<i class="fa ${iconClass}" aria-hidden="true"></i>`
+    btn.innerHTML = `<i data-lucide="${iconName}" aria-hidden="true"></i>`
     Object.assign(btn.style, {
       position: 'fixed',
       left: `${canvas.left + (x - size / 2) * scaleX}px`,
@@ -503,6 +504,14 @@ export default class ProfileScene extends Scene {
     })
     btn.addEventListener('click', onClick)
     document.body.appendChild(btn)
+    createIcons({
+      icons,
+      attrs: {
+        width: '16',
+        height: '16',
+        'stroke-width': '2',
+      },
+    })
     this._htmlElements.push(btn)
     return btn
   }
