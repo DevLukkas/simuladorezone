@@ -54,10 +54,12 @@ export default class StarterDeckScene extends Scene {
 
   create() {
     if (!localStorage.getItem('auth_token')) {
+      console.info('[EZone Auth] starter_deck_blocked_missing_token')
       this.scene.start('MenuScene')
       return
     }
 
+    console.info('[EZone Auth] starter_deck_opened')
     saveScene('StarterDeckScene')
     const { width, height } = this.cameras.main
 

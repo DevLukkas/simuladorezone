@@ -67,6 +67,7 @@ export default class MenuScene extends Scene {
     this._buildBrand(width, height)
 
     const token = localStorage.getItem('auth_token')
+    this._authLog('menu_created', { hasToken: Boolean(token) })
     if (token) {
       this._loadSession()
     } else {
@@ -161,9 +162,14 @@ export default class MenuScene extends Scene {
   async _loadSession() {
     try {
       const response = await me()
-      this._saveAuth(response.data)
-      this._goAfterAuth()
-    } catch {
+      const user = this._saveAuth(response.data)
+      this._authLog('session_restored', { userId: user?.id ?? null })
+      this._goAfterAuth(user)
+    } catch (error) {
+      this._authLog('session_restore_failed', {
+        status: error?.response?.status ?? null,
+        message: error?.message ?? 'unknown',
+      })
       clearAuth()
       this._showLoginForm()
     }
@@ -222,10 +228,19 @@ export default class MenuScene extends Scene {
     try {
       const response = await login(email, password)
       const user = this._saveAuth(response.data)
+      this._authLog('login_api_success', {
+        status: response.status,
+        userId: user?.id ?? null,
+        hasStoredToken: Boolean(localStorage.getItem('auth_token')),
+      })
       this._clearLoginForm()
       this._goAfterAuth(user)
       this._toast('Login realizado.')
     } catch (error) {
+      this._authLog('login_api_failed', {
+        status: error?.response?.status ?? null,
+        message: error?.message ?? 'unknown',
+      })
       this._toast(this._errorMessage(error, 'Não foi possível entrar.'))
     }
   }
@@ -300,10 +315,13 @@ export default class MenuScene extends Scene {
     this._menuContainer = this.add.container(0, 0).setDepth(10)
     const user = authenticatedUser
     if (!user?.id) {
+      this._authLog('main_menu_blocked_missing_user')
       clearAuth()
       this._showLoginForm()
       return
     }
+
+    this._authLog('main_menu_opened', { userId: user.id })
 
     const isAdmin = this._isAdminUser(user)
 
@@ -682,17 +700,27 @@ export default class MenuScene extends Scene {
     localStorage.removeItem('user')
     if (payload.token) localStorage.setItem('auth_token', payload.token)
     if (payload.user) localStorage.setItem('auth_user', JSON.stringify(payload.user))
+    this._authLog('auth_saved', {
+      hasToken: Boolean(payload.token),
+      userId: payload.user?.id ?? null,
+    })
     return payload.user ?? null
   }
 
   _goAfterAuth(authenticatedUser = this._authUser()) {
     const user = authenticatedUser
     if (user && !user.starter_deck_chosen_at) {
+      this._authLog('opening_starter_deck', { userId: user.id })
       this.scene.start('StarterDeckScene')
       return
     }
 
+    this._authLog('opening_main_menu', { userId: user?.id ?? null })
     this._showMainMenu(user)
+  }
+
+  _authLog(event, context = {}) {
+    console.info(`[EZone Auth] ${event}`, context)
   }
 
   _authUser() {

@@ -6,6 +6,7 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
@@ -19,6 +20,11 @@ class AuthController extends Controller
         ]);
 
         $user = User::create($data);
+
+        Log::info('auth.registered', [
+            'user_id' => $user->id,
+            'ip' => $request->ip(),
+        ]);
 
         return response()->json([
             'message' => 'Conta criada. Faca login para continuar.',
@@ -36,12 +42,21 @@ class AuthController extends Controller
         $user = User::where('email', $credentials['email'])->first();
 
         if (!$user || !Hash::check($credentials['password'], $user->password)) {
+            Log::warning('auth.login_failed', [
+                'ip' => $request->ip(),
+            ]);
+
             throw ValidationException::withMessages([
                 'email' => ['E-mail ou senha inválidos.'],
             ]);
         }
 
         $token = $user->createToken('game-client')->plainTextToken;
+
+        Log::info('auth.login_succeeded', [
+            'user_id' => $user->id,
+            'ip' => $request->ip(),
+        ]);
 
         return response()->json([
             'token' => $token,
