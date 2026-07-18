@@ -5,7 +5,7 @@ import { habilidades } from '../data/habilidades.js'
 import { itens } from '../data/itens.js'
 import { comandos } from '../data/comandos.js'
 import { cenarios } from '../data/cenarios.js'
-import { clearScene, saveScene } from '../utils/session.js'
+import { clearAuth, clearScene, saveScene } from '../utils/session.js'
 import { avatarTextureKey, avatarUrlFor } from '../utils/avatar.js'
 
 const CARD_BACK_KEY = 'menu_card_back'
@@ -164,8 +164,7 @@ export default class MenuScene extends Scene {
       this._saveAuth(response.data)
       this._goAfterAuth()
     } catch {
-      localStorage.removeItem('auth_token')
-      localStorage.removeItem('auth_user')
+      clearAuth()
       this._showLoginForm()
     }
   }
@@ -300,6 +299,12 @@ export default class MenuScene extends Scene {
     const { width, height } = this.cameras.main
     this._menuContainer = this.add.container(0, 0).setDepth(10)
     const user = this._authUser()
+    if (!user?.id) {
+      clearAuth()
+      this._showLoginForm()
+      return
+    }
+
     const isAdmin = this._isAdminUser(user)
 
     const panelY = height * 0.57
@@ -384,7 +389,7 @@ export default class MenuScene extends Scene {
       avatar.setDisplaySize(46, 46)
     })
 
-    const name = this.add.text(-w / 2 + 82, -12, user?.name ?? 'Convidado', {
+    const name = this.add.text(-w / 2 + 82, -12, user.name, {
       fontSize: '16px',
       color: '#ffffff',
       fontStyle: 'bold',
