@@ -13,10 +13,13 @@ import AdminPanelScene from './scenes/AdminPanelScene.js'
 import OffersScene from './scenes/OffersScene.js'
 import LaboratoryScene from './scenes/LaboratoryScene.js'
 
+const isLocalHost = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+const PLAY_URL = import.meta.env.VITE_PLAY_URL || (isLocalHost ? '/play' : 'https://play.vbxsistemas.com.br')
+
 function shouldStartGame() {
   const host = window.location.hostname
   const path = window.location.pathname
-  return host.startsWith('play.') || path.startsWith('/play')
+  return host.startsWith('play.') || (isLocalHost && path.startsWith('/play'))
 }
 
 function startGame() {
@@ -62,7 +65,7 @@ function renderLanding() {
           <a href="#jogo">Jogo</a>
           <a href="#beta">Beta</a>
           <a href="#apoio">Apoiar</a>
-          <a class="nav-play" href="/play">Jogar</a>
+          <a class="nav-play" href="${PLAY_URL}">Jogar</a>
         </div>
       </nav>
 
@@ -76,7 +79,7 @@ function renderLanding() {
             Monte baralhos, invoque criaturas, use comandos táticos e dispute partidas online em um card game feito para evoluir com a comunidade.
           </p>
           <div class="hero-actions">
-            <a class="primary-button" href="/play">Entrar no beta</a>
+            <a class="primary-button" href="${PLAY_URL}">Entrar no beta</a>
             <a class="secondary-button" href="#apoio">Apoiar desenvolvimento</a>
           </div>
         </div>
@@ -134,7 +137,7 @@ function renderLanding() {
         <div class="beta-panel">
           <span>Disponível no navegador</span>
           <strong>play.vbxsistemas.com.br</strong>
-          <a href="/play">Abrir jogo</a>
+          <a href="${PLAY_URL}">Abrir jogo</a>
         </div>
       </section>
 
@@ -148,7 +151,7 @@ function renderLanding() {
         </div>
         <div class="support-actions">
           <a class="primary-button" href="mailto:contato@vbxsistemas.com.br?subject=Apoiar%20Ezone%20TCG">Quero apoiar</a>
-          <a class="secondary-button" href="/play">Testar beta</a>
+          <a class="secondary-button" href="${PLAY_URL}">Testar beta</a>
         </div>
       </section>
 
@@ -162,6 +165,8 @@ function renderLanding() {
 
 if (shouldStartGame()) {
   startGame()
+} else if (window.location.pathname.startsWith('/play')) {
+  window.location.replace(PLAY_URL)
 } else {
   renderLanding()
 }
