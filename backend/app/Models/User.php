@@ -19,6 +19,7 @@ use Laravel\Sanctum\HasApiTokens;
     'starter_deck_chosen_at',
     'crystals',
     'ez_coins',
+    'card_essences',
     'avatar_card_id',
     'avatar_url',
     'level',
@@ -27,6 +28,7 @@ use Laravel\Sanctum\HasApiTokens;
     'wins',
     'losses',
     'gifts_sent',
+    'membro_vip',
 ])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
@@ -47,6 +49,7 @@ class User extends Authenticatable
             'starter_deck_chosen_at' => 'datetime',
             'crystals' => 'integer',
             'ez_coins' => 'integer',
+            'card_essences' => 'integer',
             'avatar_card_id' => 'integer',
             'level' => 'integer',
             'ranking_points' => 'integer',
@@ -54,6 +57,7 @@ class User extends Authenticatable
             'wins' => 'integer',
             'losses' => 'integer',
             'gifts_sent' => 'integer',
+            'membro_vip' => 'boolean',
         ];
     }
 
@@ -70,6 +74,21 @@ class User extends Authenticatable
     public function friendships()
     {
         return $this->hasMany(Friendship::class);
+    }
+
+    public function inventoryItems()
+    {
+        return $this->hasMany(UserInventoryItem::class);
+    }
+
+    public function shopPurchases()
+    {
+        return $this->hasMany(ShopPurchase::class);
+    }
+
+    public function labCraftProjects()
+    {
+        return $this->hasMany(LabCraftProject::class);
     }
 
     public function sharedDeckBuilds()

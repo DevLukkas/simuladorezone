@@ -56,6 +56,8 @@ export default class MenuScene extends Scene {
     this._registerModal = null
     this._toastText = null
     this._cardRainTimer = null
+    this._loginEmailInput = null
+    this._loginPasswordInput = null
 
     this.events.once('shutdown', () => this._cleanupScene())
 
@@ -190,6 +192,8 @@ export default class MenuScene extends Scene {
 
     const email = this._addHtmlInput(panelX - 150, panelY - 28, 300, 38, 'E-mail', 'email', this._loginHtmlElements, 24)
     const password = this._addHtmlInput(panelX - 150, panelY + 28, 300, 38, 'Senha', 'password', this._loginHtmlElements, 24)
+    this._loginEmailInput = email
+    this._loginPasswordInput = password
 
     const btnLogin = this._addButton(panelX, panelY + 88, 'ENTRAR', '#17313f', () => {
       this._submitLogin(email.value, password.value)
@@ -276,12 +280,14 @@ export default class MenuScene extends Scene {
     }
 
     try {
-      const response = await register(name, email, password)
-      this._saveAuth(response.data)
+      await register(name, email, password)
       this._closeRegisterModal()
-      this._clearLoginForm()
-      this._goAfterAuth()
-      this._toast('Conta criada.')
+      if (this._loginEmailInput) this._loginEmailInput.value = email
+      if (this._loginPasswordInput) {
+        this._loginPasswordInput.value = ''
+        this._loginPasswordInput.focus()
+      }
+      this._toast('Conta criada. Agora faca login para continuar.')
     } catch (error) {
       this._toast(this._errorMessage(error, 'Não foi possível cadastrar.'))
     }
@@ -335,6 +341,9 @@ export default class MenuScene extends Scene {
       this._toast('Evento de abertura criado. A cena do evento será conectada no próximo passo.')
     })
     this._menuContainer.add(eventButton)
+
+    const offersButton = this._addOffersButton(34, height / 2, () => this.scene.start('OffersScene'))
+    this._menuContainer.add(offersButton)
 
     const logoutBtn = this.add.container(width / 2, height - 54)
     const logoutBg = this.add.rectangle(0, 0, 178, 34, 0x180c10, 0.86)
@@ -506,6 +515,48 @@ export default class MenuScene extends Scene {
     return button
   }
 
+  _addOffersButton(x, y, onClick) {
+    const button = this.add.container(x, y)
+    const bg = this.add.rectangle(0, 0, 58, 152, 0x120916, 0.94)
+      .setStrokeStyle(1, 0xffcc66)
+    const glow = this.add.rectangle(0, 0, 64, 158, 0xffcc66, 0.08)
+    const icon = this.add.text(0, -47, '$', {
+      fontSize: '26px',
+      color: '#ffdd77',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const label = this.add.text(0, 18, 'OFERTAS', {
+      fontSize: '13px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5).setAngle(-90)
+    const dot = this.add.circle(17, -58, 6, 0xff5555, 1)
+      .setStrokeStyle(1, 0xffffff, 0.75)
+
+    button.add([glow, bg, icon, label, dot])
+    button.setSize(58, 152).setInteractive({ useHandCursor: true })
+    button.on('pointerover', () => {
+      bg.setFillStyle(0x251024, 0.98)
+      icon.setColor('#ffffff')
+      this.tweens.add({ targets: button, x: x + 8, duration: 120, ease: 'Sine.easeOut' })
+    })
+    button.on('pointerout', () => {
+      bg.setFillStyle(0x120916, 0.94)
+      icon.setColor('#ffdd77')
+      this.tweens.add({ targets: button, x, duration: 120, ease: 'Sine.easeOut' })
+    })
+    button.on('pointerdown', onClick)
+    this.tweens.add({
+      targets: dot,
+      alpha: 0.35,
+      duration: 760,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    })
+    return button
+  }
+
   _createCircleMask(x, y, radius) {
     const shape = this.make.graphics({ add: false })
     shape.fillStyle(0xffffff, 1)
@@ -611,6 +662,8 @@ export default class MenuScene extends Scene {
   _removeLoginHtmlElements() {
     this._loginHtmlElements?.forEach(el => el.remove())
     this._loginHtmlElements = []
+    this._loginEmailInput = null
+    this._loginPasswordInput = null
   }
 
   _removeModalHtmlElements() {

@@ -20,8 +20,8 @@ export function matchesCreatureRule(creature, rule = {}, source = null) {
   if (!creature) return false
   const name = String(creature.name ?? creature.nome ?? '').toLowerCase()
   if (rule.exclude_self && source && creature.instanceId === source.instanceId) return false
-  if (rule.race && creature.raca !== rule.race) return false
-  if (rule.element && creature.element !== rule.element) return false
+  if (rule.race && (creature.race ?? creature.raca) !== rule.race) return false
+  if (rule.element && (creature.element ?? creature.elemento) !== rule.element) return false
   if (rule.name && name !== String(rule.name).toLowerCase()) return false
   if (rule.name_includes && !name.includes(String(rule.name_includes).toLowerCase())) return false
   return true

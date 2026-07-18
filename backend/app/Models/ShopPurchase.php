@@ -4,20 +4,23 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-class PlayerCard extends Model
+class ShopPurchase extends Model
 {
     protected $fillable = [
         'user_id',
-        'card_uid',
-        'nome_card',
-        'card_type',
-        'source_id',
+        'item_key',
+        'item_type',
         'quantity',
+        'unit_price_ez_coins',
+        'total_price_ez_coins',
+        'payload',
     ];
 
     protected $casts = [
-        'source_id' => 'integer',
         'quantity' => 'integer',
+        'unit_price_ez_coins' => 'integer',
+        'total_price_ez_coins' => 'integer',
+        'payload' => 'array',
     ];
 
     public function user()

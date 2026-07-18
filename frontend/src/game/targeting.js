@@ -3,7 +3,7 @@ export function matchesCardRule(card, rule = {}) {
   const name = String(card.name ?? card.nome ?? '').toLowerCase()
   if (rule.name && name !== String(rule.name).toLowerCase()) return false
   if (rule.name_includes && !name.includes(String(rule.name_includes).toLowerCase())) return false
-  if (rule.race && card.raca !== rule.race) return false
+  if (rule.race && (card.race ?? card.raca) !== rule.race) return false
   if (rule.element && (card.element ?? card.elemento) !== rule.element) return false
   if (rule.card_type && card.card_type !== rule.card_type) return false
   return true

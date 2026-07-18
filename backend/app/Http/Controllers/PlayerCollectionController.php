@@ -17,6 +17,7 @@ class PlayerCollectionController extends Controller
             ->get()
             ->map(fn ($card): array => [
                 'uid' => $card->card_uid,
+                'name' => $card->nome_card,
                 'type' => $card->card_type,
                 'id' => $card->source_id,
                 'quantity' => $card->quantity,

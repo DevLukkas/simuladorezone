@@ -139,6 +139,7 @@ export default class LobbyScene extends Scene {
       console.error('Erro ao carregar salas:', error)
       errorMessage = this._apiErrorMessage(error, 'Não foi possível carregar as salas.')
     }
+    if (!this.scene.isActive('LobbyScene') || !this.cameras?.main) return
     this._renderTable()
     if (errorMessage) this._setFooterStatus(errorMessage, '#ff7777')
   }
@@ -146,6 +147,7 @@ export default class LobbyScene extends Scene {
   // ── Renderizar tabela ───────────────────────────────────────────
 
   _renderTable() {
+    if (!this.cameras?.main || !this._rowContainer) return
     const { width } = this.cameras.main
     this._rowContainer.removeAll(true)
 

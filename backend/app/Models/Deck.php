@@ -7,11 +7,12 @@ use Illuminate\Database\Eloquent\Model;
 class Deck extends Model
 {
     protected $fillable = [
-        'user_id', 'name', 'description', 'is_preset', 'cover_image',
+        'user_id', 'slot_number', 'name', 'description', 'is_preset', 'cover_image',
     ];
 
     protected $casts = [
         'is_preset' => 'boolean',
+        'slot_number' => 'integer',
     ];
 
     public function user()

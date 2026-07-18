@@ -19,6 +19,21 @@ export const chooseStarterDeck = (starterKey) =>
 export const getCards = (params = {}) => api.get('/cards', { params })
 export const getPlayerCards = () => api.get('/player-cards')
 
+// --- Loja / inventario ---
+export const getShopInventory = () => api.get('/shop/inventory')
+export const purchaseShopItem = (itemKey) => api.post('/shop/purchase', { item_key: itemKey })
+
+// --- Laboratorio ---
+export const getLaboratory = () => api.get('/laboratory')
+export const dissolveCard = (cardUid, quantity = 1) =>
+  api.post('/laboratory/dissolve', { card_uid: cardUid, quantity })
+export const startCraft = (recipeKey, element = null) =>
+  api.post('/laboratory/craft', { recipe_key: recipeKey, element })
+export const accelerateCraft = (projectId, itemKey) =>
+  api.post(`/laboratory/projects/${projectId}/accelerate`, { item_key: itemKey })
+export const claimCraft = (projectId) => api.post(`/laboratory/projects/${projectId}/claim`)
+export const buyBooster = (editionKey) => api.post('/laboratory/boosters/buy', { edition_key: editionKey })
+
 // --- Perfil / Social ---
 export const getProfile = () => api.get('/profile')
 export const getPublicProfile = (userId) => api.get(`/profile/users/${userId}`)

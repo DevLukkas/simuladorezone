@@ -48,6 +48,7 @@ class StarterDeckController extends Controller
         $result = DB::transaction(function () use ($user, $starter, $data): array {
             $deck = Deck::create([
                 'user_id' => $user->id,
+                'slot_number' => 1,
                 'name' => $starter['name'],
                 'description' => 'Baralho inicial escolhido no tutorial.',
                 'is_preset' => false,
@@ -57,11 +58,13 @@ class StarterDeckController extends Controller
             ]);
 
             foreach ($starter['cards'] as $entry) {
+                $catalogCard = config('card_catalog.cards.'.$entry['uid']);
                 $playerCard = PlayerCard::firstOrNew([
                     'user_id' => $user->id,
                     'card_uid' => $entry['uid'],
                 ]);
                 $playerCard->fill([
+                    'nome_card' => $catalogCard['name'] ?? null,
                     'card_type' => $entry['type'],
                     'source_id' => $entry['id'],
                     'quantity' => ((int) $playerCard->quantity) + ((int) $entry['qty']),

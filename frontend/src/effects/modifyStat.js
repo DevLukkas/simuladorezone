@@ -67,14 +67,14 @@ function matchesCardRule(card, rule, context) {
   if (rule.exclude_self && card.id === context.source?.id) return false
   if (rule.name_includes && !String(card.name ?? card.nome ?? '').includes(rule.name_includes)) return false
   if (rule.card_type && card.card_type !== rule.card_type) return false
-  if (rule.race && card.raca !== rule.race) return false
-  if (rule.element && card.element !== rule.element) return false
+  if (rule.race && (card.race ?? card.raca) !== rule.race) return false
+  if (rule.element && (card.element ?? card.elemento) !== rule.element) return false
   return true
 }
 
 function matchesCondition(condition, creature) {
   if (!condition) return false
-  if (condition.element && condition.element !== creature.element) return false
-  if (condition.race && condition.race !== creature.raca) return false
+  if (condition.element && condition.element !== (creature.element ?? creature.elemento)) return false
+  if (condition.race && condition.race !== (creature.race ?? creature.raca)) return false
   return true
 }

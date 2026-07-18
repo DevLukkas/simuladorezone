@@ -22,6 +22,7 @@ export function createCreatureInstance(card) {
   return {
     ...card,
     instanceId: card.instanceId ?? `${card.id}_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    race: card.race ?? card.raca ?? null,
     element: card.element ?? card.elemento ?? 'neutro',
     rarity: card.rarity ?? card.raridade,
     baseStats: {
@@ -112,7 +113,7 @@ function matchesCondition(condition, context) {
   if (!condition) return true
 
   const creature = context.creature
-  if (condition.attached_creature_race && creature?.raca !== condition.attached_creature_race) return false
+  if (condition.attached_creature_race && (creature?.race ?? creature?.raca) !== condition.attached_creature_race) return false
   if (condition.attached_creature_element && creature?.element !== condition.attached_creature_element) return false
   return true
 }

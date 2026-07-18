@@ -5,7 +5,7 @@ import { habilidades } from '../data/habilidades.js'
 import { itens } from '../data/itens.js'
 import { comandos } from '../data/comandos.js'
 import { cenarios } from '../data/cenarios.js'
-import { getPlayerCards, shareBuild } from '../api/gameApi.js'
+import { createDeck, deleteDeck, getDecks, getPlayerCards, shareBuild, updateDeck } from '../api/gameApi.js'
 
 const LOCAL_DECK_KEY = 'ezone_deck_builder_draft'
 const MAX_DECK = 40
@@ -68,6 +68,11 @@ export default class DeckBuilderScene extends Scene {
     this._deckScroll = 0
     this._htmlElements = []
     this._collectionLoaded = false
+    this._savedDecks = []
+    this._deckLimits = null
+    this._activeDeckId = null
+    this._activeDeckLocked = false
+    this._selectedSlot = 1
   }
 
   preload() {
@@ -293,6 +298,15 @@ export default class DeckBuilderScene extends Scene {
     const l = this._layout
     const topY = l.deckY + 72
 
+    this.add.text(l.deckX + 20, l.deckY + 28, '|', {
+      fontSize: '13px',
+      color: '#64e8ff',
+      fontStyle: 'bold',
+    }).setOrigin(0, 0.5)
+
+    this._slotSelect = this._addHtmlSelect(l.deckX + 168, l.deckY + 28, 240)
+    this._slotSelect.addEventListener('change', () => this._selectDeckSlot(Number(this._slotSelect.value)))
+
     this.add.text(l.deckX + 20, topY, 'Nome:', {
       fontSize: '13px',
       color: '#9df7ff',
@@ -303,6 +317,10 @@ export default class DeckBuilderScene extends Scene {
     this._deckNameInput.value = this._deckName
 
     this._deckNameInput.addEventListener('input', () => {
+      if (this._activeDeckLocked) {
+        this._deckNameInput.value = this._deckName
+        return
+      }
       this._deckName = this._deckNameInput.value
       this._saveLocalDeck()
     })
@@ -315,10 +333,14 @@ export default class DeckBuilderScene extends Scene {
 
     const btnY = l.deckY + l.deckH - 38
     this._addNeonButton(l.deckX + 42, btnY, 76, 'SALVAR', 0x8dff9d, () => this._saveDeck())
-    this._addNeonButton(l.deckX + 124, btnY, 82, 'EXPORT', 0x64e8ff, () => this._exportDecklist())
-    this._addNeonButton(l.deckX + 212, btnY, 86, 'IMPORT', 0xd58dff, () => this._fileInput?.click())
-    this._addNeonButton(l.deckX + 304, btnY, 92, '↗ SHARE', 0xffdd77, () => this._shareCurrentBuild())
-    this._addNeonButton(l.deckX + 396, btnY, 76, 'LIMPAR', 0xff7777, () => {
+    this._addNeonButton(l.deckX + 124, btnY, 74, 'EXPORT', 0x64e8ff, () => this._exportDecklist())
+    this._addNeonButton(l.deckX + 204, btnY, 74, 'IMPORT', 0xd58dff, () => this._fileInput?.click())
+    this._addNeonButton(l.deckX + 284, btnY, 70, 'SHARE', 0xffdd77, () => this._shareCurrentBuild())
+    this._addNeonButton(l.deckX + 362, btnY, 70, 'LIMPAR', 0xff7777, () => {
+      if (this._activeDeckLocked) {
+        this._toast('Slot VIP bloqueado: não é possível editar.')
+        return
+      }
       this._deck = []
       this._refreshDeck()
     })
@@ -424,7 +446,10 @@ export default class DeckBuilderScene extends Scene {
       this._collectionLoaded = true
       this._scroll = 0
       this._applyFilter()
-      this._loadLocalDeck()
+      await this._loadSavedDecks()
+      this._refreshSlotSelect()
+      this._selectDeckSlot(this._selectedSlot, { silent: true })
+      if (!this._activeDeckId && !this._deck.length) this._loadLocalDeck()
       this._renderDeck()
       this._renderCollection()
     } catch (error) {
@@ -743,6 +768,11 @@ _createCollectionCard(card, x, y, w, h) {
   }
 
   _addCardToDeck(card) {
+    if (this._activeDeckLocked) {
+      this._toast('Slot VIP bloqueado: não é possível editar.')
+      return
+    }
+
     if (this._deckTotal() >= MAX_DECK) {
       this._toast('O baralho já está com 40 cartas.')
       return
@@ -767,6 +797,11 @@ _createCollectionCard(card, x, y, w, h) {
   }
 
   _removeCardFromDeck(card) {
+    if (this._activeDeckLocked) {
+      this._toast('Slot VIP bloqueado: não é possível editar.')
+      return
+    }
+
     const index = this._deck.findIndex(item => item.card.uid === card.uid)
     if (index === -1) return
 
@@ -785,14 +820,33 @@ _createCollectionCard(card, x, y, w, h) {
     this._renderCollection()
   }
 
-  _saveDeck() {
+  async _saveDeck() {
     if (this._deckTotal() <= 0) {
       this._toast('Adicione cartas ao baralho primeiro.')
       return
     }
 
-    this._saveLocalDeck()
-    this._toast('Baralho salvo localmente.')
+    if (this._activeDeckLocked) {
+      this._toast('Este baralho está em um espaço VIP bloqueado.')
+      return
+    }
+
+    try {
+      const payload = this._localDeckData()
+      const response = this._activeDeckId
+        ? await updateDeck(this._activeDeckId, payload)
+        : await createDeck({ ...payload, slot_number: this._selectedSlot })
+
+      const saved = response.data.data
+      this._activeDeckId = saved.id
+      this._activeDeckLocked = Boolean(saved.locked)
+      await this._loadSavedDecks()
+      this._refreshSlotSelect()
+      this._saveLocalDeck()
+      this._toast(response.data.message ?? 'Baralho salvo na conta.')
+    } catch (error) {
+      this._toast(error?.response?.data?.message ?? 'Não foi possível salvar no banco.')
+    }
   }
 
   _localDeckData() {
@@ -848,6 +902,153 @@ _createCollectionCard(card, x, y, w, h) {
     } catch (error) {
       console.warn('Erro ao carregar deck:', error)
     }
+  }
+
+  async _loadSavedDecks() {
+    try {
+      const response = await getDecks()
+      this._savedDecks = response.data.data ?? []
+      this._deckLimits = response.data.limits ?? null
+    } catch (error) {
+      console.warn('Erro ao carregar baralhos salvos:', error)
+      this._savedDecks = []
+      this._deckLimits = null
+    }
+  }
+
+  _refreshSlotSelect() {
+    if (!this._slotSelect) return
+
+    const allowedSlots = Number(this._deckLimits?.allowed_slots ?? 2)
+    const maxSlots = Number(this._deckLimits?.max_slots ?? 8)
+    this._slotSelect.innerHTML = ''
+
+    for (let slot = 1; slot <= maxSlots; slot++) {
+      const deck = this._savedDecks.find(item => Number(item.slot_number) === slot)
+      const locked = slot > allowedSlots
+      const option = document.createElement('option')
+      option.value = String(slot)
+      option.textContent = deck
+        ? `${locked ? 'Slot VIP ' : ''}#${slot}: ${deck.name}`
+        : locked
+          ? `#${slot}: Slot VIP`
+          : `#${slot}: vazio`
+      option.disabled = locked && !deck
+      this._slotSelect.appendChild(option)
+    }
+
+    this._slotSelect.value = String(this._selectedSlot)
+    this._refreshSlotSelectStyle()
+  }
+
+  _selectDeckSlot(slot, options = {}) {
+    this._selectedSlot = slot
+    if (this._slotSelect && this._slotSelect.value !== String(slot)) {
+      this._slotSelect.value = String(slot)
+    }
+    this._refreshSlotSelectStyle()
+
+    const deck = this._savedDecks.find(item => Number(item.slot_number) === slot)
+    if (deck) {
+      this._loadDeckFromServer(deck, options)
+      return
+    }
+
+    this._activeDeckId = null
+    this._activeDeckLocked = slot > Number(this._deckLimits?.allowed_slots ?? 2)
+    this._deck = []
+    this._deckName = 'Novo Baralho'
+    if (this._deckNameInput) this._deckNameInput.value = this._deckName
+    this._refreshDeck()
+    this._refreshSlotSelectStyle()
+    if (!options.silent) {
+      this._toast(this._activeDeckLocked ? 'Slot VIP bloqueado.' : `Espaço #${slot} vazio.`)
+    }
+  }
+
+  _openSavedDecksModal() {
+    const { width, height } = this.cameras.main
+    const modal = this.add.container(0, 0).setDepth(80)
+    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.72).setOrigin(0).setInteractive()
+    const panel = this.add.rectangle(width / 2, height / 2, 760, 510, 0x06111f, 0.98).setStrokeStyle(2, 0xffdd77)
+    const title = this.add.text(width / 2, 128, 'Meus baralhos', {
+      fontSize: '24px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const limit = this._deckLimits
+    const subtitle = this.add.text(width / 2, 158, limit
+      ? `Plano ${limit.membro_vip ? 'VIP' : 'gratuito'}: ${limit.allowed_slots}/${limit.max_slots} espaços liberados`
+      : 'Carregando espaços da conta...', {
+      fontSize: '13px',
+      color: '#9fd6e8',
+    }).setOrigin(0.5)
+    modal.add([overlay, panel, title, subtitle])
+
+    const allowedSlots = Number(this._deckLimits?.allowed_slots ?? 2)
+    const maxSlots = Number(this._deckLimits?.max_slots ?? 8)
+    for (let slot = 1; slot <= maxSlots; slot++) {
+      const deck = this._savedDecks.find(item => Number(item.slot_number) === slot)
+      const locked = slot > allowedSlots
+      const x = width / 2 - 290 + ((slot - 1) % 2) * 300
+      const y = 210 + Math.floor((slot - 1) / 2) * 72
+      const bg = this.add.rectangle(x, y, 270, 54, locked ? 0x28242c : 0x071523, 0.96).setStrokeStyle(1, locked ? 0x66666f : 0x64e8ff)
+      const name = this.add.text(x - 120, y - 10, deck?.name ?? `Espaço ${slot} vazio`, {
+        fontSize: '13px',
+        color: locked ? '#b8b8bd' : '#ffffff',
+        fontStyle: 'bold',
+      }).setOrigin(0, 0.5)
+      const meta = this.add.text(x - 120, y + 12, locked ? 'Bloqueado: requer VIP' : deck ? `${deck.cards?.reduce((sum, card) => sum + Number(card.qty ?? 0), 0)} cartas` : 'Livre para salvar novo baralho', {
+        fontSize: '11px',
+        color: '#9fd6e8',
+      }).setOrigin(0, 0.5)
+      modal.add([bg, name, meta])
+
+      if (deck) {
+        const load = this._addSmallButton(x + 86, y, 68, 'ABRIR', locked ? 0x66666f : 0x8dff9d, () => {
+          modal.destroy(true)
+          this._loadDeckFromServer(deck)
+        })
+        modal.add(load)
+      }
+    }
+
+    const close = this._addNeonButton(width / 2, 638, 110, 'FECHAR', 0xff7777, () => modal.destroy(true))
+    overlay.on('pointerdown', () => modal.destroy(true))
+    modal.add(close)
+  }
+
+  _loadDeckFromServer(deck, options = {}) {
+    const loaded = []
+    let total = 0
+    ;(deck.cards ?? []).forEach(item => {
+      const card = this._findCardByUidOrId(item.uid, item.id)
+      const qty = Math.min(Number(item.qty ?? 0), MAX_COPIES, MAX_DECK - total)
+      if (!card || qty <= 0) return
+      loaded.push({ card, qty })
+      total += qty
+    })
+
+    this._deck = loaded
+    this._deckName = deck.name ?? 'Novo Baralho'
+    this._activeDeckId = deck.id
+    this._activeDeckLocked = Boolean(deck.locked)
+    this._selectedSlot = Number(deck.slot_number ?? this._selectedSlot)
+    if (this._slotSelect) this._slotSelect.value = String(this._selectedSlot)
+    this._refreshSlotSelectStyle()
+    if (this._deckNameInput) this._deckNameInput.value = this._deckName
+    this._refreshDeck()
+    if (!options.silent) {
+      this._toast(deck.locked ? 'Slot VIP: baralho bloqueado para uso/edição.' : 'Baralho carregado.')
+    }
+  }
+
+  _refreshSlotSelectStyle() {
+    if (!this._slotSelect) return
+    const allowedSlots = Number(this._deckLimits?.allowed_slots ?? 2)
+    const locked = Number(this._selectedSlot) > allowedSlots
+    this._slotSelect.style.color = locked ? '#9a8f9f' : '#bff5ff'
+    this._slotSelect.style.opacity = locked ? '0.72' : '1'
   }
 
   _decklistText() {
@@ -950,6 +1151,11 @@ _createCollectionCard(card, x, y, w, h) {
 
       if (result.errors.length) {
         this._toast(result.errors[0])
+        return
+      }
+
+      if (this._activeDeckLocked) {
+        this._toast('Slot VIP bloqueado: não é possível importar.')
         return
       }
 
@@ -1077,6 +1283,38 @@ _createCollectionCard(card, x, y, w, h) {
     this._htmlElements.push(input)
 
     return input
+  }
+
+  _addHtmlSelect(x, y, w) {
+    const canvas = this.sys.game.canvas.getBoundingClientRect()
+    const scaleX = canvas.width / this.scale.gameSize.width
+    const scaleY = canvas.height / this.scale.gameSize.height
+    const select = document.createElement('select')
+    const selectH = 28
+
+    select.style.cssText = [
+      'position: fixed',
+      'left: ' + (canvas.left + x * scaleX) + 'px',
+      'top: ' + (canvas.top + y * scaleY - selectH / 2) + 'px',
+      'width: ' + (w * scaleX) + 'px',
+      'height: ' + selectH + 'px',
+      'background: rgba(6, 17, 31, 0.98)',
+      'color: #bff5ff',
+      'border: 1px solid #64e8ff',
+      'border-radius: 4px',
+      'box-sizing: border-box',
+      'padding: 0 8px',
+      'font-size: 12px',
+      'font-weight: 700',
+      'outline: none',
+      'box-shadow: 0 0 12px rgba(100, 232, 255, 0.12)',
+      'z-index: 20',
+    ].join(';')
+
+    document.body.appendChild(select)
+    this._htmlElements.push(select)
+
+    return select
   }
 
   _addHtmlFileInput(accept) {

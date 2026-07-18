@@ -277,7 +277,7 @@ export const criaturas = [
     raca: 'Besta',
     ataque: 2,
     vida: 5,
-    efeito: 'Enquanto esta criatura estiver em campo, outras criaturas do tipo besta e do elemento Terra que você controla recebem -1 de dano de combate. Sempre que outra criatura do tipo Besta que você controla for enviada do campo para o seu descarte, coloque um marcador +1/+1 nesta criatura.',
+    efeito: 'Enquanto esta criatura estiver em campo, criaturas do tipo Besta e do elemento Terra que você controla recebem -1 de dano de combate. Sempre que outra criatura do tipo Besta que você controla for enviada do campo para o seu descarte, coloque um marcador +1/+1 nesta criatura.',
     elemento: 'terra',
     raridade: 'lendaria',
     img: '31.png',
@@ -285,7 +285,7 @@ export const criaturas = [
     effects: [
       {
         type: 'reduce_combat_damage_taken',
-        target: 'other_your_creatures',
+        target: 'your_creatures',
         filter: { race: 'Besta', element: 'terra' },
         value: 1,
       },

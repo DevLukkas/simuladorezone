@@ -14,6 +14,8 @@ class RoomController extends Controller
 {
     public function index(): JsonResponse
     {
+        $this->expireStaleRooms();
+
         $rooms = Room::query()
             ->with(['host:id,name', 'guest:id,name'])
             ->whereIn('status', ['waiting', 'starting', 'in_progress'])
@@ -226,8 +228,36 @@ class RoomController extends Controller
             ->first();
 
         abort_if(!$deck, 403, 'Deck indisponível para este jogador.');
+        abort_if(
+            DeckController::deckIsLockedFor($request->user(), $deck),
+            423,
+            'Este baralho está em um espaço VIP bloqueado. Reative VIP para usar.'
+        );
 
         return $deck->id;
+    }
+
+    private function expireStaleRooms(): void
+    {
+        $now = now();
+
+        Room::query()
+            ->where('status', 'in_progress')
+            ->where('updated_at', '<', $now->copy()->subHours(6))
+            ->update([
+                'status' => 'finished',
+                'finished_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+        Room::query()
+            ->whereIn('status', ['waiting', 'starting'])
+            ->where('updated_at', '<', $now->copy()->subHours(2))
+            ->update([
+                'status' => 'finished',
+                'finished_at' => $now,
+                'updated_at' => $now,
+            ]);
     }
 
     private function userBelongsToRoom(int $userId, Room $room): bool

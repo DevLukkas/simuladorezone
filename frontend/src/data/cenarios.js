@@ -22,6 +22,15 @@ export const cenarios = [
     raridade: 'rara',
     img: '45.png',
     edicao: 'Matilhas & Predadores',
+    effects: [
+      {
+        type: 'draw_on_first_enemy_battle_destroyed',
+        oncePerTurn: true,
+        requiresYourCreature: { name: 'Badur, o Urso Guardião' },
+        targetOwner: 'enemy',
+        value: 1,
+      },
+    ],
   },
 
 ]

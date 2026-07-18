@@ -19,10 +19,9 @@ class AuthController extends Controller
         ]);
 
         $user = User::create($data);
-        $token = $user->createToken('game-client')->plainTextToken;
 
         return response()->json([
-            'token' => $token,
+            'message' => 'Conta criada. Faca login para continuar.',
             'user' => $user,
         ], 201);
     }
