@@ -221,9 +221,9 @@ export default class MenuScene extends Scene {
 
     try {
       const response = await login(email, password)
-      this._saveAuth(response.data)
+      const user = this._saveAuth(response.data)
       this._clearLoginForm()
-      this._goAfterAuth()
+      this._goAfterAuth(user)
       this._toast('Login realizado.')
     } catch (error) {
       this._toast(this._errorMessage(error, 'Não foi possível entrar.'))
@@ -292,13 +292,13 @@ export default class MenuScene extends Scene {
     }
   }
 
-  _showMainMenu() {
+  _showMainMenu(authenticatedUser = this._authUser()) {
     this._clearLoginForm()
     if (this._menuContainer) this._menuContainer.destroy(true)
 
     const { width, height } = this.cameras.main
     this._menuContainer = this.add.container(0, 0).setDepth(10)
-    const user = this._authUser()
+    const user = authenticatedUser
     if (!user?.id) {
       clearAuth()
       this._showLoginForm()
@@ -682,16 +682,17 @@ export default class MenuScene extends Scene {
     localStorage.removeItem('user')
     if (payload.token) localStorage.setItem('auth_token', payload.token)
     if (payload.user) localStorage.setItem('auth_user', JSON.stringify(payload.user))
+    return payload.user ?? null
   }
 
-  _goAfterAuth() {
-    const user = this._authUser()
+  _goAfterAuth(authenticatedUser = this._authUser()) {
+    const user = authenticatedUser
     if (user && !user.starter_deck_chosen_at) {
       this.scene.start('StarterDeckScene')
       return
     }
 
-    this._showMainMenu()
+    this._showMainMenu(user)
   }
 
   _authUser() {
