@@ -202,8 +202,7 @@ export default class GameScene extends Scene {
     this._cleanupRuntimeBeforeRestart();
     this._resetRuntimeState();
     const restored = restoreSceneData();
-    this.room = data.room ??
-      restored?.room ?? { room_code: "LOCAL", mode: "solo" };
+    this.room = data.room ?? restored?.room ?? null;
     this.role = data.role ?? restored?.role ?? "host";
     this._syncPlayerNames();
   }
@@ -234,6 +233,12 @@ export default class GameScene extends Scene {
   }
 
   create() {
+    if (!localStorage.getItem("auth_token") || !this.room?.id) {
+      clearScene();
+      this.scene.start("MenuScene");
+      return;
+    }
+
     saveScene("GameScene", { room: this.room, role: this.role });
     this._effectQueueRunner = createEffectQueueRunner({
       resolveJob: (job) => this._runEffectResolution(job),
@@ -671,7 +676,8 @@ export default class GameScene extends Scene {
       return;
     }
 
-    this._dealDemoHand();
+    this._toast("Monte ou selecione um baralho antes de iniciar a partida.");
+    this.time.delayedCall(1200, () => this.scene.start("DeckBuilderScene"));
   }
 
   _dealDemoHand() {
@@ -6330,11 +6336,7 @@ export default class GameScene extends Scene {
 
   _getMyUserId() {
     try {
-      return Number(
-        JSON.parse(localStorage.getItem("auth_user"))?.id ??
-          JSON.parse(localStorage.getItem("ez_user"))?.id ??
-          JSON.parse(localStorage.getItem("user"))?.id,
-      );
+      return Number(JSON.parse(localStorage.getItem("auth_user"))?.id);
     } catch {
       return null;
     }

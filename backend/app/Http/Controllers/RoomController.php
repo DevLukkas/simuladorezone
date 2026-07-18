@@ -47,7 +47,7 @@ class RoomController extends Controller
     {
         $data = $request->validate([
             'deck_id' => ['nullable', 'integer', 'exists:decks,id'],
-            'mode' => ['nullable', 'string', 'in:pvp,solo'],
+            'mode' => ['nullable', 'string', 'in:pvp'],
             'room_code' => ['nullable', 'string', 'max:8', 'unique:rooms,room_code'],
         ]);
 
@@ -62,7 +62,7 @@ class RoomController extends Controller
             'host_deck_id' => $deckId,
             'status' => 'waiting',
             'game_state' => [
-                'mode' => $data['mode'] ?? 'pvp',
+                'mode' => 'pvp',
                 'turn_number' => 1,
                 'phase' => 'setup',
                 'host_ready' => false,

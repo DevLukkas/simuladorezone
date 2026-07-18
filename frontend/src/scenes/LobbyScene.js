@@ -375,45 +375,23 @@ export default class LobbyScene extends Scene {
 
     // ─ MODO ───────
     const modoY = idY + 52
-    const pvpActive  = mode === 'pvp'
     const btnPVP = this.add.text(lx + 80, modoY, ' PVP ', {
       fontSize: '14px',
-      color: pvpActive ? '#4caf50' : '#666666',
-      backgroundColor: pvpActive ? '#1b5e20' : '#1a1a2a',
+      color: '#4caf50',
+      backgroundColor: '#1b5e20',
       padding: { x: 14, y: 6 },
-    }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true })
-    btnPVP.on('pointerdown', () => {
-      if (this._modalState.role === 'guest') return
-      this._modalState.mode = 'pvp'
-      this._buildModalBody()
-      this._ensureModalRoomCreated()
-    })
-
-    const btnSOLO = this.add.text(lx + 162, modoY, ' SOLO ', {
-      fontSize: '14px',
-      color: !pvpActive ? '#4caf50' : '#666666',
-      backgroundColor: !pvpActive ? '#1b5e20' : '#1a1a2a',
-      padding: { x: 14, y: 6 },
-    }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true })
-    btnSOLO.on('pointerdown', () => {
-      if (this._modalState.role === 'guest') return
-      this._modalState.mode = 'solo'
-      this._cancelModalRoom()
-      this._buildModalBody()
-    })
+    }).setOrigin(0, 0.5)
 
     this._modalBody.add([
       this.add.text(lx, modoY, 'MODO:', { fontSize: '13px', color: '#888888' }).setOrigin(0, 0.5),
-      btnPVP, btnSOLO,
+      btnPVP,
     ])
 
     // ─ HOST ───────
     const hostY = modoY + 62
     let hostName = 'Você'
     try {
-      hostName = JSON.parse(localStorage.getItem('auth_user'))?.name
-        ?? JSON.parse(localStorage.getItem('ez_user'))?.name
-        ?? 'Você'
+      hostName = JSON.parse(localStorage.getItem('auth_user'))?.name ?? 'Você'
     } catch {}
     this._modalBody.add([
       this.add.circle(lx + 8, hostY, 7, hostReady ? 0x4caf50 : 0xcc3333),
@@ -423,23 +401,15 @@ export default class LobbyScene extends Scene {
 
     // ─ OPONENTE ───────
     const oppY = hostY + 54
-    if (mode === 'solo') {
-      this._modalBody.add([
-        this.add.circle(lx + 8, oppY, 7, 0x4caf50),
-        this.add.text(lx + 24,  oppY, 'Oponente:', { fontSize: '12px', color: '#888888' }).setOrigin(0, 0.5),
-        this.add.text(lx + 108, oppY, 'SOLO — TEST DECK', { fontSize: '15px', color: '#aaffaa' }).setOrigin(0, 0.5),
-      ])
-    } else {
-      this._modalBody.add([
-        this.add.circle(lx + 8, oppY, 7, guestReady ? 0x4caf50 : 0xcc3333),
-        this.add.text(lx + 24, oppY, 'Oponente:', { fontSize: '12px', color: '#888888' }).setOrigin(0, 0.5),
-      ])
-      this._modalInput = this._addHtmlInput(lx + 108, oppY, 238, creatingRoom ? 'Criando sala...' : 'Aguardando oponente...')
-      this._modalInput.readOnly = true
-      this._modalInput.style.cursor  = 'default'
-      this._modalInput.style.color   = opponentName ? '#bfffbf' : '#666666'
-      this._modalInput.value = opponentName || ''
-    }
+    this._modalBody.add([
+      this.add.circle(lx + 8, oppY, 7, guestReady ? 0x4caf50 : 0xcc3333),
+      this.add.text(lx + 24, oppY, 'Oponente:', { fontSize: '12px', color: '#888888' }).setOrigin(0, 0.5),
+    ])
+    this._modalInput = this._addHtmlInput(lx + 108, oppY, 238, creatingRoom ? 'Criando sala...' : 'Aguardando oponente...')
+    this._modalInput.readOnly = true
+    this._modalInput.style.cursor  = 'default'
+    this._modalInput.style.color   = opponentName ? '#bfffbf' : '#666666'
+    this._modalInput.value = opponentName || ''
 
     // divisor
     const divY = oppY + 40
@@ -486,11 +456,6 @@ export default class LobbyScene extends Scene {
   }
 
   _startGame(mode = this._modalState?.mode ?? 'pvp', roomCode = this._modalState?.roomCode ?? null, existingRoom = null, role = 'host') {
-    if (mode === 'solo') {
-      this.scene.start('GameScene', { room: { room_code: 'LOCAL', mode }, role: 'host' })
-      return
-    }
-
     const request = existingRoom
       ? Promise.resolve({ data: { data: existingRoom } })
       : createRoom({ mode, room_code: roomCode })
@@ -600,13 +565,6 @@ export default class LobbyScene extends Scene {
 
   async _markReady() {
     if (!this._modalState) return
-
-    if (this._modalState.mode === 'solo') {
-      const { mode } = this._modalState
-      this._closeModal({ cancelRoom: false })
-      this._startGame(mode)
-      return
-    }
 
     const room = this._modalState.room
     if (!room?.id || this._modalState.readySubmitting) return

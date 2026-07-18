@@ -5,7 +5,7 @@ import { habilidades } from '../data/habilidades.js'
 import { itens } from '../data/itens.js'
 import { comandos } from '../data/comandos.js'
 import { cenarios } from '../data/cenarios.js'
-import { saveScene } from '../utils/session.js'
+import { clearScene, saveScene } from '../utils/session.js'
 import { avatarTextureKey, avatarUrlFor } from '../utils/avatar.js'
 
 const CARD_BACK_KEY = 'menu_card_back'
@@ -672,6 +672,9 @@ export default class MenuScene extends Scene {
   }
 
   _saveAuth(payload = {}) {
+    clearScene()
+    localStorage.removeItem('ez_user')
+    localStorage.removeItem('user')
     if (payload.token) localStorage.setItem('auth_token', payload.token)
     if (payload.user) localStorage.setItem('auth_user', JSON.stringify(payload.user))
   }
