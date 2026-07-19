@@ -90,7 +90,7 @@ export default class HeroSelectionScene extends Scene {
     const startX = 145
     const gap = 248
     this._heroCards = this._heroes.slice(0, 5).map((hero, index) => {
-      const card = this._createHeroCard(startX + index * gap, 285, hero)
+      const card = this._createHeroCard(startX + index * gap, 264, hero)
       return { hero, card }
     })
   }
@@ -100,10 +100,12 @@ export default class HeroSelectionScene extends Scene {
     const container = this.add.container(x, y)
     const frame = this.add.rectangle(0, 0, 204, 284, 0x06111f, 0.96)
       .setStrokeStyle(2, accent, 0.8)
-    const inner = this.add.rectangle(0, -18, 182, 204, 0x071523, 0.96)
+    const inner = this.add.rectangle(0, -29, 182, 182, 0x071523, 0.96)
       .setStrokeStyle(1, accent, 0.45)
+    const portraitFrame = this.add.rectangle(0, -31, 166, 166, 0x020a14, 0.96)
+      .setStrokeStyle(1, accent, 0.7)
     const glow = this.add.rectangle(0, 0, 210, 290, accent, 0.16).setVisible(false)
-    const namePlate = this.add.rectangle(0, 104, 182, 38, 0x020a14, 0.94)
+    const namePlate = this.add.rectangle(0, 100, 182, 42, 0x020a14, 0.94)
       .setStrokeStyle(1, accent, 0.55)
     const name = this.add.text(0, 96, hero.name.toUpperCase(), {
       fontSize: '17px', color: '#ffffff', fontStyle: 'bold',
@@ -111,12 +113,12 @@ export default class HeroSelectionScene extends Scene {
     const race = this.add.text(0, 119, hero.race, {
       fontSize: '11px', color: '#9fd6e8', fontStyle: 'bold',
     }).setOrigin(0.5)
-    const hint = this.add.text(0, 143, 'VER HISTORIA E EFEITO', {
+    const hint = this.add.text(0, 143, 'VER DETALHES', {
       fontSize: '9px', color: '#b7eefd', fontStyle: 'bold',
     }).setOrigin(0.5)
     const art = this._createHeroArt(hero, accent)
 
-    container.add([glow, frame, inner, art, namePlate, name, race, hint])
+    container.add([glow, frame, inner, portraitFrame, art, namePlate, name, race, hint])
     container.setSize(204, 284).setInteractive({ useHandCursor: true })
     container.on('pointerover', () => {
       glow.setVisible(true)
@@ -134,14 +136,14 @@ export default class HeroSelectionScene extends Scene {
   _createHeroArt(hero, accent) {
     const key = this._heroTextureKey(hero.key)
     if (this.textures.exists(key)) {
-      return this.add.image(0, -22, key).setDisplaySize(162, 196).setOrigin(0.5)
+      return this.add.image(0, -31, key).setDisplaySize(156, 156).setOrigin(0.5)
     }
 
-    const art = this.add.container(0, -22)
-    const halo = this.add.circle(0, -10, 64, accent, 0.16).setStrokeStyle(1, accent, 0.8)
-    const body = this.add.ellipse(0, 38, 84, 124, accent, 0.42)
-    const head = this.add.circle(0, -30, 31, accent, 0.82)
-    const initial = this.add.text(0, -28, hero.name.slice(0, 1), {
+    const art = this.add.container(0, -31)
+    const halo = this.add.circle(0, -8, 59, accent, 0.16).setStrokeStyle(1, accent, 0.8)
+    const body = this.add.ellipse(0, 34, 78, 112, accent, 0.42)
+    const head = this.add.circle(0, -27, 29, accent, 0.82)
+    const initial = this.add.text(0, -25, hero.name.slice(0, 1), {
       fontSize: '32px', color: '#071523', fontStyle: 'bold',
     }).setOrigin(0.5)
     art.add([halo, body, head, initial])
@@ -169,26 +171,40 @@ export default class HeroSelectionScene extends Scene {
     if (this._detailContainer) this._detailContainer.destroy(true)
     const { width, height } = this.cameras.main
     const accent = HERO_COLORS[hero.key] ?? 0x64e8ff
-    const panel = this.add.container(width / 2, height - 108).setDepth(20)
-    const background = this.add.rectangle(0, 0, width - 130, 160, 0x06111f, 0.97)
-      .setStrokeStyle(2, accent, 0.85)
-    const strip = this.add.rectangle(-width / 2 + 83, 0, 5, 122, accent, 1)
-    const title = this.add.text(-width / 2 + 108, -53, `${hero.name} - ${hero.race}`, {
-      fontSize: '19px', color: '#ffffff', fontStyle: 'bold',
+    const panel = this.add.container(width / 2, height - 116).setDepth(20)
+    const background = this.add.rectangle(0, 0, width - 120, 200, 0x020914, 0.68)
+      .setStrokeStyle(1, accent, 0.45)
+    const nameCard = this.add.rectangle(-395, -64, 300, 60, 0x071523, 0.97)
+      .setStrokeStyle(1, accent, 0.85)
+    const nameStrip = this.add.rectangle(-540, -64, 4, 38, accent, 1)
+    const nameLabel = this.add.text(-520, -79, 'HEROI', {
+      fontSize: '10px', color: '#9fd6e8', fontStyle: 'bold',
     }).setOrigin(0, 0.5)
-    const effectTitle = this.add.text(-width / 2 + 108, -25, hero.effect_name, {
-      fontSize: '13px', color: this._cssColor(accent), fontStyle: 'bold',
+    const title = this.add.text(-520, -56, `${hero.name} - ${hero.race}`, {
+      fontSize: '16px', color: '#ffffff', fontStyle: 'bold',
     }).setOrigin(0, 0.5)
-    const effect = this.add.text(-width / 2 + 108, -3, hero.effect_description, {
-      fontSize: '12px', color: '#d5edf5', wordWrap: { width: 690 }, lineSpacing: 3,
+
+    const effectCard = this.add.rectangle(120, -64, 700, 60, 0x071523, 0.97)
+      .setStrokeStyle(1, accent, 0.85)
+    const effectStrip = this.add.rectangle(-225, -64, 4, 38, accent, 1)
+    const effectTitle = this.add.text(-205, -79, hero.effect_name.toUpperCase(), {
+      fontSize: '10px', color: this._cssColor(accent), fontStyle: 'bold',
+    }).setOrigin(0, 0.5)
+    const effect = this.add.text(-205, -56, hero.effect_description, {
+      fontSize: '11px', color: '#d5edf5', wordWrap: { width: 655 },
+    }).setOrigin(0, 0.5)
+
+    const storyCard = this.add.rectangle(-130, 34, 830, 102, 0x071523, 0.97)
+      .setStrokeStyle(1, accent, 0.85)
+    const storyStrip = this.add.rectangle(-535, 34, 4, 76, accent, 1)
+    const storyLabel = this.add.text(-515, 4, 'HISTORIA', {
+      fontSize: '10px', color: '#9fd6e8', fontStyle: 'bold',
+    }).setOrigin(0, 0.5)
+    const story = this.add.text(-515, 22, hero.story, {
+      fontSize: '11px', color: '#c5dce7', wordWrap: { width: 760 }, lineSpacing: 3,
     }).setOrigin(0, 0)
-    const storyLabel = this.add.text(-width / 2 + 108, 47, 'HISTORIA', {
-      fontSize: '11px', color: '#9fd6e8', fontStyle: 'bold',
-    }).setOrigin(0, 0.5)
-    const story = this.add.text(-width / 2 + 108, 59, hero.story, {
-      fontSize: '11px', color: '#a9c4d2', wordWrap: { width: 690 }, lineSpacing: 2,
-    }).setOrigin(0, 0)
-    const button = this.add.container(width / 2 - 122, 0)
+
+    const button = this.add.container(407, 34)
     const buttonBg = this.add.rectangle(0, 0, 204, 46, accent, 0.24).setStrokeStyle(2, accent)
     const buttonLabel = this.add.text(0, 0, `ESCOLHER ${hero.name.toUpperCase()}`, {
       fontSize: '12px', color: '#ffffff', fontStyle: 'bold',
@@ -198,7 +214,13 @@ export default class HeroSelectionScene extends Scene {
     button.on('pointerout', () => buttonBg.setFillStyle(accent, 0.24))
     button.on('pointerdown', () => this._chooseHero(hero))
 
-    panel.add([background, strip, title, effectTitle, effect, storyLabel, story, button])
+    panel.add([
+      background,
+      nameCard, nameStrip, nameLabel, title,
+      effectCard, effectStrip, effectTitle, effect,
+      storyCard, storyStrip, storyLabel, story,
+      button,
+    ])
     panel.setScale(1, 0.04)
     this.tweens.add({ targets: panel, scaleY: 1, duration: 180, ease: 'Back.easeOut' })
     this._detailContainer = panel
