@@ -15,6 +15,10 @@ export const getStarterDecks = () => api.get('/starter-decks')
 export const chooseStarterDeck = (starterKey) =>
   api.post('/starter-decks/choose', { starter_key: starterKey })
 
+// --- Herois ---
+export const getHeroes = () => api.get('/heroes')
+export const chooseInitialHero = (heroKey) => api.post('/heroes/choose-initial', { hero_key: heroKey })
+
 // --- Cartas ---
 export const getCards = (params = {}) => api.get('/cards', { params })
 export const getPlayerCards = () => api.get('/player-cards')

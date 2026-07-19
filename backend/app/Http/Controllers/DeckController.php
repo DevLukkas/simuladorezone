@@ -23,7 +23,7 @@ class DeckController extends Controller
         $allowedSlots = $this->allowedSlots($user);
 
         $decks = Deck::query()
-            ->with('playerDeckCards')
+            ->with(['playerDeckCards', 'hero'])
             ->where('user_id', $user->id)
             ->orderBy('slot_number')
             ->orderBy('created_at')
@@ -45,7 +45,7 @@ class DeckController extends Controller
         $this->authorizeOwner($request, $deck, allowPreset: true);
 
         return response()->json([
-            'data' => $this->formatDeck($deck->load('playerDeckCards'), $this->allowedSlots($request->user())),
+            'data' => $this->formatDeck($deck->load(['playerDeckCards', 'hero']), $this->allowedSlots($request->user())),
         ]);
     }
 
@@ -74,9 +74,12 @@ class DeckController extends Controller
 
         $data = $this->validatedDeckData($request);
 
-        $deck = DB::transaction(function () use ($user, $data, $slot): Deck {
+        $heroId = $this->heroIdFor($user, $data['hero_id'] ?? null);
+
+        $deck = DB::transaction(function () use ($user, $data, $slot, $heroId): Deck {
             $deck = Deck::create([
                 'user_id' => $user->id,
+                'hero_id' => $heroId,
                 'slot_number' => $slot,
                 'name' => $data['name'],
                 'description' => $data['description'] ?? null,
@@ -86,7 +89,7 @@ class DeckController extends Controller
 
             $this->syncDeckCards($deck, $data['cards']);
 
-            return $deck->load('playerDeckCards');
+            return $deck->load(['playerDeckCards', 'hero']);
         });
 
         return response()->json([
@@ -108,8 +111,11 @@ class DeckController extends Controller
 
         $data = $this->validatedDeckData($request);
 
-        $deck = DB::transaction(function () use ($deck, $data): Deck {
+        $heroId = $this->heroIdFor($user, $data['hero_id'] ?? $deck->hero_id);
+
+        $deck = DB::transaction(function () use ($deck, $data, $heroId): Deck {
             $deck->forceFill([
+                'hero_id' => $heroId,
                 'name' => $data['name'],
                 'description' => $data['description'] ?? null,
                 'cover_image' => $data['cover_image'] ?? $this->coverFor($data['cards']),
@@ -117,7 +123,7 @@ class DeckController extends Controller
 
             $this->syncDeckCards($deck, $data['cards']);
 
-            return $deck->fresh()->load('playerDeckCards');
+            return $deck->fresh()->load(['playerDeckCards', 'hero']);
         });
 
         return response()->json([
@@ -152,6 +158,7 @@ class DeckController extends Controller
             'name' => ['required', 'string', 'max:80'],
             'description' => ['nullable', 'string', 'max:500'],
             'cover_image' => ['nullable', 'string', 'max:80'],
+            'hero_id' => ['nullable', 'integer', 'exists:heroes,id'],
             'cards' => ['required', 'array', 'min:1'],
             'cards.*.uid' => ['required', 'string', 'max:40'],
             'cards.*.type' => ['required', 'string', Rule::in(['criatura', 'habilidade', 'item', 'comando', 'cenario'])],
@@ -225,6 +232,13 @@ class DeckController extends Controller
             'description' => $deck->description,
             'is_preset' => (bool) $deck->is_preset,
             'cover_image' => $deck->cover_image,
+            'hero' => $deck->hero ? [
+                'id' => $deck->hero->id,
+                'key' => $deck->hero->key,
+                'name' => $deck->hero->name,
+                'race' => $deck->hero->race,
+                'avatar_path' => $deck->hero->avatar_path,
+            ] : null,
             'cards' => $deck->playerDeckCards
                 ->map(fn (PlayerDeckCard $card): array => [
                     'uid' => $card->card_uid,
@@ -275,5 +289,19 @@ class DeckController extends Controller
     {
         $card = collect($cards)->firstWhere('type', 'criatura') ?? $cards[0] ?? null;
         return $card ? sprintf('%02d.png', (int) $card['id']) : null;
+    }
+
+    private function heroIdFor(User $user, ?int $heroId): ?int
+    {
+        $heroId ??= $user->hero_id;
+        if (!$heroId) return null;
+
+        abort_unless(
+            $user->heroes()->whereKey($heroId)->exists(),
+            422,
+            'O herói escolhido não pertence à sua coleção.'
+        );
+
+        return $heroId;
     }
 }

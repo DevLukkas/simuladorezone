@@ -3,6 +3,7 @@
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DeckController;
 use App\Http\Controllers\GameActionController;
+use App\Http\Controllers\HeroController;
 use App\Http\Controllers\LaboratoryController;
 use App\Http\Controllers\PlayerCollectionController;
 use App\Http\Controllers\ProfileController;
@@ -24,6 +25,8 @@ Route::prefix('auth')->group(function (): void {
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/starter-decks', [StarterDeckController::class, 'index']);
     Route::post('/starter-decks/choose', [StarterDeckController::class, 'choose']);
+    Route::get('/heroes', [HeroController::class, 'index']);
+    Route::post('/heroes/choose-initial', [HeroController::class, 'chooseInitial']);
     Route::get('/player-cards', [PlayerCollectionController::class, 'index']);
     Route::get('/laboratory', [LaboratoryController::class, 'status']);
     Route::post('/laboratory/dissolve', [LaboratoryController::class, 'dissolve']);

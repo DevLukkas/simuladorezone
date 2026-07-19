@@ -17,6 +17,8 @@ use Laravel\Sanctum\HasApiTokens;
     'password',
     'starter_deck_key',
     'starter_deck_chosen_at',
+    'hero_id',
+    'initial_hero_chosen_at',
     'crystals',
     'ez_coins',
     'card_essences',
@@ -47,6 +49,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'starter_deck_chosen_at' => 'datetime',
+            'initial_hero_chosen_at' => 'datetime',
             'crystals' => 'integer',
             'ez_coins' => 'integer',
             'card_essences' => 'integer',
@@ -69,6 +72,16 @@ class User extends Authenticatable
     public function decks()
     {
         return $this->hasMany(Deck::class);
+    }
+
+    public function initialHero()
+    {
+        return $this->belongsTo(Hero::class, 'hero_id');
+    }
+
+    public function heroes()
+    {
+        return $this->belongsToMany(Hero::class, 'user_heroes')->withPivot('unlocked_at')->withTimestamps();
     }
 
     public function friendships()

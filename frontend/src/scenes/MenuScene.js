@@ -721,6 +721,12 @@ export default class MenuScene extends Scene {
       return
     }
 
+    if (user && !user.initial_hero_chosen_at) {
+      this._authLog('opening_hero_selection', { userId: user.id })
+      this.scene.start('HeroSelectionScene')
+      return
+    }
+
     this._authLog('opening_main_menu', { userId: user?.id ?? null })
     this._showMainMenu(user)
   }

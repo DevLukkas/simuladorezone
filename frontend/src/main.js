@@ -8,6 +8,7 @@ import GameScene from './scenes/GameScene.js'
 import DeckBuilderScene from './scenes/DeckBuilderScene.js'
 import StatusGameScene from './scenes/StatusGameScene.js'
 import StarterDeckScene from './scenes/StarterDeckScene.js'
+import HeroSelectionScene from './scenes/HeroSelectionScene.js'
 import ProfileScene from './scenes/ProfileScene.js'
 import AdminPanelScene from './scenes/AdminPanelScene.js'
 import OffersScene from './scenes/OffersScene.js'
@@ -36,7 +37,7 @@ function startGame() {
     height: 720,
     backgroundColor: '#FFFFFF',
     parent: 'game-container',
-    scene: [BootScene, MenuScene, StarterDeckScene, LobbyScene, LibraryScene, GameScene, DeckBuilderScene, ProfileScene, OffersScene, LaboratoryScene, AdminPanelScene, StatusGameScene],
+    scene: [BootScene, MenuScene, StarterDeckScene, HeroSelectionScene, LobbyScene, LibraryScene, GameScene, DeckBuilderScene, ProfileScene, OffersScene, LaboratoryScene, AdminPanelScene, StatusGameScene],
     scale: {
       mode: Phaser.Scale.FIT,
       autoCenter: Phaser.Scale.CENTER_BOTH,

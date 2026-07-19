@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class Deck extends Model
 {
     protected $fillable = [
-        'user_id', 'slot_number', 'name', 'description', 'is_preset', 'cover_image',
+        'user_id', 'hero_id', 'slot_number', 'name', 'description', 'is_preset', 'cover_image',
     ];
 
     protected $casts = [
@@ -18,6 +18,11 @@ class Deck extends Model
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function hero()
+    {
+        return $this->belongsTo(Hero::class);
     }
 
     public function cards()
