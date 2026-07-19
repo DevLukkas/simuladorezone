@@ -12,6 +12,19 @@ class HeroSelectionTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_player_can_list_the_five_initial_heroes(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this->actingAs($user, 'sanctum')->getJson('/api/heroes');
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(5, 'data')
+            ->assertJsonPath('data.0.key', 'tennor')
+            ->assertJsonPath('data.3.key', 'badur');
+    }
+
     public function test_player_can_choose_one_initial_hero_for_their_first_deck(): void
     {
         $user = User::factory()->create([
