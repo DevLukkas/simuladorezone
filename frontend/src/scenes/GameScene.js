@@ -5610,9 +5610,69 @@ export default class GameScene extends Scene {
       }
     }
 
+    this._applyStartOfTurnHeroEffect(player);
+
     if (this._isSoloMode() && player === "opp") {
       this.time.delayedCall(900, () => this._runSoloOpponentTurn());
     }
+  }
+
+  _applyStartOfTurnHeroEffect(player) {
+    if (!this._isSoloMode() && player !== "my") return;
+
+    const hero = player === "my" ? this._myHero : this._opponentHero;
+    if (hero?.key !== "ispisher") return;
+
+    const slots = player === "my" ? this._slotsMy : this._slotsOpp;
+    const candidates = slots
+      .filter((slot) => slot.card)
+      .map((slot) => ({
+        slot,
+        currentLife: Number(slot.card.currentStats?.defense ?? slot.card.defense ?? 0),
+        maxLife: Number(slot.card.currentStats?.defense ?? slot.card.defense ?? 0)
+          + Number(slot.card.damageTaken ?? 0),
+      }))
+      .filter(({ currentLife, maxLife }) => currentLife > 0 && currentLife < maxLife)
+      .sort((a, b) => a.currentLife - b.currentLife);
+
+    const target = candidates[0]?.slot;
+    if (!target?.card) return;
+
+    target.card.damageTaken = Math.max(0, Number(target.card.damageTaken ?? 0) - 1);
+    recalculateCreatureStats(
+      target.card,
+      target.attachments.map((entry) => entry.card),
+      { yourField: slots },
+    );
+    this._refreshFieldStatsOverlay(target);
+    this._playHeroHealEffect(target);
+
+    const owner = player === "my" ? "Ispisher" : "Ispisher inimigo";
+    this._toast(`${owner} curou 1 de vida de ${target.card.name}.`);
+    this._logAction(`${owner} curou 1 de vida de ${target.card.name}.`);
+
+    if (player === "my" && !this._isSoloMode()) {
+      this._sendAction("hero_heal", {
+        hero_key: "ispisher",
+        slot: slots.indexOf(target),
+        amount: 1,
+      });
+    }
+  }
+
+  _playHeroHealEffect(slot) {
+    const effect = this.add.circle(slot.x, slot.y, 20, 0x72ffb2, 0.16)
+      .setStrokeStyle(2, 0x72ffb2, 0.9)
+      .setDepth(28);
+    this.tweens.add({
+      targets: effect,
+      scaleX: 2.1,
+      scaleY: 2.1,
+      alpha: 0,
+      duration: 430,
+      ease: "Sine.easeOut",
+      onComplete: () => effect.destroy(),
+    });
   }
 
   _advancePhase() {
@@ -6209,6 +6269,9 @@ export default class GameScene extends Scene {
       case "discard_cards":
         this._handleRemoteDiscardCards(event.payload);
         break;
+      case "hero_heal":
+        this._handleRemoteHeroHeal(event.payload);
+        break;
       case "surrender":
         this._finishGame("my");
         break;
@@ -6273,6 +6336,25 @@ export default class GameScene extends Scene {
 
     this._destroyCreatureInBattle(slot, remoteOwner, null, { sync: false });
     this._renderBattleAttackButtons();
+  }
+
+  _handleRemoteHeroHeal(payload = {}) {
+    if (payload.hero_key !== "ispisher") return;
+
+    const slot = this._slotsOpp?.[Number(payload.slot)];
+    if (!slot?.card) return;
+
+    const amount = Math.max(1, Number(payload.amount) || 1);
+    slot.card.damageTaken = Math.max(0, Number(slot.card.damageTaken ?? 0) - amount);
+    recalculateCreatureStats(
+      slot.card,
+      slot.attachments.map((entry) => entry.card),
+      { yourField: this._slotsOpp },
+    );
+    this._refreshFieldStatsOverlay(slot);
+    this._playHeroHealEffect(slot);
+    this._toast(`Ispisher inimigo curou ${amount} de vida de ${slot.card.name}.`);
+    this._logAction(`Ispisher inimigo curou ${amount} de vida de ${slot.card.name}.`);
   }
 
   _handleRemoteDrawCards(payload = {}) {
