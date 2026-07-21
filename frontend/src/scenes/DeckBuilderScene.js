@@ -5,7 +5,7 @@ import { habilidades } from '../data/habilidades.js'
 import { itens } from '../data/itens.js'
 import { comandos } from '../data/comandos.js'
 import { cenarios } from '../data/cenarios.js'
-import { createDeck, deleteDeck, getDecks, getPlayerCards, shareBuild, updateDeck } from '../api/gameApi.js'
+import { createDeck, deleteDeck, getDecks, getHeroes, getPlayerCards, shareBuild, updateDeck } from '../api/gameApi.js'
 
 const LOCAL_DECK_KEY = 'ezone_deck_builder_draft'
 const MAX_DECK = 40
@@ -73,6 +73,8 @@ export default class DeckBuilderScene extends Scene {
     this._activeDeckId = null
     this._activeDeckLocked = false
     this._selectedSlot = 1
+    this._ownedHeroes = []
+    this._activeHero = null
   }
 
   preload() {
@@ -80,6 +82,13 @@ export default class DeckBuilderScene extends Scene {
       const key = `deck_card_${card.id}`
       const file = `/assets/cards/${String(card.id).padStart(2, '0')}.png`
       if (!this.textures.exists(key)) this.load.image(key, file)
+    })
+
+    ;['tennor', 'ispisher', 'gimlou', 'badur', 'morgon'].forEach((key) => {
+      const textureKey = this._heroTextureKey(key)
+      if (!this.textures.exists(textureKey)) {
+        this.load.image(textureKey, `/assets/heroes/avatar_heroi_${key}.png`)
+      }
     })
   }
 
@@ -304,7 +313,8 @@ export default class DeckBuilderScene extends Scene {
       fontStyle: 'bold',
     }).setOrigin(0, 0.5)
 
-    this._slotSelect = this._addHtmlSelect(l.deckX + 168, l.deckY + 28, 240)
+    this._buildHeroSelector(l.deckX + 46, l.deckY + 28)
+    this._slotSelect = this._addHtmlSelect(l.deckX + 82, l.deckY + 28, 330)
     this._slotSelect.addEventListener('change', () => this._selectDeckSlot(Number(this._slotSelect.value)))
 
     this.add.text(l.deckX + 20, topY, 'Nome:', {
@@ -347,6 +357,143 @@ export default class DeckBuilderScene extends Scene {
 
     this._fileInput = this._addHtmlFileInput('.txt')
     this._fileInput.addEventListener('change', () => this._importDecklist(this._fileInput.files?.[0]))
+  }
+
+  _buildHeroSelector(x, y) {
+    const button = this.add.container(x, y)
+    const shadow = this.add.rectangle(0, 2, 48, 48, 0x01060d, 0.92)
+    const frame = this.add.rectangle(0, 0, 48, 48, 0x071523, 0.98)
+      .setStrokeStyle(2, 0xffcc66)
+    const artFrame = this.add.rectangle(0, 0, 40, 40, 0x020914, 0.95)
+      .setStrokeStyle(1, 0xffdd77, 0.7)
+    const art = this.add.image(0, 0, 'deck_card_1').setDisplaySize(36, 36).setVisible(false)
+    const empty = this.add.text(0, 0, '+', {
+      fontSize: '25px', color: '#ffdd77', fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const label = this.add.text(0, 33, 'HERÓI', {
+      fontSize: '8px', color: '#ffdd77', fontStyle: 'bold',
+    }).setOrigin(0.5)
+
+    button.add([shadow, frame, artFrame, art, empty, label])
+    button.setSize(52, 58).setInteractive({ useHandCursor: true })
+    button.on('pointerover', () => {
+      frame.setFillStyle(0x1f2330, 0.98)
+      this.tweens.add({ targets: button, scaleX: 1.06, scaleY: 1.06, duration: 120, ease: 'Sine.easeOut' })
+    })
+    button.on('pointerout', () => {
+      frame.setFillStyle(0x071523, 0.98)
+      this.tweens.add({ targets: button, scaleX: 1, scaleY: 1, duration: 120, ease: 'Sine.easeOut' })
+    })
+    button.on('pointerdown', () => {
+      if (this._activeDeckLocked) {
+        this._toast('Slot VIP bloqueado: não é possível trocar o herói.')
+        return
+      }
+      this._openHeroSelectorModal()
+    })
+
+    this._heroSelector = { button, frame, art, empty, label }
+    this._refreshHeroSelector()
+  }
+
+  _refreshHeroSelector() {
+    if (!this._heroSelector) return
+    const { art, empty, label, frame } = this._heroSelector
+    const hero = this._activeHero
+    if (!hero) {
+      art.setVisible(false)
+      empty.setVisible(true)
+      label.setText('HERÓI')
+      frame.setStrokeStyle(2, 0xffcc66)
+      return
+    }
+
+    const textureKey = this._heroTextureKey(hero.key)
+    if (this.textures.exists(textureKey)) {
+      art.setTexture(textureKey).setDisplaySize(36, 36).setVisible(true)
+      empty.setVisible(false)
+    } else {
+      art.setVisible(false)
+      empty.setText(hero.name.slice(0, 1)).setVisible(true)
+    }
+    label.setText(hero.name.toUpperCase().slice(0, 7))
+    frame.setStrokeStyle(2, 0x8dff9d)
+  }
+
+  _openHeroSelectorModal() {
+    if (!this._ownedHeroes.length) {
+      this._toast('Você ainda não possui heróis disponíveis.')
+      return
+    }
+
+    const { width, height } = this.cameras.main
+    const modal = this.add.container(0, 0).setDepth(80)
+    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.76).setOrigin(0).setInteractive()
+    const panel = this.add.rectangle(width / 2, height / 2, 1070, 540, 0x06111f, 0.99)
+      .setStrokeStyle(2, 0xffcc66)
+    const title = this.add.text(width / 2, 112, 'ESCOLHA O HERÓI DO BARALHO', {
+      fontSize: '25px', color: '#ffffff', fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const subtitle = this.add.text(width / 2, 144, 'Somente heróis adquiridos podem liderar um baralho.', {
+      fontSize: '13px', color: '#9fd6e8',
+    }).setOrigin(0.5)
+    const close = this.add.text(width / 2 + 493, 105, 'X', {
+      fontSize: '18px', color: '#ff9999', fontStyle: 'bold',
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+    close.on('pointerdown', () => modal.destroy(true))
+    overlay.on('pointerdown', () => modal.destroy(true))
+    modal.add([overlay, panel, title, subtitle, close])
+
+    const cards = this._ownedHeroes.slice(0, 5)
+    const gap = 198
+    const startX = width / 2 - ((cards.length - 1) * gap) / 2
+    cards.forEach((hero, index) => {
+      const card = this._createOwnedHeroCard(startX + index * gap, height / 2 + 34, hero, () => {
+        this._activeHero = hero
+        this._refreshHeroSelector()
+        this._saveLocalDeck()
+        modal.destroy(true)
+        this._toast(`${hero.name} agora lidera este baralho.`)
+      })
+      modal.add(card)
+    })
+  }
+
+  _createOwnedHeroCard(x, y, hero, onChoose) {
+    const card = this.add.container(x, y)
+    const selected = this._activeHero?.id === hero.id
+    const frame = this.add.rectangle(0, 0, 176, 340, 0x071523, 0.98)
+      .setStrokeStyle(2, selected ? 0x8dff9d : 0x64e8ff)
+    const name = this.add.text(0, -145, hero.name.toUpperCase(), {
+      fontSize: '15px', color: '#ffffff', fontStyle: 'bold', wordWrap: { width: 150 }, align: 'center',
+    }).setOrigin(0.5)
+    const race = this.add.text(0, -121, hero.race, {
+      fontSize: '11px', color: '#9fd6e8', fontStyle: 'bold',
+    }).setOrigin(0.5)
+    const artFrame = this.add.rectangle(0, -40, 136, 136, 0x020914, 0.98).setStrokeStyle(1, 0x64e8ff, 0.75)
+    const textureKey = this._heroTextureKey(hero.key)
+    const art = this.textures.exists(textureKey)
+      ? this.add.image(0, -40, textureKey).setDisplaySize(128, 128)
+      : this.add.text(0, -40, hero.name.slice(0, 1), { fontSize: '46px', color: '#64e8ff', fontStyle: 'bold' }).setOrigin(0.5)
+    const effectName = this.add.text(0, 47, hero.effect_name, {
+      fontSize: '11px', color: '#ffdd77', fontStyle: 'bold', wordWrap: { width: 148 }, align: 'center',
+    }).setOrigin(0.5)
+    const effect = this.add.text(0, 84, hero.effect_description, {
+      fontSize: '10px', color: '#d8f8ff', wordWrap: { width: 148 }, align: 'center', lineSpacing: 2,
+    }).setOrigin(0.5, 0)
+    const select = this.add.text(0, 138, selected ? 'SELECIONADO' : 'USAR COMO LÍDER', {
+      fontSize: '10px', color: selected ? '#8dff9d' : '#ffffff', backgroundColor: selected ? '#17321f' : '#17313f', padding: { x: 10, y: 6 }, fontStyle: 'bold',
+    }).setOrigin(0.5)
+    card.add([frame, name, race, artFrame, art, effectName, effect, select])
+    card.setSize(176, 340).setInteractive({ useHandCursor: true })
+    card.on('pointerover', () => this.tweens.add({ targets: card, scale: 1.035, duration: 120, ease: 'Sine.easeOut' }))
+    card.on('pointerout', () => this.tweens.add({ targets: card, scale: 1, duration: 120, ease: 'Sine.easeOut' }))
+    card.on('pointerdown', onChoose)
+    return card
+  }
+
+  _heroTextureKey(key) {
+    return `hero_avatar_${key}`
   }
 
   _addNeonButton(x, y, w, label, accent, onClick) {
@@ -446,7 +593,7 @@ export default class DeckBuilderScene extends Scene {
       this._collectionLoaded = true
       this._scroll = 0
       this._applyFilter()
-      await this._loadSavedDecks()
+      await Promise.all([this._loadSavedDecks(), this._loadOwnedHeroes()])
       this._refreshSlotSelect()
       this._selectDeckSlot(this._selectedSlot, { silent: true })
       if (!this._activeDeckId && !this._deck.length) this._loadLocalDeck()
@@ -831,6 +978,11 @@ _createCollectionCard(card, x, y, w, h) {
       return
     }
 
+    if (!this._activeHero?.id) {
+      this._toast('Escolha um herói para liderar o baralho antes de salvar.')
+      return
+    }
+
     try {
       const payload = this._localDeckData()
       const response = this._activeDeckId
@@ -852,6 +1004,7 @@ _createCollectionCard(card, x, y, w, h) {
   _localDeckData() {
     return {
       name: this._deckNameInput?.value?.trim() || this._deckName || 'Novo Baralho',
+      hero_id: this._activeHero?.id ?? null,
       cards: this._deck.map(entry => ({
         uid: entry.card.uid,
         type: entry.card.card_type,
@@ -879,6 +1032,11 @@ _createCollectionCard(card, x, y, w, h) {
       if (saved?.name) {
         this._deckName = saved.name
         if (this._deckNameInput) this._deckNameInput.value = saved.name
+      }
+
+      if (saved?.hero_id) {
+        this._activeHero = this._ownedHeroes.find(hero => hero.id === Number(saved.hero_id)) ?? null
+        this._refreshHeroSelector()
       }
 
       if (!Array.isArray(saved?.cards)) return
@@ -913,6 +1071,19 @@ _createCollectionCard(card, x, y, w, h) {
       console.warn('Erro ao carregar baralhos salvos:', error)
       this._savedDecks = []
       this._deckLimits = null
+    }
+  }
+
+  async _loadOwnedHeroes() {
+    try {
+      const response = await getHeroes()
+      const heroes = response.data.data ?? response.data ?? []
+      this._ownedHeroes = heroes.filter(hero => hero.owned)
+      this._refreshHeroSelector()
+    } catch (error) {
+      console.warn('Erro ao carregar heróis do jogador:', error)
+      this._ownedHeroes = []
+      this._refreshHeroSelector()
     }
   }
 
@@ -956,9 +1127,11 @@ _createCollectionCard(card, x, y, w, h) {
 
     this._activeDeckId = null
     this._activeDeckLocked = slot > Number(this._deckLimits?.allowed_slots ?? 2)
+    this._activeHero = null
     this._deck = []
     this._deckName = 'Novo Baralho'
     if (this._deckNameInput) this._deckNameInput.value = this._deckName
+    this._refreshHeroSelector()
     this._refreshDeck()
     this._refreshSlotSelectStyle()
     if (!options.silent) {
@@ -1033,10 +1206,12 @@ _createCollectionCard(card, x, y, w, h) {
     this._deckName = deck.name ?? 'Novo Baralho'
     this._activeDeckId = deck.id
     this._activeDeckLocked = Boolean(deck.locked)
+    this._activeHero = this._ownedHeroes.find(hero => hero.id === deck.hero?.id) ?? deck.hero ?? null
     this._selectedSlot = Number(deck.slot_number ?? this._selectedSlot)
     if (this._slotSelect) this._slotSelect.value = String(this._selectedSlot)
     this._refreshSlotSelectStyle()
     if (this._deckNameInput) this._deckNameInput.value = this._deckName
+    this._refreshHeroSelector()
     this._refreshDeck()
     if (!options.silent) {
       this._toast(deck.locked ? 'Slot VIP: baralho bloqueado para uso/edição.' : 'Baralho carregado.')

@@ -22,8 +22,8 @@ export default class HeroSelectionScene extends Scene {
   }
 
   preload() {
-    // Adicione as chaves aqui quando as artes finais forem incluídas em public/assets/heroes.
-    ;['tennor'].forEach((key) => {
+    // Avatares disponíveis para os cinco heróis iniciais.
+    ;['tennor', 'ispisher', 'gimlou', 'badur', 'morgon'].forEach((key) => {
       const textureKey = this._heroTextureKey(key)
       if (!this.textures.exists(textureKey)) {
         this.load.image(textureKey, `/assets/heroes/avatar_heroi_${key}.png`)

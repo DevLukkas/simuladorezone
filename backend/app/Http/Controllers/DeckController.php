@@ -74,7 +74,7 @@ class DeckController extends Controller
 
         $data = $this->validatedDeckData($request);
 
-        $heroId = $this->heroIdFor($user, $data['hero_id'] ?? null);
+        $heroId = $this->heroIdFor($user, $data['hero_id']);
 
         $deck = DB::transaction(function () use ($user, $data, $slot, $heroId): Deck {
             $deck = Deck::create([
@@ -111,7 +111,7 @@ class DeckController extends Controller
 
         $data = $this->validatedDeckData($request);
 
-        $heroId = $this->heroIdFor($user, $data['hero_id'] ?? $deck->hero_id);
+        $heroId = $this->heroIdFor($user, $data['hero_id']);
 
         $deck = DB::transaction(function () use ($deck, $data, $heroId): Deck {
             $deck->forceFill([
@@ -158,7 +158,7 @@ class DeckController extends Controller
             'name' => ['required', 'string', 'max:80'],
             'description' => ['nullable', 'string', 'max:500'],
             'cover_image' => ['nullable', 'string', 'max:80'],
-            'hero_id' => ['nullable', 'integer', 'exists:heroes,id'],
+            'hero_id' => ['required', 'integer', 'exists:heroes,id'],
             'cards' => ['required', 'array', 'min:1'],
             'cards.*.uid' => ['required', 'string', 'max:40'],
             'cards.*.type' => ['required', 'string', Rule::in(['criatura', 'habilidade', 'item', 'comando', 'cenario'])],
@@ -291,11 +291,8 @@ class DeckController extends Controller
         return $card ? sprintf('%02d.png', (int) $card['id']) : null;
     }
 
-    private function heroIdFor(User $user, ?int $heroId): ?int
+    private function heroIdFor(User $user, int $heroId): int
     {
-        $heroId ??= $user->hero_id;
-        if (!$heroId) return null;
-
         abort_unless(
             $user->heroes()->whereKey($heroId)->exists(),
             422,

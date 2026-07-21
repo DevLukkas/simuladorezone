@@ -67,4 +67,20 @@ class HeroSelectionTest extends TestCase
 
         $response->assertUnprocessable();
     }
+
+    public function test_deck_cannot_be_saved_without_a_hero(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this->actingAs($user, 'sanctum')->postJson('/api/decks', [
+            'name' => 'Sem lider',
+            'cards' => [
+                ['uid' => 'criatura:1', 'type' => 'criatura', 'id' => 1, 'qty' => 1],
+            ],
+        ]);
+
+        $response
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('hero_id');
+    }
 }
