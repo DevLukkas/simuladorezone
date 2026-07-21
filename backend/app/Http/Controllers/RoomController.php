@@ -29,14 +29,14 @@ class RoomController extends Controller
     public function show(Room $room): JsonResponse
     {
         return response()->json([
-            'data' => $room->load(['host:id,name', 'guest:id,name', 'hostDeck:id,name', 'guestDeck:id,name']),
+            'data' => $room->load(['host:id,name', 'guest:id,name', 'hostDeck:id,name,hero_id', 'hostDeck.hero', 'guestDeck:id,name,hero_id', 'guestDeck.hero']),
         ]);
     }
 
     public function byCode(string $code): JsonResponse
     {
         $room = Room::query()
-            ->with(['host:id,name', 'guest:id,name', 'hostDeck:id,name', 'guestDeck:id,name'])
+            ->with(['host:id,name', 'guest:id,name', 'hostDeck:id,name,hero_id', 'hostDeck.hero', 'guestDeck:id,name,hero_id', 'guestDeck.hero'])
             ->where('room_code', strtoupper($code))
             ->firstOrFail();
 
@@ -70,7 +70,7 @@ class RoomController extends Controller
             ],
         ]);
 
-        $room->load(['host:id,name', 'guest:id,name']);
+        $room->load(['host:id,name', 'guest:id,name', 'hostDeck:id,name,hero_id', 'hostDeck.hero', 'guestDeck:id,name,hero_id', 'guestDeck.hero']);
         $this->broadcastSafely(static fn () => RoomCreated::dispatch($room));
 
         return response()->json(['data' => $room], 201);
@@ -109,7 +109,7 @@ class RoomController extends Controller
             ]),
         ])->save();
 
-        $room->load(['host:id,name', 'guest:id,name']);
+        $room->load(['host:id,name', 'guest:id,name', 'hostDeck:id,name,hero_id', 'hostDeck.hero', 'guestDeck:id,name,hero_id', 'guestDeck.hero']);
         $this->broadcastSafely(static fn () => RoomUpdated::dispatch($room));
 
         return response()->json(['data' => $room]);
@@ -145,7 +145,7 @@ class RoomController extends Controller
             ]),
         ])->save();
 
-        $room->load(['host:id,name', 'guest:id,name']);
+        $room->load(['host:id,name', 'guest:id,name', 'hostDeck:id,name,hero_id', 'hostDeck.hero', 'guestDeck:id,name,hero_id', 'guestDeck.hero']);
         $this->broadcastSafely(static fn () => RoomUpdated::dispatch($room));
 
         return response()->json(['data' => $room]);
@@ -170,7 +170,7 @@ class RoomController extends Controller
             ]),
         ])->save();
 
-        $room->load(['host:id,name', 'guest:id,name']);
+        $room->load(['host:id,name', 'guest:id,name', 'hostDeck:id,name,hero_id', 'hostDeck.hero', 'guestDeck:id,name,hero_id', 'guestDeck.hero']);
         $this->broadcastSafely(static fn () => RoomUpdated::dispatch($room));
 
         return response()->json(['data' => $room]);
@@ -193,7 +193,7 @@ class RoomController extends Controller
             ])->save();
         }
 
-        $room->load(['host:id,name', 'guest:id,name']);
+        $room->load(['host:id,name', 'guest:id,name', 'hostDeck:id,name,hero_id', 'hostDeck.hero', 'guestDeck:id,name,hero_id', 'guestDeck.hero']);
         $this->broadcastSafely(static fn () => RoomUpdated::dispatch($room));
 
         return response()->json(['data' => $room]);

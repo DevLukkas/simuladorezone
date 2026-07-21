@@ -40,12 +40,14 @@ import {
 } from "../game/targeting.js";
 import { clearScene, saveScene, restoreSceneData } from "../utils/session.js";
 import { applyRevealRandomHandThenShuffleOne } from '../effects/commandEffects.js';
+import { getHeroes } from "../api/gameApi.js";
 
 const LOCAL_DECK_KEY = "ezone_deck_builder_draft";
 const CARD_BACK_KEY = "card_back";
 const BATTLE_BG_KEY = "battle_bg";
 const MAX_HAND_SIZE = 8;
 const MAX_SCORE = 3;
+const HERO_KEYS = ["tennor", "ispisher", "gimlou", "badur", "morgon"];
 
 const TYPE_DEFAULT_COLOR = {
   criatura: 0x886633,
@@ -194,6 +196,10 @@ export default class GameScene extends Scene {
     this._replaceAttachmentMenu = null;
     this._elementChoiceMenu = null;
     this._effectChoiceModal = null;
+    this._myHero = null;
+    this._opponentHero = null;
+    this._myHeroPanel = null;
+    this._opponentHeroPanel = null;
     this._myName = "Jogador";
     this._opponentName = "Oponente";
   }
@@ -230,10 +236,17 @@ export default class GameScene extends Scene {
         this.load.image(key, file);
       }
     });
+
+    HERO_KEYS.forEach((key) => {
+      const textureKey = this._heroTextureKey(key);
+      if (!this.textures.exists(textureKey)) {
+        this.load.image(textureKey, `/assets/heroes/avatar_heroi_${key}.png`);
+      }
+    });
   }
 
   create() {
-    if (!localStorage.getItem("auth_token") || !this.room?.id) {
+    if (!localStorage.getItem("auth_token") || (!this.room?.id && !this._isSoloMode())) {
       clearScene();
       this.scene.start("MenuScene");
       return;
@@ -266,6 +279,8 @@ export default class GameScene extends Scene {
     // — Slots do campo —
     this._slotsMy = this._createFieldSlots(width, height, "my");
     this._slotsOpp = this._createFieldSlots(width, height, "opp");
+    this._renderHeroPanels(width, height);
+    this._loadBattleHeroes();
 
     // — Zona da mão —
     this._handZone = this.add
@@ -776,6 +791,90 @@ export default class GameScene extends Scene {
 
   _isSoloMode() {
     return this.room?.mode === "solo" || this.room?.room_code === "LOCAL";
+  }
+
+  _heroTextureKey(key) {
+    return `battle_hero_${key}`;
+  }
+
+  _localDeckHeroId() {
+    try {
+      const deck = JSON.parse(localStorage.getItem(LOCAL_DECK_KEY));
+      const heroId = Number(deck?.hero_id);
+      return Number.isInteger(heroId) && heroId > 0 ? heroId : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _roomHero(side) {
+    const deck = side === "my"
+      ? (this.role === "guest" ? this.room?.guest_deck : this.room?.host_deck)
+      : (this.role === "guest" ? this.room?.host_deck : this.room?.guest_deck);
+    return deck?.hero ?? null;
+  }
+
+  async _loadBattleHeroes() {
+    try {
+      const response = await getHeroes();
+      const heroes = response.data?.data ?? [];
+      const ownHero = this._roomHero("my")
+        ?? heroes.find((hero) => Number(hero.id) === this._localDeckHeroId())
+        ?? heroes.find((hero) => hero.owned)
+        ?? null;
+      const opponentHero = this._roomHero("opp")
+        ?? heroes.find((hero) => hero.key === (ownHero?.key === "morgon" ? "badur" : "morgon"))
+        ?? null;
+
+      this._myHero = ownHero;
+      this._opponentHero = opponentHero;
+      if (this.sys.isActive()) this._renderHeroPanels(this.scale.width, this.scale.height);
+    } catch (error) {
+      console.warn("Não foi possível carregar os heróis da partida:", error);
+    }
+  }
+
+  _renderHeroPanels(width, height) {
+    this._myHeroPanel?.destroy(true);
+    this._opponentHeroPanel?.destroy(true);
+
+    const createPanel = (hero, side) => {
+      const isMine = side === "my";
+      const x = width / 2;
+      const y = isMine ? height * 0.62 + 105 : height * 0.36 - 105;
+      const accent = isMine ? 0x64e8ff : 0xffa36a;
+      const container = this.add.container(x, y).setDepth(3);
+      const bg = this.add.rectangle(0, 0, 172, 72, 0x06111f, 0.92)
+        .setStrokeStyle(1, accent, 0.9);
+      const portraitFrame = this.add.rectangle(-58, 0, 58, 58, 0x03070d, 0.98)
+        .setStrokeStyle(1, accent, 0.9);
+      const name = this.add.text(-18, -13, hero?.name ?? "Herói", {
+        fontSize: "13px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      }).setOrigin(0, 0.5);
+      const role = this.add.text(-18, 11, hero?.effect_name ?? "Líder do baralho", {
+        fontSize: "10px",
+        color: isMine ? "#9fefff" : "#ffd0a8",
+        wordWrap: { width: 94 },
+      }).setOrigin(0, 0.5);
+      const sideLabel = this.add.text(76, -25, isMine ? "SEU HERÓI" : "HERÓI INIMIGO", {
+        fontSize: "8px",
+        color: isMine ? "#64e8ff" : "#ffb27a",
+      }).setOrigin(1, 0.5);
+      const elements = [bg, portraitFrame, name, role, sideLabel];
+      const textureKey = hero?.key ? this._heroTextureKey(hero.key) : null;
+      if (textureKey && this.textures.exists(textureKey)) {
+        elements.push(this.add.image(-58, 0, textureKey).setDisplaySize(52, 52));
+      } else {
+        elements.push(this.add.text(-58, 0, "?", { fontSize: "26px", color: "#8192a2" }).setOrigin(0.5));
+      }
+      container.add(elements);
+      return container;
+    };
+
+    this._opponentHeroPanel = createPanel(this._opponentHero, "opp");
+    this._myHeroPanel = createPanel(this._myHero, "my");
   }
 
   _setupSoloOpponentDeck(baseDeck) {

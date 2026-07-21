@@ -1009,6 +1009,7 @@ _createCollectionCard(card, x, y, w, h) {
 
   _localDeckData() {
     return {
+      deck_id: this._activeDeckId ?? null,
       name: this._deckNameInput?.value?.trim() || this._deckName || 'Novo Baralho',
       hero_id: this._activeHero?.id ?? null,
       cards: this._deck.map(entry => ({
