@@ -200,6 +200,7 @@ export default class GameScene extends Scene {
     this._opponentHero = null;
     this._myHeroPanel = null;
     this._opponentHeroPanel = null;
+    this._heroesReady = Promise.resolve();
     this._myName = "Jogador";
     this._opponentName = "Oponente";
   }
@@ -280,7 +281,7 @@ export default class GameScene extends Scene {
     this._slotsMy = this._createFieldSlots(width, height, "my");
     this._slotsOpp = this._createFieldSlots(width, height, "opp");
     this._renderHeroPanels(width, height);
-    this._loadBattleHeroes();
+    this._heroesReady = this._loadBattleHeroes();
 
     // — Zona da mão —
     this._handZone = this.add
@@ -5573,8 +5574,11 @@ export default class GameScene extends Scene {
     this._startMatchTurns();
   }
 
-  _startMatchTurns() {
+  async _startMatchTurns() {
     if (this._currentPhase !== "setup") return;
+
+    await this._heroesReady;
+    if (!this.sys.isActive() || this._currentPhase !== "setup") return;
 
     this._activePlayer = this._isSoloMode()
       ? Math.random() < 0.5
@@ -5624,6 +5628,7 @@ export default class GameScene extends Scene {
     if (hero?.key !== "ispisher") return;
 
     const slots = player === "my" ? this._slotsMy : this._slotsOpp;
+    this._showHeroActivation(hero, player);
     const candidates = slots
       .filter((slot) => slot.card)
       .map((slot) => ({
@@ -5636,7 +5641,13 @@ export default class GameScene extends Scene {
       .sort((a, b) => a.currentLife - b.currentLife);
 
     const target = candidates[0]?.slot;
-    if (!target?.card) return;
+    if (!target?.card) {
+      const owner = player === "my" ? "Ispisher" : "Ispisher inimigo";
+      this._toast(`${owner}: não há criatura ferida para curar.`);
+      this._logAction(`${owner} ativou Maré Restauradora, mas não havia criatura ferida.`);
+      console.info("[EZone Hero] Ispisher ativado sem alvo", { player, hero });
+      return;
+    }
 
     target.card.damageTaken = Math.max(0, Number(target.card.damageTaken ?? 0) - 1);
     recalculateCreatureStats(
@@ -5650,6 +5661,12 @@ export default class GameScene extends Scene {
     const owner = player === "my" ? "Ispisher" : "Ispisher inimigo";
     this._toast(`${owner} curou 1 de vida de ${target.card.name}.`);
     this._logAction(`${owner} curou 1 de vida de ${target.card.name}.`);
+    console.info("[EZone Hero] Ispisher curou criatura", {
+      player,
+      hero,
+      target: target.card.name,
+      remainingDamage: target.card.damageTaken,
+    });
 
     if (player === "my" && !this._isSoloMode()) {
       this._sendAction("hero_heal", {
@@ -5672,6 +5689,43 @@ export default class GameScene extends Scene {
       duration: 430,
       ease: "Sine.easeOut",
       onComplete: () => effect.destroy(),
+    });
+  }
+
+  _showHeroActivation(hero, player) {
+    const panel = player === "my" ? this._myHeroPanel : this._opponentHeroPanel;
+    const x = panel?.x ?? this.cameras.main.width / 2;
+    const y = panel?.y ?? this.cameras.main.height / 2;
+    const color = 0x72ffb2;
+    const pulse = this.add.circle(x, y, 28, color, 0.18)
+      .setStrokeStyle(2, color, 0.95)
+      .setDepth(110);
+    const label = this.add.text(x, y - 48, `${hero.name}\nMARÉ RESTAURADORA`, {
+      fontSize: "12px",
+      color: "#c6ffe2",
+      fontStyle: "bold",
+      align: "center",
+      stroke: "#062518",
+      strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(111);
+
+    this.tweens.add({
+      targets: pulse,
+      scaleX: 3.4,
+      scaleY: 3.4,
+      alpha: 0,
+      duration: 650,
+      ease: "Sine.easeOut",
+      onComplete: () => pulse.destroy(),
+    });
+    this.tweens.add({
+      targets: label,
+      y: y - 72,
+      alpha: 0,
+      delay: 450,
+      duration: 400,
+      ease: "Sine.easeIn",
+      onComplete: () => label.destroy(),
     });
   }
 
