@@ -427,6 +427,7 @@ export default class DeckBuilderScene extends Scene {
     }
 
     const { width, height } = this.cameras.main
+    this._setHtmlElementsVisible(false)
     const modal = this.add.container(0, 0).setDepth(80)
     const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.76).setOrigin(0).setInteractive()
     const panel = this.add.rectangle(width / 2, height / 2, 1070, 540, 0x06111f, 0.99)
@@ -440,8 +441,8 @@ export default class DeckBuilderScene extends Scene {
     const close = this.add.text(width / 2 + 493, 105, 'X', {
       fontSize: '18px', color: '#ff9999', fontStyle: 'bold',
     }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    close.on('pointerdown', () => modal.destroy(true))
-    overlay.on('pointerdown', () => modal.destroy(true))
+    close.on('pointerdown', () => this._closeHeroSelectorModal(modal))
+    overlay.on('pointerdown', () => this._closeHeroSelectorModal(modal))
     modal.add([overlay, panel, title, subtitle, close])
 
     const cards = this._ownedHeroes.slice(0, 5)
@@ -452,7 +453,7 @@ export default class DeckBuilderScene extends Scene {
         this._activeHero = hero
         this._refreshHeroSelector()
         this._saveLocalDeck()
-        modal.destroy(true)
+        this._closeHeroSelectorModal(modal)
         this._toast(`${hero.name} agora lidera este baralho.`)
       })
       modal.add(card)
@@ -494,6 +495,11 @@ export default class DeckBuilderScene extends Scene {
 
   _heroTextureKey(key) {
     return `hero_avatar_${key}`
+  }
+
+  _closeHeroSelectorModal(modal) {
+    modal.destroy(true)
+    this._setHtmlElementsVisible(true)
   }
 
   _addNeonButton(x, y, w, label, accent, onClick) {
@@ -1508,5 +1514,12 @@ _createCollectionCard(card, x, y, w, h) {
   _removeHtmlElements() {
     this._htmlElements.forEach(el => el.remove())
     this._htmlElements = []
+  }
+
+  _setHtmlElementsVisible(visible) {
+    this._htmlElements.forEach((element) => {
+      if (element.type === 'file') return
+      element.style.display = visible ? '' : 'none'
+    })
   }
 }
