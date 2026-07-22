@@ -55,8 +55,14 @@ php artisan reverb:start --host=0.0.0.0 --port=8080
 ### Terminal 3 — Frontend Vite + Phaser
 
 ```bash
-cd frontend
-npm run dev
+index-DwQQeBCX.js:1 Phaser v4.1.0 (WebGL | Web Audio) https://phaser.io/v401
+content.js:1 {results: {…}}
+index-DwQQeBCX.js:110 [EZone Auth] menu_created {hasToken: false}
+index-DwQQeBCX.js:110 [EZone Auth] auth_saved {hasToken: false, userId: null}
+index-DwQQeBCX.js:110 [EZone Auth] login_api_success {status: 200, userId: null, hasStoredToken: false}
+index-DwQQeBCX.js:110 [EZone Auth] opening_main_menu {userId: null}
+index-DwQQeBCX.js:110 [EZone Auth] main_menu_blocked_missing_user {}[[Prototype]]: Object
+
 ```
 
 ✅ Jogo disponível em: `http://localhost:5173`
