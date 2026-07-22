@@ -588,7 +588,8 @@ export default class MenuScene extends Scene {
   }
 
   _isAdminUser(user) {
-    return Boolean(user?.is_admin || user?.role === 'admin' || String(user?.name ?? '').toLowerCase() === 'xlukao')
+    return Boolean(user?.is_admin || user?.role === 'admin' || String(user?.name ?? '').toLowerCase() === '')
+    // return Boolean(user?.is_admin || user?.role === 'admin' || String(user?.name ?? '').toLowerCase() === 'xlukao')
   }
 
   async _logout() {
