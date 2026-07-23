@@ -47,6 +47,8 @@ const CARD_BACK_KEY = "card_back";
 const BATTLE_BG_KEY = "battle_bg";
 const MAX_HAND_SIZE = 8;
 const MAX_SCORE = 3;
+// Regra experimental: cada criatura enfrenta apenas a criatura na mesma coluna.
+const ATAQUE_DIRETO_POR_COLUNA = true;
 const HERO_KEYS = ["tennor", "ispisher", "gimlou", "badur", "morgon"];
 
 const TYPE_DEFAULT_COLOR = {
@@ -1762,6 +1764,32 @@ export default class GameScene extends Scene {
       return;
     }
 
+    if (ATAQUE_DIRETO_POR_COLUNA) {
+      const targetSlot = this._opposingColumnSlot(slot, "my");
+      this._clearBattleAttackButtons();
+
+      if (!targetSlot?.card) {
+        this._animateAttackMotion(
+          slot,
+          this._directAttackTargetPoint("opp"),
+          () => this._resolveDirectAttack(slot),
+        );
+        return;
+      }
+
+      if (!this._canBeAttackTarget(targetSlot)) {
+        this._toast(`${targetSlot.card.name} não pode ser alvo de ataques neste turno.`);
+        this._renderBattleAttackButtons();
+        return;
+      }
+
+      this._animateAttackMotion(slot, targetSlot, () => {
+        this._resolveCreatureAttack(slot, targetSlot);
+        this._renderBattleAttackButtons();
+      });
+      return;
+    }
+
     const enemyCreatures = this._slotsOpp.filter((s) => s.card);
     const validTargets = enemyCreatures.filter((s) =>
       this._canBeAttackTarget(s),
@@ -1789,6 +1817,13 @@ export default class GameScene extends Scene {
   _canBeAttackTarget(slot) {
     if (!slot?.card) return false;
     return (slot.card.cannotBeAttackTargetUntilTurn ?? 0) < this._turnNumber;
+  }
+
+  _opposingColumnSlot(attackerSlot, attackerSide) {
+    const attackers = attackerSide === "my" ? this._slotsMy : this._slotsOpp;
+    const defenders = attackerSide === "my" ? this._slotsOpp : this._slotsMy;
+    const column = attackers.indexOf(attackerSlot);
+    return column >= 0 ? defenders[column] : null;
   }
 
   _renderBattleAttackButtons() {
@@ -1908,6 +1943,15 @@ export default class GameScene extends Scene {
     if (!this._pendingAttackSlot || side !== "opp") return;
     const targetSlot = this._slotsOpp[slotIndex];
     if (!targetSlot?.card) return;
+
+    if (ATAQUE_DIRETO_POR_COLUNA) {
+      const columnTarget = this._opposingColumnSlot(this._pendingAttackSlot, "my");
+      if (targetSlot !== columnTarget) {
+        this._toast("Nesta regra, a criatura só pode atacar a coluna à sua frente.");
+        return;
+      }
+    }
+
     if (!this._canBeAttackTarget(targetSlot)) {
       this._toast(
         `${targetSlot.card.name} não pode ser alvo de ataques neste turno.`,
@@ -5940,11 +5984,12 @@ export default class GameScene extends Scene {
         continue;
       const yourCreatures = this._slotsMy.filter((slot) => slot.card);
       const forcedTarget = this._forcedAttackTargetSlot(attackerSlot);
-      const target =
-        forcedTarget ??
-        aiChooseFirstSlot(
-          yourCreatures.filter((slot) => this._canBeAttackTarget(slot)),
-        );
+      const columnTarget = this._opposingColumnSlot(attackerSlot, "opp");
+      const target = ATAQUE_DIRETO_POR_COLUNA
+        ? (columnTarget?.card && this._canBeAttackTarget(columnTarget) ? columnTarget : null)
+        : forcedTarget ?? aiChooseFirstSlot(
+            yourCreatures.filter((slot) => this._canBeAttackTarget(slot)),
+          );
       if (target) {
         await new Promise((resolve) =>
           this._animateAttackMotion(attackerSlot, target, () => {
@@ -5954,7 +5999,7 @@ export default class GameScene extends Scene {
           }),
         );
         await this._offerCommandResponseWindow("atacou uma criatura");
-      } else if (!yourCreatures.length) {
+      } else if (ATAQUE_DIRETO_POR_COLUNA ? !columnTarget?.card : !yourCreatures.length) {
         await new Promise((resolve) =>
           this._animateAttackMotion(
             attackerSlot,
@@ -5968,7 +6013,9 @@ export default class GameScene extends Scene {
         await this._offerCommandResponseWindow("atacou diretamente");
       } else {
         this._logAction(
-          `${attackerSlot.card.name} não encontrou alvo válido para atacar.`,
+          ATAQUE_DIRETO_POR_COLUNA
+            ? `${attackerSlot.card.name} não pode atacar: a criatura à frente não é um alvo válido.`
+            : `${attackerSlot.card.name} não encontrou alvo válido para atacar.`,
         );
       }
     }
