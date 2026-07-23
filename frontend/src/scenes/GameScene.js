@@ -49,6 +49,8 @@ const MAX_HAND_SIZE = 8;
 const MAX_SCORE = 3;
 // Regra experimental: cada criatura enfrenta apenas a criatura na mesma coluna.
 const ATAQUE_DIRETO_POR_COLUNA = true;
+// Regra experimental: anexos de habilidade e item não consomem a ação do turno.
+const ANEXOS_LIVRES = true;
 const HERO_KEYS = ["tennor", "ispisher", "gimlou", "badur", "morgon"];
 
 const TYPE_DEFAULT_COLOR = {
@@ -160,7 +162,7 @@ export default class GameScene extends Scene {
     this._delayedEffects = [];
     this._activePlayer = "my";
     this._currentPhase = "setup";
-    this._turnActions = { summoned: false, attached: false };
+    this._turnActions = { summoned: false, attached: false, scenario: false };
     this._score = { my: 0, opp: 0 };
     this._directDamage = { my: 0, opp: 0 };
     this._myScenario = null;
@@ -1732,15 +1734,22 @@ export default class GameScene extends Scene {
   }
 
   _canUseMainAction(type) {
-    return canUseMainAction(
+    const ruleType = ANEXOS_LIVRES && type === "attach" ? "free_attach" : type;
+    const allowed = canUseMainAction(
       {
         activePlayer: this._activePlayer,
         currentPhase: this._currentPhase,
         gameOver: this._gameOver,
         turnActions: this._turnActions,
       },
-      type,
+      ruleType,
     );
+
+    if (!allowed) return false;
+    if (ANEXOS_LIVRES && type === "scenario") {
+      return !this._turnActions.scenario;
+    }
+    return true;
   }
 
   _canAttackWith(cardObject) {
@@ -3488,6 +3497,11 @@ export default class GameScene extends Scene {
   }
 
   _activateScenario(cardObject) {
+    if (!this._canUseMainAction("scenario")) {
+      this._toast("Você já ativou um cenário neste turno.");
+      return;
+    }
+
     const card = cardObject.getData("cardData");
     if (this._myScenario) {
       const oldScenario = this._myScenario;
@@ -3507,6 +3521,7 @@ export default class GameScene extends Scene {
     );
     this._renderHand(this.myHand);
     this._renderScenarioZone();
+    if (ANEXOS_LIVRES) this._turnActions.scenario = true;
     this._toast(`${card.name} ativo.`);
     this._logAction(`${card.name} entrou como cenario.`);
   }
@@ -5638,7 +5653,7 @@ export default class GameScene extends Scene {
 
     this._activePlayer = player;
     this._currentPhase = phase === "battle" ? "battle" : "main";
-    this._turnActions = { summoned: false, attached: false };
+    this._turnActions = { summoned: false, attached: false, scenario: false };
     this._scenarioTurnFlags = {};
     this._clearExpiredTemporaryEffects();
     this._updateTurnUi();
@@ -5889,9 +5904,12 @@ export default class GameScene extends Scene {
       await this._wait(460);
       await this._offerCommandResponseWindow("invocou uma criatura");
     }
-    if (this._soloAttachCard()) {
+    let attached = this._soloAttachCard();
+    while (attached) {
       await this._wait(420);
       await this._offerCommandResponseWindow("anexou uma carta");
+      if (!ANEXOS_LIVRES) break;
+      attached = this._soloAttachCard();
     }
     this.oppHandCount = this.oppHand.length;
     this._renderOpponentHand();
@@ -5926,7 +5944,7 @@ export default class GameScene extends Scene {
   }
 
   _soloAttachCard() {
-    if (this._turnActions.attached) return false;
+    if (!ANEXOS_LIVRES && this._turnActions.attached) return false;
     const candidates = this.oppHand
       .map((card, index) => ({ card, index }))
       .filter((entry) => this._isAttachmentCard(entry.card));
