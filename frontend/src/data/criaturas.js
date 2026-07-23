@@ -190,7 +190,7 @@ export const criaturas = [
     triggeredAbilities: [
       {
         id: 'mimico_marker_on_discard',
-        trigger: 'sent_from_field_to_your_discard',
+        trigger: 'sent_to_your_discard',
         action: {
           type: 'add_marker_to_your_creature',
           stats: ['attack', 'defense'],

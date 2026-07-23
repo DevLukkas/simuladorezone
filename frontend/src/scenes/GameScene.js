@@ -200,6 +200,8 @@ export default class GameScene extends Scene {
     this._replaceAttachmentMenu = null;
     this._elementChoiceMenu = null;
     this._effectChoiceModal = null;
+    this._discardTriggerQueue = [];
+    this._resolvingDiscardTrigger = false;
     this._myHero = null;
     this._opponentHero = null;
     this._myHeroPanel = null;
@@ -2179,6 +2181,7 @@ export default class GameScene extends Scene {
     slot.attachments = [];
     if (!card.isToken) {
       this._resolveCreatureSentToDiscard(card, owner);
+      this._notifyCardSentToDiscard(card, owner);
       this._resolveScenarioBattleDestroyedTriggers(card, owner, destroyerSlot);
     }
     this._recalculateAllFieldCreatures();
@@ -2745,6 +2748,7 @@ export default class GameScene extends Scene {
 
     const removedSource = this.myHand.splice(sourceIndex, 1)[0];
     this.myDiscard.push(removedSource ?? sourceCard);
+    this._notifyCardSentToDiscard(removedSource ?? sourceCard);
     sourceObject?.destroy(true);
     this._handContainers = this._handContainers.filter(
       (object) => object !== sourceObject,
@@ -3240,6 +3244,7 @@ export default class GameScene extends Scene {
     }
 
     this.myDiscard.push(...discarded);
+    discarded.forEach((card) => this._notifyCardSentToDiscard(card));
     this.myHand = remaining;
 
     const drawCount = Math.min(
@@ -3287,6 +3292,7 @@ export default class GameScene extends Scene {
       this._animateCardToDiscard(commandObject, command, discardOthers);
     } else {
       this.myDiscard.push(command);
+      this._notifyCardSentToDiscard(command);
       this._renderDiscardPile();
       discardOthers();
     }
@@ -3413,6 +3419,7 @@ export default class GameScene extends Scene {
     const attachments = [...(targetSlot.attachments ?? [])];
     if (!targetSlot.card.isToken) {
       this.myDiscard.push(targetSlot.card);
+      this._notifyCardSentToDiscard(targetSlot.card);
       this._animateFieldObjectToDiscard(sacrificedObject, "my");
     } else {
       this._animateFieldObjectVanish(sacrificedObject);
@@ -4747,6 +4754,8 @@ export default class GameScene extends Scene {
     if (!enteredSlot?.card) return;
     const card = enteredSlot.card;
 
+    this._resolveHeroCreatureEnterEffect(enteredSlot, "my");
+
     for (const effect of card.onEnter ?? []) {
       if (effect.type === "discard_hand_card_then_search_deck") {
         if (effect.optional) {
@@ -4772,6 +4781,7 @@ export default class GameScene extends Scene {
 
     const [discarded] = this.myHand.splice(discardIndex, 1);
     this.myDiscard.push(discarded);
+    this._notifyCardSentToDiscard(discarded);
 
     const searchIndex = this.myDeck.findIndex((card) =>
       this._matchesCardRule(card, effect.search ?? {}),
@@ -4825,6 +4835,7 @@ export default class GameScene extends Scene {
 
     const [discarded] = this.myHand.splice(discardIndex, 1);
     this.myDiscard.push(discarded);
+    this._notifyCardSentToDiscard(discarded);
     this._renderHand(this.myHand);
     this._renderDiscardPile();
     this._playDiscardSmoke();
@@ -4865,7 +4876,9 @@ export default class GameScene extends Scene {
   _resolveMillThenGainDefense(creature, effect) {
     const count = Math.min(Number(effect.mill) || 0, this.myDeck.length);
     for (let i = 0; i < count; i++) {
-      this.myDiscard.push(this.myDeck.shift());
+      const discarded = this.myDeck.shift();
+      this.myDiscard.push(discarded);
+      this._notifyCardSentToDiscard(discarded);
     }
 
     const elements = new Set(
@@ -4953,12 +4966,6 @@ export default class GameScene extends Scene {
   _resolveCreatureSentToDiscard(card, owner) {
     if (owner !== "my") return;
 
-    for (const ability of card.triggeredAbilities ?? []) {
-      if (ability.trigger === "sent_from_field_to_your_discard") {
-        this._resolveCreatureTriggerAction(null, ability.action, card);
-      }
-    }
-
     for (const sourceSlot of this._slotsMy) {
       if (!sourceSlot.card) continue;
       for (const ability of sourceSlot.card.triggeredAbilities ?? []) {
@@ -4991,12 +4998,7 @@ export default class GameScene extends Scene {
     }
 
     if (action.type === "add_marker_to_your_creature") {
-      const targetSlot = this._slotsMy.find((slot) => slot.card);
-      return this._addPermanentMarker(
-        targetSlot?.card,
-        action.stats,
-        action.value,
-      );
+      return this._queueDiscardTriggeredAbility(triggerCard, action);
     }
 
     if (action.type === "summon_from_deck") {
@@ -5076,7 +5078,10 @@ export default class GameScene extends Scene {
     slot.cardObject = null;
     slot.attachments = [];
 
-    if (!card.isToken) this._resolveCreatureSentToDiscard(card, owner);
+    if (!card.isToken) {
+      this._resolveCreatureSentToDiscard(card, owner);
+      this._notifyCardSentToDiscard(card, owner);
+    }
     this._logAction(
       card.isToken
         ? `${card.name} desapareceu por ${reason}.`
@@ -5085,7 +5090,7 @@ export default class GameScene extends Scene {
     return true;
   }
 
-  _addPermanentMarker(creature, stats = [], value = 0) {
+  _addPermanentMarker(creature, stats = [], value = 0, markerName = null) {
     if (!creature) return false;
     const amount = Number(value) || 0;
     if (!amount) return false;
@@ -5093,11 +5098,172 @@ export default class GameScene extends Scene {
     creature.permanentModifiers = [
       ...(creature.permanentModifiers ?? []),
       {
+        name: markerName,
         attack: list.includes("attack") ? amount : 0,
         defense: list.includes("defense") ? amount : 0,
       },
     ];
     return true;
+  }
+
+  _resolveHeroCreatureEnterEffect(enteredSlot, owner = "my") {
+    const hero = owner === "my" ? this._myHero : this._opponentHero;
+    const slots = owner === "my" ? this._slotsMy : this._slotsOpp;
+    const creature = enteredSlot?.card;
+    if (hero?.key !== "badur" || creature?.element !== "terra") return false;
+    if (creature.badurStoneSkinApplied) return false;
+
+    creature.badurStoneSkinApplied = true;
+    this._addPermanentMarker(creature, ["defense"], 1, "Pele de Pedra");
+    recalculateCreatureStats(
+      creature,
+      enteredSlot.attachments.map((entry) => entry.card),
+      { yourField: slots },
+    );
+    this._refreshFieldStatsOverlay(enteredSlot);
+    this._showHeroActivation(hero, owner);
+    this._playBadurStoneEffect(enteredSlot);
+
+    const ownerName = owner === "my" ? "Badur" : "Badur inimigo";
+    this._toast(`${ownerName}: ${creature.name} recebeu +1 de vida máxima.`);
+    this._logAction(`${ownerName} concedeu Pele de Pedra a ${creature.name}.`);
+    return true;
+  }
+
+  _queueDiscardTriggeredAbility(card, action) {
+    if (!card || !action || !this._slotsMy?.some((slot) => slot.card)) return false;
+    this._discardTriggerQueue.push({ card, action });
+    this._drainDiscardTriggerQueue();
+    return true;
+  }
+
+  async _drainDiscardTriggerQueue() {
+    if (this._resolvingDiscardTrigger) return;
+    this._resolvingDiscardTrigger = true;
+
+    while (this._discardTriggerQueue.length && this.sys.isActive()) {
+      const { card, action } = this._discardTriggerQueue.shift();
+      while (this._effectChoiceModal && this.sys.isActive()) await this._wait(120);
+      if (!this.sys.isActive()) break;
+
+      this._playDiscardTriggerGlow("my");
+      await this._wait(520);
+      const wantsToActivate = await this._requestYesNoChoiceAsync({
+        title: "Efeito do Mímico",
+        message: `O Mímico do Baú gatilhou seu efeito. Deseja ativar a Marca do Mímico?`,
+        confirmLabel: "ATIVAR",
+        cancelLabel: "NÃO",
+      });
+      if (!wantsToActivate) {
+        this._toast("Efeito do Mímico não ativado.");
+        continue;
+      }
+
+      const target = await this._requestCreatureSlotChoiceAsync({
+        title: "Escolha uma criatura aliada para receber a Marca do Mímico.",
+        side: "my",
+        slots: this._slotsMy.filter((slot) => slot.card),
+        color: 0x61d5ff,
+      });
+      if (!target?.card) {
+        this._toast("Nenhuma criatura foi escolhida para a Marca do Mímico.");
+        continue;
+      }
+
+      this._addPermanentMarker(
+        target.card,
+        action.stats,
+        action.value,
+        "Marca do Mímico",
+      );
+      this._recalculateAllFieldCreatures();
+      this._playMimicMarkerEffect(target);
+      this._toast(`${target.card.name} recebeu a Marca do Mímico: +1/+1.`);
+      this._logAction(`${card.name} concedeu Marca do Mímico a ${target.card.name}.`);
+      if (!this._isSoloMode()) {
+        this._sendAction("mimic_marker", {
+          slot: this._slotsMy.indexOf(target),
+          amount: Number(action.value) || 1,
+        });
+      }
+    }
+
+    this._resolvingDiscardTrigger = false;
+  }
+
+  _notifyCardSentToDiscard(card, owner = "my") {
+    if (owner !== "my") return;
+    for (const ability of card?.triggeredAbilities ?? []) {
+      if (ability.trigger === "sent_to_your_discard") {
+        this._queueDiscardTriggeredAbility(card, ability.action);
+      }
+    }
+  }
+
+  _playDiscardTriggerGlow(owner = "my") {
+    const pile = owner === "opp" ? this._oppDiscardPileContainer : this._discardPileContainer;
+    if (!pile) return;
+
+    const glow = this.add.rectangle(pile.x, pile.y, 102, 132, 0x000000, 0)
+      .setStrokeStyle(3, 0x61d5ff, 1)
+      .setDepth(98);
+    const label = this.add.text(pile.x, pile.y - 82, "EFEITO NO DESCARTE", {
+      fontSize: "10px",
+      color: "#baf4ff",
+      fontStyle: "bold",
+      stroke: "#06111f",
+      strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(99);
+    this.tweens.add({
+      targets: glow,
+      scaleX: 1.35,
+      scaleY: 1.24,
+      alpha: 0,
+      duration: 620,
+      ease: "Sine.easeOut",
+      onComplete: () => glow.destroy(),
+    });
+    this.tweens.add({
+      targets: label,
+      y: label.y - 20,
+      alpha: 0,
+      delay: 360,
+      duration: 360,
+      onComplete: () => label.destroy(),
+    });
+  }
+
+  _playMimicMarkerEffect(slot) {
+    const marker = this.add.text(slot.x, slot.y - 72, "+1 / +1", {
+      fontSize: "17px",
+      color: "#61d5ff",
+      fontStyle: "bold",
+      stroke: "#062235",
+      strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(32);
+    this.tweens.add({
+      targets: marker,
+      y: marker.y - 32,
+      alpha: 0,
+      duration: 760,
+      ease: "Cubic.easeOut",
+      onComplete: () => marker.destroy(),
+    });
+  }
+
+  _playBadurStoneEffect(slot) {
+    const effect = this.add.circle(slot.x, slot.y, 22, 0xc9b27a, 0.18)
+      .setStrokeStyle(2, 0xf0d59a, 0.95)
+      .setDepth(28);
+    this.tweens.add({
+      targets: effect,
+      scaleX: 2,
+      scaleY: 2,
+      alpha: 0,
+      duration: 520,
+      ease: "Sine.easeOut",
+      onComplete: () => effect.destroy(),
+    });
   }
 
   _matchesCardRule(card, rule = {}) {
@@ -5322,6 +5488,7 @@ export default class GameScene extends Scene {
     slot.card = creature;
     slot.cardObject = cardObject;
     slot.attachments = slot.attachments ?? [];
+    this._resolveHeroCreatureEnterEffect(slot, "opp");
     this._recalculateAllFieldCreatures();
     return creature;
   }
@@ -5408,6 +5575,24 @@ export default class GameScene extends Scene {
       .setOrigin(0.5);
 
     overlay.add([bg, atk, life]);
+    const markerNames = [...new Set(
+      (card.permanentModifiers ?? [])
+        .map((modifier) => modifier.name)
+        .filter(Boolean),
+    )];
+    if (markerNames.length) {
+      overlay.add(
+        this.add
+          .text(0, -19, markerNames.join(" | ").toUpperCase(), {
+            fontSize: "7px",
+            color: "#8fe8ff",
+            fontStyle: "bold",
+            stroke: "#06111f",
+            strokeThickness: 2,
+          })
+          .setOrigin(0.5),
+      );
+    }
     cardObject.add(overlay);
     cardObject.setData("statsOverlay", overlay);
   }
@@ -5755,11 +5940,12 @@ export default class GameScene extends Scene {
     const panel = player === "my" ? this._myHeroPanel : this._opponentHeroPanel;
     const x = panel?.x ?? this.cameras.main.width / 2;
     const y = panel?.y ?? this.cameras.main.height / 2;
-    const color = 0x72ffb2;
+    const isBadur = hero?.key === "badur";
+    const color = isBadur ? 0xb8aa78 : 0x72ffb2;
     const pulse = this.add.circle(x, y, 28, color, 0.18)
       .setStrokeStyle(2, color, 0.95)
       .setDepth(110);
-    const label = this.add.text(x, y - 48, `${hero.name}\nMARÉ RESTAURADORA`, {
+    const label = this.add.text(x, y - 48, `${hero.name}\n${hero.effect_name ?? "EFEITO DO HERÓI"}`.toUpperCase(), {
       fontSize: "12px",
       color: "#c6ffe2",
       fontStyle: "bold",
@@ -6104,6 +6290,7 @@ export default class GameScene extends Scene {
       ease: "Cubic.easeInOut",
       onComplete: () => {
         this.myDiscard.push(card);
+        this._notifyCardSentToDiscard(card);
         cardObject.destroy(true);
         this._renderDiscardPile();
         this._playDiscardSmoke();
@@ -6136,6 +6323,7 @@ export default class GameScene extends Scene {
     const index = this._randInt(0, this.myHand.length - 1);
     const [discarded] = this.myHand.splice(index, 1);
     this.myDiscard.push(discarded);
+    this._notifyCardSentToDiscard(discarded);
     this._renderDiscardPile();
     this._playDiscardSmoke();
     this._renderHand(this.myHand);
@@ -6212,6 +6400,7 @@ export default class GameScene extends Scene {
       return;
     }
     this.myDiscard.push(card);
+    this._notifyCardSentToDiscard(card);
     this._renderDeckPile();
     this._renderDiscardPile();
     this._playDiscardSmoke();
@@ -6391,6 +6580,9 @@ export default class GameScene extends Scene {
       case "hero_heal":
         this._handleRemoteHeroHeal(event.payload);
         break;
+      case "mimic_marker":
+        this._handleRemoteMimicMarker(event.payload);
+        break;
       case "surrender":
         this._finishGame("my");
         break;
@@ -6474,6 +6666,23 @@ export default class GameScene extends Scene {
     this._playHeroHealEffect(slot);
     this._toast(`Ispisher inimigo curou ${amount} de vida de ${slot.card.name}.`);
     this._logAction(`Ispisher inimigo curou ${amount} de vida de ${slot.card.name}.`);
+  }
+
+  _handleRemoteMimicMarker(payload = {}) {
+    const slot = this._slotsOpp?.[Number(payload.slot)];
+    if (!slot?.card) return;
+
+    const amount = Math.max(1, Number(payload.amount) || 1);
+    this._addPermanentMarker(
+      slot.card,
+      ["attack", "defense"],
+      amount,
+      "Marca do Mímico",
+    );
+    this._recalculateAllFieldCreatures();
+    this._playMimicMarkerEffect(slot);
+    this._toast(`${slot.card.name} inimiga recebeu Marca do Mímico: +${amount}/+${amount}.`);
+    this._logAction(`Oponente concedeu Marca do Mímico a ${slot.card.name}.`);
   }
 
   _handleRemoteDrawCards(payload = {}) {
