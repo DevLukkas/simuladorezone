@@ -389,4 +389,36 @@ systemctl restart ezonetcg-api
 systemctl restart ezonetcg-reverb
 
 curl -I https://play.vbxsistemas.com.br
+
+### RESUMAO DIRETO DE COMO ATUALIZAR 
+
+cd /home/ezonetcg/app
+git pull
+cd frontend
+npm run build
+cd ../backend
+php83 artisan optimize:clear
+php83 artisan config:cache
+
+
 ```
+
+
+```
+### desativar ataque na mesma coluna:
+Em [GameScene.js (line 51)](/home/lucas/Documentos/Projetos/simuladorezone/frontend/src/scenes/GameScene.js:51):
+
+podemos controlar a const conforme queremos com true ou false:
+
+const ATAQUE_DIRETO_POR_COLUNA = true;
+
+´´´
+
+#### DESATIVAR E ATIVAR ANEXAGEM LIVRE 
+
+Em [GameScene.js (line 53)](/home/lucas/Documentos/Projetos/simuladorezone/frontend/src/scenes/GameScene.js:53):
+
+podemos ativar e desativar atraves da const
+const ANEXOS_LIVRES = true;
+
+
