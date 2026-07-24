@@ -200,8 +200,8 @@ export default class GameScene extends Scene {
     this._replaceAttachmentMenu = null;
     this._elementChoiceMenu = null;
     this._effectChoiceModal = null;
-    this._discardTriggerQueue = [];
-    this._resolvingDiscardTrigger = false;
+    this._discardTriggerBuffer = [];
+    this._discardTriggerBatchEvent = null;
     this._myHero = null;
     this._opponentHero = null;
     this._myHeroPanel = null;
@@ -2977,6 +2977,11 @@ export default class GameScene extends Scene {
 
     if (job.type === "attachment") {
       await this._resolveAttachmentQueued(job.cardObject);
+      return;
+    }
+
+    if (job.type === "trigger_stack") {
+      await this._resolveTriggeredEffectStack(job.jobs ?? []);
     }
   }
 
@@ -4868,6 +4873,10 @@ export default class GameScene extends Scene {
   }
 
   _closeEffectChoiceModal() {
+    if (this._commandResponseTimer) {
+      this._commandResponseTimer.remove(false);
+      this._commandResponseTimer = null;
+    }
     if (!this._effectChoiceModal) return;
     this._effectChoiceModal.destroy(true);
     this._effectChoiceModal = null;
@@ -5132,63 +5141,94 @@ export default class GameScene extends Scene {
 
   _queueDiscardTriggeredAbility(card, action) {
     if (!card || !action || !this._slotsMy?.some((slot) => slot.card)) return false;
-    this._discardTriggerQueue.push({ card, action });
-    this._drainDiscardTriggerQueue();
+    this._discardTriggerBuffer.push({
+      card,
+      action,
+      optional: true,
+      priority: 20,
+    });
+
+    if (!this._discardTriggerBatchEvent) {
+      this._discardTriggerBatchEvent = this.time.delayedCall(0, () => {
+        const jobs = this._discardTriggerBuffer.splice(0);
+        this._discardTriggerBatchEvent = null;
+        if (jobs.length) this._enqueueEffectResolution({ type: "trigger_stack", jobs });
+      });
+    }
     return true;
   }
 
-  async _drainDiscardTriggerQueue() {
-    if (this._resolvingDiscardTrigger) return;
-    this._resolvingDiscardTrigger = true;
+  async _resolveTriggeredEffectStack(jobs = []) {
+    const pending = [...jobs];
+    while (pending.length && this.sys.isActive()) {
+      const priority = Math.min(...pending.map((job) => Number(job.priority) || 100));
+      const samePriority = pending.filter(
+        (job) => (Number(job.priority) || 100) === priority,
+      );
+      let job = samePriority[0];
 
-    while (this._discardTriggerQueue.length && this.sys.isActive()) {
-      const { card, action } = this._discardTriggerQueue.shift();
-      while (this._effectChoiceModal && this.sys.isActive()) await this._wait(120);
-      if (!this.sys.isActive()) break;
+      if (samePriority.length > 1 && this._activePlayer === "my") {
+        const selected = await this._requestCardChoiceAsync({
+          title: "Escolha o próximo efeito da corrente",
+          cards: samePriority.map((candidate) => ({ card: candidate.card, job: candidate })),
+          emptyMessage: "Nenhum efeito disponível.",
+          accent: 0x61d5ff,
+          buttonColor: "#16385c",
+          maxVisible: 6,
+          labelForCard: (card) => card.name,
+        });
+        job = selected?.job ?? job;
+      }
 
-      this._playDiscardTriggerGlow("my");
-      await this._wait(520);
-      const wantsToActivate = await this._requestYesNoChoiceAsync({
+      pending.splice(pending.indexOf(job), 1);
+      await this._resolveDiscardTriggeredAbility(job);
+    }
+  }
+
+  async _resolveDiscardTriggeredAbility({ card, action }) {
+    while (this._effectChoiceModal && this.sys.isActive()) await this._wait(120);
+    if (!this.sys.isActive()) return;
+
+    this._playDiscardTriggerGlow("my");
+    await this._wait(520);
+    const wantsToActivate = await this._requestYesNoChoiceAsync({
         title: "Efeito do Mímico",
         message: `O Mímico do Baú gatilhou seu efeito. Deseja ativar a Marca do Mímico?`,
         confirmLabel: "ATIVAR",
         cancelLabel: "NÃO",
-      });
-      if (!wantsToActivate) {
-        this._toast("Efeito do Mímico não ativado.");
-        continue;
-      }
-
-      const target = await this._requestCreatureSlotChoiceAsync({
-        title: "Escolha uma criatura aliada para receber a Marca do Mímico.",
-        side: "my",
-        slots: this._slotsMy.filter((slot) => slot.card),
-        color: 0x61d5ff,
-      });
-      if (!target?.card) {
-        this._toast("Nenhuma criatura foi escolhida para a Marca do Mímico.");
-        continue;
-      }
-
-      this._addPermanentMarker(
-        target.card,
-        action.stats,
-        action.value,
-        "Marca do Mímico",
-      );
-      this._recalculateAllFieldCreatures();
-      this._playMimicMarkerEffect(target);
-      this._toast(`${target.card.name} recebeu a Marca do Mímico: +1/+1.`);
-      this._logAction(`${card.name} concedeu Marca do Mímico a ${target.card.name}.`);
-      if (!this._isSoloMode()) {
-        this._sendAction("mimic_marker", {
-          slot: this._slotsMy.indexOf(target),
-          amount: Number(action.value) || 1,
-        });
-      }
+    });
+    if (!wantsToActivate) {
+      this._toast("Efeito do Mímico não ativado.");
+      return;
     }
 
-    this._resolvingDiscardTrigger = false;
+    const target = await this._requestCreatureSlotChoiceAsync({
+      title: "Escolha uma criatura aliada para receber a Marca do Mímico.",
+      side: "my",
+      slots: this._slotsMy.filter((slot) => slot.card),
+      color: 0x61d5ff,
+    });
+    if (!target?.card) {
+      this._toast("Nenhuma criatura foi escolhida para a Marca do Mímico.");
+      return;
+    }
+
+    this._addPermanentMarker(
+      target.card,
+      action.stats,
+      action.value,
+      "Marca do Mímico",
+    );
+    this._recalculateAllFieldCreatures();
+    this._playMimicMarkerEffect(target);
+    this._toast(`${target.card.name} recebeu a Marca do Mímico: +1/+1.`);
+    this._logAction(`${card.name} concedeu Marca do Mímico a ${target.card.name}.`);
+    if (!this._isSoloMode()) {
+      this._sendAction("mimic_marker", {
+        slot: this._slotsMy.indexOf(target),
+        amount: Number(action.value) || 1,
+      });
+    }
   }
 
   _notifyCardSentToDiscard(card, owner = "my") {
