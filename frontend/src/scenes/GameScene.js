@@ -1788,7 +1788,7 @@ export default class GameScene extends Scene {
         return;
       }
 
-      if (!this._canBeAttackTarget(targetSlot)) {
+      if (!this._canBeAttackTarget(targetSlot, slot)) {
         this._toast(`${targetSlot.card.name} não pode ser alvo de ataques neste turno.`);
         this._renderBattleAttackButtons();
         return;
@@ -1803,7 +1803,7 @@ export default class GameScene extends Scene {
 
     const enemyCreatures = this._slotsOpp.filter((s) => s.card);
     const validTargets = enemyCreatures.filter((s) =>
-      this._canBeAttackTarget(s),
+      this._canBeAttackTarget(s, slot),
     );
     if (!enemyCreatures.length) {
       this._clearBattleAttackButtons();
@@ -1825,9 +1825,22 @@ export default class GameScene extends Scene {
     this._toast("Escolha a criatura inimiga alvo.");
   }
 
-  _canBeAttackTarget(slot) {
+  _canBeAttackTarget(slot, attackerSlot = null) {
     if (!slot?.card) return false;
-    return (slot.card.cannotBeAttackTargetUntilTurn ?? 0) < this._turnNumber;
+    if ((slot.card.cannotBeAttackTargetUntilTurn ?? 0) >= this._turnNumber) {
+      return false;
+    }
+
+    const attackerLife = Number(
+      attackerSlot?.card?.currentStats?.defense ?? attackerSlot?.card?.defense ?? 0,
+    );
+    return !(slot.attachments ?? []).some((attachment) =>
+      (attachment.card?.effects ?? []).some(
+        (effect) =>
+          effect.type === "cannot_be_attacked_by_creatures_with_min_defense" &&
+          attackerLife >= Number(effect.min_defense ?? 3),
+      ),
+    );
   }
 
   _opposingColumnSlot(attackerSlot, attackerSide) {
@@ -1963,7 +1976,7 @@ export default class GameScene extends Scene {
       }
     }
 
-    if (!this._canBeAttackTarget(targetSlot)) {
+    if (!this._canBeAttackTarget(targetSlot, this._pendingAttackSlot)) {
       this._toast(
         `${targetSlot.card.name} não pode ser alvo de ataques neste turno.`,
       );
@@ -2098,6 +2111,9 @@ export default class GameScene extends Scene {
   ) {
     const attacker = attackerSlot.card;
     const defender = defenderSlot.card;
+    const defenderLifeBefore = Number(
+      defender.currentStats?.defense ?? defender.defense ?? 0,
+    );
     const atkDamage = this._combatDamageAfterReduction(
       defenderSlot,
       defenderSlots,
@@ -2123,9 +2139,36 @@ export default class GameScene extends Scene {
       attackerSlots === this._slotsMy ? "my" : "opp",
       attackTriggerAttachments,
     );
+    const overflowDamage = this._hasAttachedKeyword(attackerSlot, "atropelar")
+      ? Math.max(0, atkDamage - defenderLifeBefore)
+      : 0;
+    if (overflowDamage > 0) {
+      this._applyOverflowDirectDamage(attackerSlots, attacker, overflowDamage);
+    }
     this._toast(`${attacker.name} atacou ${defender.name}.`);
     this._logAction(`${attacker.name} atacou ${defender.name}.`);
     if (attackerSlots === this._slotsMy) this._renderBattleAttackButtons();
+  }
+
+  _hasAttachedKeyword(slot, keyword) {
+    return (slot?.attachments ?? []).some((attachment) =>
+      (attachment.card?.effects ?? []).some(
+        (effect) => effect.type === "grant_keyword" && effect.keyword === keyword,
+      ),
+    );
+  }
+
+  _applyOverflowDirectDamage(attackerSlots, attacker, damage) {
+    const target = attackerSlots === this._slotsMy ? "opp" : "my";
+    const scoringPlayer = target === "opp" ? "my" : "opp";
+    this._directDamage[target] += damage;
+    while (this._directDamage[target] >= 5) {
+      this._directDamage[target] -= 5;
+      this._addScore(scoringPlayer, 1);
+    }
+    this._updateDirectDamageHeader();
+    this._toast(`${attacker.name} atropelou e causou ${damage} de dano direto.`);
+    this._logAction(`${attacker.name} causou ${damage} de dano excedente por Atropelar.`);
   }
 
   _refreshBattleDamage(slot, ownerSlots, destroyerSlot = null) {
@@ -2171,6 +2214,7 @@ export default class GameScene extends Scene {
     }
     attachments.forEach((attachment, index) => {
       if (attachment.card) discard.push(attachment.card);
+      this._notifyAttachmentSentToDiscard(attachment.card, owner, { battle: true });
       this._animateFieldObjectToDiscard(attachment.object, owner, {
         delay: 80 + index * 70,
         scale: 0.58,
@@ -2982,6 +3026,16 @@ export default class GameScene extends Scene {
 
     if (job.type === "trigger_stack") {
       await this._resolveTriggeredEffectStack(job.jobs ?? []);
+      return;
+    }
+
+    if (job.type === "attachment_element_changed") {
+      await this._resolveAttachmentElementChanged(job);
+      return;
+    }
+
+    if (job.type === "attachment_discard_trigger") {
+      await this._resolveAttachmentDiscardTrigger(job);
     }
   }
 
@@ -3710,7 +3764,9 @@ export default class GameScene extends Scene {
     const [entry] = slot.attachments.splice(index, 1);
     if (!entry) return;
     this.myDiscard.push(entry.card);
+    this._notifyAttachmentSentToDiscard(entry.card, "my");
     this._animateFieldObjectToDiscard(entry.object, "my", { scale: 0.58 });
+    this._recalculateAllFieldCreatures();
   }
 
   _resolveOnAttachEffects(slot, attachment) {
@@ -3784,12 +3840,33 @@ export default class GameScene extends Scene {
   ) {
     if (!action) return false;
 
+    if (action.type === "temporary_modify_allied_creatures") {
+      const allySlots = owner === "my" ? this._slotsMy : this._slotsOpp;
+      const affected = allySlots.filter(
+        (slot) => slot.card && matchesCreatureRule(slot.card, action.filter ?? {}),
+      );
+      for (const ally of affected) {
+        ally.card.tempModifiers = [
+          ...(ally.card.tempModifiers ?? []),
+          {
+            expiresOnTurn: this._turnNumber,
+            attack: (action.stats ?? []).includes("attack") ? Number(action.value) || 0 : 0,
+            defense: (action.stats ?? []).includes("defense") ? Number(action.value) || 0 : 0,
+          },
+        ];
+      }
+      this._recalculateAllFieldCreatures();
+      if (affected.length) {
+        this._toast(`${attachment.name}: Bestas aliadas receberam +1 ATQ neste turno.`);
+        this._logAction(`${attachment.name} fortaleceu ${affected.length} Besta(s).`);
+      }
+      return affected.length > 0;
+    }
+
     if (
       action.type !== "choose_enemy_creature_then_prevent_attack" &&
       action.type !== "choose_enemy_creature_prevent_attack_next_turn"
-    ) {
-      return false;
-    }
+    ) return false;
 
     const enemySlots =
       owner === "my"
@@ -4970,6 +5047,73 @@ export default class GameScene extends Scene {
         );
       }
     }
+
+    for (const attachment of [...(changedSlot.attachments ?? [])]) {
+      for (const ability of attachment.card?.triggeredAbilities ?? []) {
+        if (ability.trigger !== "attached_creature_element_changed") continue;
+        this._enqueueEffectResolution({
+          type: "attachment_element_changed",
+          slot: changedSlot,
+          attachment,
+          action: ability.action,
+        });
+      }
+    }
+  }
+
+  async _resolveAttachmentElementChanged({ slot, attachment, action }) {
+    if (!slot?.card || !attachment?.card || !action) return;
+    if (!(slot.attachments ?? []).includes(attachment)) return;
+
+    if (action.type === "optional_swap_allied_creature_stats_until_end_turn") {
+      const targets = this._slotsMy.filter(
+        (candidate) =>
+          candidate.card && matchesCreatureRule(candidate.card, action.filter ?? {}),
+      );
+      const wantsToSwap = targets.length
+        ? await this._requestYesNoChoiceAsync({
+            title: attachment.card.name,
+            message: "O elemento foi alterado. Deseja trocar ATQ e VIDA de uma criatura com Contos no nome até o fim do turno?",
+            confirmLabel: "ESCOLHER",
+            cancelLabel: "NÃO",
+          })
+        : false;
+      if (wantsToSwap) {
+        const target = await this._requestCreatureSlotChoiceAsync({
+          title: "Escolha a criatura com Contos no nome.",
+          side: "my",
+          slots: targets,
+          color: 0x72d8ff,
+        });
+        if (target?.card) {
+          const attack = Number(target.card.currentStats?.attack ?? target.card.attack ?? 0);
+          const defense = Number(target.card.currentStats?.defense ?? target.card.defense ?? 0);
+          target.card.tempModifiers = [
+            ...(target.card.tempModifiers ?? []),
+            {
+              expiresOnTurn: this._turnNumber,
+              attack: defense - attack,
+              defense: attack - defense,
+            },
+          ];
+          this._recalculateAllFieldCreatures();
+          this._toast(`${target.card.name} trocou ATQ e VIDA até o fim do turno.`);
+          this._logAction(`${attachment.card.name} trocou os atributos de ${target.card.name}.`);
+        }
+      }
+    }
+
+    if (action.return_attachment_to_hand) {
+      const index = slot.attachments.indexOf(attachment);
+      if (index >= 0) slot.attachments.splice(index, 1);
+      attachment.object?.destroy(true);
+      this.myHand.push(attachment.card);
+      this._renderHand(this.myHand);
+      this._discardRandomIfHandOverflow();
+      this._recalculateAllFieldCreatures();
+      this._toast(`${attachment.card.name} retornou para sua mão.`);
+      this._logAction(`${attachment.card.name} retornou para a mão após a alteração de elemento.`);
+    }
   }
 
   _resolveCreatureSentToDiscard(card, owner) {
@@ -5078,6 +5222,7 @@ export default class GameScene extends Scene {
     }
     attachments.forEach((attachment, index) => {
       if (attachment.card) discard.push(attachment.card);
+      this._notifyAttachmentSentToDiscard(attachment.card, owner);
       this._animateFieldObjectToDiscard(attachment.object, owner, {
         delay: 80 + index * 70,
         scale: 0.58,
@@ -5097,6 +5242,40 @@ export default class GameScene extends Scene {
         : `${card.name} foi enviada ao descarte por ${reason}.`,
     );
     return true;
+  }
+
+  _notifyAttachmentSentToDiscard(card, owner = "my", { battle = false } = {}) {
+    if (owner !== "my" || battle || this._currentPhase === "battle") return;
+    for (const ability of card?.triggeredAbilities ?? []) {
+      if (
+        ability.trigger ===
+        "attachment_sent_from_field_to_your_discard_outside_battle"
+      ) {
+        this._enqueueEffectResolution({
+          type: "attachment_discard_trigger",
+          card,
+          action: ability.action,
+        });
+      }
+    }
+  }
+
+  async _resolveAttachmentDiscardTrigger({ card, action }) {
+    if (!card || action?.type !== "optional_draw_cards") return;
+    const wantsToDraw = await this._requestYesNoChoiceAsync({
+      title: card.name,
+      message: "Esta carta foi enviada do campo ao descarte. Deseja comprar uma carta?",
+      confirmLabel: "COMPRAR",
+      cancelLabel: "NÃO",
+    });
+    if (!wantsToDraw) return;
+    const count = Math.min(Number(action.count) || 1, this.myDeck.length);
+    if (!count) {
+      this._toast("Seu baralho não possui cartas para comprar.");
+      return;
+    }
+    this._animateDrawCardsFromDeck(count);
+    this._logAction(`${card.name} permitiu comprar ${count} carta(s).`);
   }
 
   _addPermanentMarker(creature, stats = [], value = 0, markerName = null) {
@@ -6036,12 +6215,31 @@ export default class GameScene extends Scene {
     if (this._gameOver) return;
     this._stopTurnFuse();
     this._clearBattleAttackButtons();
+    this._resolveEndTurnAttachmentTriggers(this._activePlayer);
     this._processDelayedEffects("end_of_next_turn");
     this._clearExpiredTemporaryEffects();
     this._sendAction("end_turn", {});
 
     this._turnNumber += 1;
     this._beginTurn(this._activePlayer === "my" ? "opp" : "my");
+  }
+
+  _resolveEndTurnAttachmentTriggers(owner) {
+    const slots = owner === "my" ? this._slotsMy : this._slotsOpp;
+    for (const slot of [...slots]) {
+      if (!slot.card || slot.card.hasAttackedTurn === this._turnNumber) continue;
+      const shouldDestroy = (slot.attachments ?? []).some((attachment) =>
+        (attachment.card?.triggeredAbilities ?? []).some(
+          (ability) =>
+            ability.trigger === "attached_creature_end_turn_if_not_attacked" &&
+            ability.action?.type === "destroy_attached_creature",
+        ),
+      );
+      if (!shouldDestroy) continue;
+      const name = slot.card.name;
+      this._sendFieldCreatureToDiscard(slot, owner, "efeito de Guardião Enlouquecido");
+      this._toast(`${name} não atacou e foi destruída pelo Guardião Enlouquecido.`);
+    }
   }
 
   _updateTurnUi() {
@@ -6230,9 +6428,9 @@ export default class GameScene extends Scene {
       const forcedTarget = this._forcedAttackTargetSlot(attackerSlot);
       const columnTarget = this._opposingColumnSlot(attackerSlot, "opp");
       const target = ATAQUE_DIRETO_POR_COLUNA
-        ? (columnTarget?.card && this._canBeAttackTarget(columnTarget) ? columnTarget : null)
+        ? (columnTarget?.card && this._canBeAttackTarget(columnTarget, attackerSlot) ? columnTarget : null)
         : forcedTarget ?? aiChooseFirstSlot(
-            yourCreatures.filter((slot) => this._canBeAttackTarget(slot)),
+            yourCreatures.filter((slot) => this._canBeAttackTarget(slot, attackerSlot)),
           );
       if (target) {
         await new Promise((resolve) =>
@@ -6274,7 +6472,7 @@ export default class GameScene extends Scene {
     const targetSlot = this._slotsMy.find(
       (slot) => slot.card?.instanceId === targetInstanceId,
     );
-    if (!targetSlot?.card || !this._canBeAttackTarget(targetSlot)) return null;
+    if (!targetSlot?.card || !this._canBeAttackTarget(targetSlot, attackerSlot)) return null;
     return targetSlot;
   }
 
@@ -6866,12 +7064,14 @@ export default class GameScene extends Scene {
   }
 
   _clearExpiredTemporaryEffects() {
-    this._slotsMy.forEach((slot) => {
-      if (!slot.card?.tempModifiers?.length) return;
-      slot.card.tempModifiers = slot.card.tempModifiers.filter(
-        (modifier) => modifier.expiresOnTurn > this._turnNumber,
-      );
-    });
+    for (const slots of [this._slotsMy, this._slotsOpp]) {
+      slots.forEach((slot) => {
+        if (!slot.card?.tempModifiers?.length) return;
+        slot.card.tempModifiers = slot.card.tempModifiers.filter(
+          (modifier) => modifier.expiresOnTurn > this._turnNumber,
+        );
+      });
+    }
     this._recalculateAllFieldCreatures();
   }
 
