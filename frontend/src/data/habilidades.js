@@ -315,5 +315,47 @@ export const habilidades = [
       },
     ],
   },
+  {
+    id: 43,
+    nome: 'Proteção do Escudeiro',
+    tipo: 'Habilidade',
+    efeito: 'A criatura anexada recebe +1/+2. Uma vez por turno, quando uma criatura que você controla que tenha Contos no nome for alvo de um ataque, você pode enviar esta carta para o descarte e negar o ataque.',
+    elemento: 'terra',
+    raridade: 'comum',
+    img: '43.png',
+    edicao: 'Matilhas & Predadores',
+    effects: [
+      { type: 'modify_stat', target: 'attached_creature', stat: 'attack', value: 1 },
+      { type: 'modify_stat', target: 'attached_creature', stat: 'defense', value: 2 },
+    ],
+    triggeredAbilities: [
+      {
+        id: 'protecao_escudeiro_nega_ataque',
+        trigger: 'your_creature_matching_is_targeted_by_attack',
+        action: {
+          type: 'optional_discard_self_prevent_attack',
+          filter: { name_includes: 'Contos' },
+        },
+      },
+    ],
+  },
+  {
+    id: 44,
+    nome: 'Resistência',
+    tipo: 'Habilidade',
+    efeito: 'A criatura anexada recebe +0/+2 e ignora 1 ponto de dano de combate.',
+    elemento: 'terra',
+    raridade: 'comum',
+    img: '44.png',
+    edicao: 'Matilhas & Predadores',
+    effects: [
+      { type: 'modify_stat', target: 'attached_creature', stat: 'defense', value: 2 },
+      {
+        type: 'reduce_combat_damage_taken',
+        target: 'attached_creature',
+        value: 1,
+      },
+    ],
+  },
 
 ]

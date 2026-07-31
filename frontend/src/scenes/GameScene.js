@@ -1794,10 +1794,7 @@ export default class GameScene extends Scene {
         return;
       }
 
-      this._animateAttackMotion(slot, targetSlot, () => {
-        this._resolveCreatureAttack(slot, targetSlot);
-        this._renderBattleAttackButtons();
-      });
+      this._startCreatureBattleAfterProtection(slot, targetSlot, "my");
       return;
     }
 
@@ -1987,10 +1984,79 @@ export default class GameScene extends Scene {
     this._pendingAttackSlot = null;
     this._clearAttackTargets();
     this._clearBattleAttackButtons();
-    this._animateAttackMotion(attackerSlot, targetSlot, () => {
-      this._resolveCreatureAttack(attackerSlot, targetSlot);
-      this._renderBattleAttackButtons();
+    this._startCreatureBattleAfterProtection(attackerSlot, targetSlot, "my");
+  }
+
+  async _startCreatureBattleAfterProtection(attackerSlot, defenderSlot, attackerOwner) {
+    const prevented = await this._tryPreventAttackWithShield(
+      attackerSlot,
+      defenderSlot,
+      attackerOwner,
+    );
+    if (prevented) {
+      if (attackerOwner === "my") this._renderBattleAttackButtons();
+      return;
+    }
+
+    this._animateAttackMotion(attackerSlot, defenderSlot, () => {
+      if (!attackerSlot?.card || !defenderSlot?.card) return;
+      if (attackerOwner === "my") {
+        this._resolveCreatureAttack(attackerSlot, defenderSlot);
+        this._renderBattleAttackButtons();
+      } else {
+        this._resolveOpponentCreatureAttack(attackerSlot, defenderSlot);
+      }
     });
+  }
+
+  async _tryPreventAttackWithShield(attackerSlot, defenderSlot, attackerOwner) {
+    const defenderOwner = attackerOwner === "my" ? "opp" : "my";
+    const defenderSlots = defenderOwner === "my" ? this._slotsMy : this._slotsOpp;
+    if (!defenderSlot?.card) return false;
+
+    const candidates = defenderSlots.flatMap((slot) =>
+      (slot.attachments ?? []).map((entry, index) => ({ slot, entry, index })),
+    ).filter(({ entry }) =>
+      (entry.card?.triggeredAbilities ?? []).some((ability) =>
+        ability.trigger === "your_creature_matching_is_targeted_by_attack" &&
+        ability.action?.type === "optional_discard_self_prevent_attack" &&
+        matchesCreatureRule(defenderSlot.card, ability.action.filter ?? {}),
+      ),
+    );
+
+    for (const candidate of candidates) {
+      if (candidate.entry.shieldUsedTurn === this._turnNumber) continue;
+      candidate.entry.shieldUsedTurn = this._turnNumber;
+
+      const useShield = defenderOwner === "opp"
+        ? true
+        : await this._requestYesNoChoiceAsync({
+            title: candidate.entry.card.name,
+            message: `${defenderSlot.card.name} foi alvo de um ataque. Deseja enviar esta carta ao descarte para negar o ataque?`,
+            confirmLabel: "NEGAR ATAQUE",
+            cancelLabel: "NÃO",
+          });
+      if (!useShield) continue;
+
+      this._discardShieldAttachment(candidate.slot, candidate.entry, defenderOwner);
+      this._toast(`${candidate.entry.card.name} negou o ataque contra ${defenderSlot.card.name}.`);
+      this._logAction(`${candidate.entry.card.name} foi enviada ao descarte para negar um ataque.`);
+      return true;
+    }
+
+    return false;
+  }
+
+  _discardShieldAttachment(slot, entry, owner) {
+    const index = slot.attachments.indexOf(entry);
+    if (index < 0) return false;
+    slot.attachments.splice(index, 1);
+    const discard = owner === "my" ? this.myDiscard : this.oppDiscard;
+    discard.push(entry.card);
+    this._notifyAttachmentSentToDiscard(entry.card, owner);
+    this._animateFieldObjectToDiscard(entry.object, owner, { scale: 0.58 });
+    this._recalculateAllFieldCreatures();
+    return true;
   }
 
   _directAttackTargetPoint(side) {
@@ -2358,6 +2424,13 @@ export default class GameScene extends Scene {
           continue;
         if (!matchesCreatureRule(targetSlot.card, effect.filter ?? {}))
           continue;
+        damage = Math.max(0, damage - (Number(effect.value) || 0));
+      }
+    }
+
+    for (const attachment of targetSlot.attachments ?? []) {
+      for (const effect of attachment.card?.effects ?? []) {
+        if (effect.type !== "reduce_combat_damage_taken") continue;
         damage = Math.max(0, damage - (Number(effect.value) || 0));
       }
     }
@@ -6433,6 +6506,15 @@ export default class GameScene extends Scene {
             yourCreatures.filter((slot) => this._canBeAttackTarget(slot, attackerSlot)),
           );
       if (target) {
+        const prevented = await this._tryPreventAttackWithShield(
+          attackerSlot,
+          target,
+          "opp",
+        );
+        if (prevented) {
+          this._clearForcedAttack(attackerSlot.card);
+          continue;
+        }
         await new Promise((resolve) =>
           this._animateAttackMotion(attackerSlot, target, () => {
             this._resolveOpponentCreatureAttack(attackerSlot, target);
