@@ -1,0 +1,38 @@
+{
+  "name": "ezone-tcg",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Ezone TCG online - engine deterministico, servidor autoritativo e cliente React",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "servidor": "node --disable-warning=ExperimentalWarning server/main.ts",
+    "start": "node --disable-warning=ExperimentalWarning server/main.ts",
+    "sim": "node scripts/sim.ts",
+    "api": "node --disable-warning=ExperimentalWarning scripts/api.ts"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zustand": "5.0.14"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "26.2.0",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "6.0.5",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.2.1",
+    "vitest": "4.1.10"
+  }
+}
