@@ -20,7 +20,7 @@ export const habilidades = [
     elemento: 'agua',
     raridade: 'comum',
     img: '09.png',
-    edicao: 'Abismos & Profundezas',
+    edicao: 'Abismos & Profundezas',/*  */
     effects: [
       {
         type: 'modify_stat',
