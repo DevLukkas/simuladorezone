@@ -1,28 +1,30 @@
+import { text, type TextRef } from '../../shared/text.ts';
+
 /** Cliente HTTP: sempre `/api` relativo (proxy em dev, mesma origem em produção). */
 
-const CHAVE_DA_SESSAO = 'ezone:sessao';
+const SESSION_KEY = 'ezone:session';
 
-export interface Sessao {
+export interface Session {
   token: string;
-  apelido: string;
+  nickname: string;
   email: string | null;
-  convidada: boolean;
+  guest: boolean;
 }
 
-export function sessaoGuardada(): Sessao | null {
+export function storedSession(): Session | null {
   try {
-    const bruto = localStorage.getItem(CHAVE_DA_SESSAO);
-    if (!bruto) return null;
-    const dados = JSON.parse(bruto) as Sessao;
-    return typeof dados.token === 'string' ? dados : null;
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as Session;
+    return typeof data.token === 'string' ? data : null;
   } catch {
     return null;
   }
 }
 
-export function guardarSessao(sessao: Sessao | null): void {
-  if (sessao) localStorage.setItem(CHAVE_DA_SESSAO, JSON.stringify(sessao));
-  else localStorage.removeItem(CHAVE_DA_SESSAO);
+export function storeSession(session: Session | null): void {
+  if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  else localStorage.removeItem(SESSION_KEY);
 }
 
 /**
@@ -31,46 +33,69 @@ export function guardarSessao(sessao: Sessao | null): void {
  * noutra aba). Sem isto o cliente fica preso numa conta fantasma — tela de menu
  * sem decks, repetindo 401 a cada montagem, e nada leva de volta ao login.
  */
-type AoCairASessao = () => void;
+type OnSessionLost = () => void;
 
-let avisarQueCaiu: AoCairASessao | null = null;
+let notifySessionLost: OnSessionLost | null = null;
 
-export function quandoASessaoCair(callback: AoCairASessao): void {
-  avisarQueCaiu = callback;
+export function onSessionLost(callback: OnSessionLost): void {
+  notifySessionLost = callback;
 }
 
-export class ErroDaApi extends Error {
+/**
+ * Recusa do servidor já pronta para traduzir: `ref` é a chave do erro e
+ * `details` a lista de problemas quando há mais de um (validação de deck).
+ */
+export class ApiError extends Error {
   status: number;
+  ref: TextRef;
+  details: TextRef[];
 
-  constructor(status: number, mensagem: string) {
-    super(mensagem);
+  constructor(status: number, ref: TextRef, details: TextRef[] = []) {
+    super(ref.key);
     this.status = status;
+    this.ref = ref;
+    this.details = details;
   }
+}
+
+function refFromBody(body: Record<string, unknown>): TextRef {
+  const error = body.error;
+  if (error && typeof error === 'object' && typeof (error as TextRef).key === 'string') {
+    return error as TextRef;
+  }
+  return text('common.failed');
 }
 
 export async function api<T = Record<string, unknown>>(
-  metodo: string,
-  caminho: string,
-  corpo?: unknown,
+  method: string,
+  path: string,
+  body?: unknown,
+  /** cabeçalhos extras; hoje só a chave do estúdio de cartas os usa */
+  extraHeaders?: Record<string, string>,
 ): Promise<T> {
-  const token = sessaoGuardada()?.token;
-  const resposta = await fetch(caminho, {
-    method: metodo,
+  const token = storedSession()?.token;
+  const reply = await fetch(path, {
+    method: method,
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...extraHeaders,
     },
-    ...(corpo === undefined ? {} : { body: JSON.stringify(corpo) }),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const dados = (await resposta.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!resposta.ok) {
+  const data = (await reply.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!reply.ok) {
     // só derruba se o token FOI apresentado e recusado; 401 de login errado não
     // é sessão caída
-    if (resposta.status === 401 && token) {
-      guardarSessao(null);
-      avisarQueCaiu?.();
+    if (reply.status === 401 && token) {
+      storeSession(null);
+      notifySessionLost?.();
     }
-    throw new ErroDaApi(resposta.status, typeof dados.erro === 'string' ? dados.erro : 'falhou');
+    throw new ApiError(
+      reply.status,
+      refFromBody(data),
+      Array.isArray(data.details) ? (data.details as TextRef[]) : [],
+    );
   }
-  return dados as T;
+  return data as T;
 }

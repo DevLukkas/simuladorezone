@@ -15,6 +15,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "servidor": "node --disable-warning=ExperimentalWarning server/main.ts",
+    "estudio": "node --disable-warning=ExperimentalWarning server/main.ts --admin",
     "start": "node --disable-warning=ExperimentalWarning server/main.ts",
     "sim": "node scripts/sim.ts",
     "api": "node --disable-warning=ExperimentalWarning scripts/api.ts"

@@ -1,173 +1,232 @@
 import { useEffect, useState } from 'react';
-import { usePartidaStore, type DeckParaTreino } from './estado/partidaStore.ts';
-import { useSessaoStore } from './estado/sessaoStore.ts';
-import { useDecksStore } from './estado/decksStore.ts';
-import { CartaAmpliada } from './componentes/CartaAmpliada.tsx';
-import { ToggleRenderizacao } from './componentes/ToggleRenderizacao.tsx';
-import { Tabuleiro } from './componentes/Tabuleiro.tsx';
-import { Entrar } from './telas/Entrar.tsx';
-import { Colecao } from './telas/Colecao.tsx';
-import { Decks } from './telas/Decks.tsx';
-import { Lobby } from './telas/Lobby.tsx';
+import { useMatchStore, type TrainingDeck } from './stores/matchStore.ts';
+import { useSessionStore } from './stores/sessionStore.ts';
+import { useDecksStore } from './stores/decksStore.ts';
+import { ALL_CARDS } from '../data/cards.ts';
+import { CardImage } from './components/Card.tsx';
+import { CardZoom } from './components/CardZoom.tsx';
+import { LanguagePicker } from './components/LanguagePicker.tsx';
+import { Wordmark } from './components/Wordmark.tsx';
+import { Board } from './components/Board.tsx';
+import { SignIn } from './screens/SignIn.tsx';
+import { Collection } from './screens/Collection.tsx';
+import { Decks } from './screens/Decks.tsx';
+import { Lobby } from './screens/Lobby.tsx';
+import { Studio } from './screens/Studio.tsx';
+import { useAdminStore } from './stores/adminStore.ts';
 import { api } from './services/api.ts';
+import { useTranslation } from './useTranslation.ts';
 
-type Tela = 'menu' | 'colecao' | 'decks' | 'lobby';
+type Screen = 'menu' | 'collection' | 'decks' | 'lobby' | 'studio';
+
+/**
+ * A carta que boia no menu é sorteada do catálogo inteiro a cada volta ao menu
+ * (pedido do DevLukkas): o menu é vitrine, e vitrine fixa cansa.
+ */
+function randomShowcaseCard(): number {
+  const index = Math.floor(Math.random() * ALL_CARDS.length);
+  // Badur, o Urso Guardião, de reserva — o catálogo nunca é vazio, mas o índice é conferido
+  return ALL_CARDS[index]?.id ?? 31;
+}
 
 export function App() {
-  const { sessao, sair: sairDaConta } = useSessaoStore();
-  const { visao, iniciarTreino, iniciarOnline } = usePartidaStore();
-  const [tela, setTela] = useState<Tela>('menu');
+  const { session, signOut } = useSessionStore();
+  const { view, startTraining, startOnline } = useMatchStore();
+  const [screen, setScreen] = useState<Screen>('menu');
+  const { enabled: studioEnabled, checkEnabled } = useAdminStore();
+
+  // o estúdio de cartas só existe quando o servidor sobe com --admin
+  useEffect(() => {
+    if (session) void checkEnabled();
+  }, [session, checkEnabled]);
 
   // reconexão: se a conta tem partida em andamento, volta direto para ela
   useEffect(() => {
-    if (!sessao || visao) return;
-    void api<{ partidaId: number | null }>('GET', '/api/partidas/atual')
-      .then((resposta) => {
-        if (resposta.partidaId) return iniciarOnline(resposta.partidaId);
+    if (!session || view) return;
+    void api<{ matchId: number | null }>('GET', '/api/matches/current')
+      .then((reply) => {
+        if (reply.matchId) return startOnline(reply.matchId);
         return undefined;
       })
       .catch(() => undefined);
-  }, [sessao, visao, iniciarOnline]);
+  }, [session, view, startOnline]);
 
-  if (!sessao) return <Entrar />;
+  if (!session) return <SignIn />;
 
-  let conteudo: React.ReactNode;
-  if (visao) conteudo = <Tabuleiro />;
-  else if (tela === 'colecao') conteudo = <Colecao aoVoltar={() => setTela('menu')} />;
-  else if (tela === 'decks') conteudo = <Decks aoVoltar={() => setTela('menu')} />;
-  else if (tela === 'lobby') {
-    conteudo = (
+  let content: React.ReactNode;
+  if (view) content = <Board />;
+  else if (screen === 'collection') content = <Collection onBack={() => setScreen('menu')} />;
+  else if (screen === 'decks') content = <Decks onBack={() => setScreen('menu')} />;
+  else if (screen === 'studio') content = <Studio onBack={() => setScreen('menu')} />;
+  else if (screen === 'lobby') {
+    content = (
       <Lobby
-        aoVoltar={() => setTela('menu')}
-        aoEntrarNaPartida={(partidaId) => {
-          setTela('menu');
-          void iniciarOnline(partidaId);
+        onBack={() => setScreen('menu')}
+        onEnterMatch={(matchId) => {
+          setScreen('menu');
+          void startOnline(matchId);
         }}
       />
     );
   } else {
-    conteudo = (
-      <Menu
-        apelido={sessao.apelido}
-        convidada={sessao.convidada}
-        aoTreinar={iniciarTreino}
-        aoAbrirLobby={() => setTela('lobby')}
-        aoAbrirColecao={() => setTela('colecao')}
-        aoAbrirDecks={() => setTela('decks')}
-        aoSair={sairDaConta}
+    content = (
+      <MainMenu
+        nickname={session.nickname}
+        guest={session.guest}
+        onTrain={startTraining}
+        onOpenLobby={() => setScreen('lobby')}
+        onOpenCollection={() => setScreen('collection')}
+        onOpenDecks={() => setScreen('decks')}
+        onSignOut={signOut}
+        {...(studioEnabled ? { onOpenStudio: () => setScreen('studio') } : {})}
       />
     );
   }
 
   return (
     <>
-      {conteudo}
-      <CartaAmpliada />
-      <ToggleRenderizacao />
+      {content}
+      <CardZoom />
     </>
   );
 }
 
-function Menu({
-  apelido,
-  convidada,
-  aoTreinar,
-  aoAbrirLobby,
-  aoAbrirColecao,
-  aoAbrirDecks,
-  aoSair,
+function MainMenu({
+  nickname,
+  guest,
+  onTrain,
+  onOpenLobby,
+  onOpenCollection,
+  onOpenDecks,
+  onOpenStudio,
+  onSignOut,
 }: {
-  apelido: string;
-  convidada: boolean;
-  aoTreinar: (deck?: DeckParaTreino) => void;
-  aoAbrirLobby: () => void;
-  aoAbrirColecao: () => void;
-  aoAbrirDecks: () => void;
-  aoSair: () => void;
+  nickname: string;
+  guest: boolean;
+  onTrain: (deck?: TrainingDeck) => void;
+  onOpenLobby: () => void;
+  onOpenCollection: () => void;
+  onOpenDecks: () => void;
+  /** ausente quando o servidor não subiu com --admin */
+  onOpenStudio?: () => void;
+  onSignOut: () => void;
 }) {
-  const { decks, carregado, carregar } = useDecksStore();
-  const [deckEscolhido, setDeckEscolhido] = useState<number | 'padrao'>('padrao');
+  const { decks, loaded, load } = useDecksStore();
+  const { t } = useTranslation();
+  const [chosenDeckId, setChosenDeckId] = useState<number | 'default'>('default');
+  // sorteada uma vez por visita ao menu: voltar de uma partida ou da coleção troca a carta
+  const [showcaseCard] = useState(randomShowcaseCard);
 
   useEffect(() => {
-    void carregar();
-  }, [carregar]);
+    void load();
+  }, [load]);
 
-  function treinar() {
-    const deck = decks.find((candidato) => candidato.id === deckEscolhido);
+  function train() {
+    const deck = decks.find((candidate) => candidate.id === chosenDeckId);
     if (!deck) {
-      aoTreinar();
+      onTrain();
       return;
     }
-    const cartas: number[] = [];
-    for (const [cartaId, quantidade] of Object.entries(deck.cartas)) {
-      for (let i = 0; i < quantidade; i++) cartas.push(Number(cartaId));
+    const cards: number[] = [];
+    for (const [cardId, amount] of Object.entries(deck.cards)) {
+      for (let i = 0; i < amount; i++) cards.push(Number(cardId));
     }
-    aoTreinar({ heroi: deck.heroi, cartas, formato: deck.formato ?? 'classico' });
+    onTrain({ hero: deck.hero, cards, format: deck.format ?? 'classic' });
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col items-center justify-center gap-5 p-8 text-center">
-      <img src="/assets/img/cover.png" alt="" className="w-40 rounded shadow-lg" />
-      <h1 className="text-4xl font-bold tracking-tight">Ezone TCG</h1>
-      <p className="text-slate-400">
-        Olá, <span className="font-bold text-slate-200">{apelido}</span>
-        {convidada && ' (convidado)'}
-      </p>
+    <main className="ez-page relative flex flex-col items-center justify-center gap-5.5 overflow-hidden p-11">
+      <div className="absolute right-5 top-4 flex items-center gap-3.5 text-sm text-ez-muted">
+        <span>
+          {t('menu.greeting', { nickname })}
+          {guest && t('menu.guestSuffix')}
+        </span>
+        <button
+          type="button"
+          onClick={onSignOut}
+          className="cursor-pointer text-ez-muted transition-colors hover:text-ez-gold-light"
+        >
+          {t('menu.signOut')}
+        </button>
+      </div>
 
-      <div className="flex items-center gap-2">
-        <label htmlFor="deck" className="text-sm text-slate-400">
-          Deck:
+      {/*
+        A carta que boia no menu é uma carta DO JOGO, não o verso impresso: o verso
+        traz o brasão do "EZone Tatics", que é outro jogo do DevLukkas, e ele não
+        pode ser o rosto deste. Qual carta é fica por conta do sorteio. Clique
+        direito amplia, como em qualquer carta.
+      */}
+      <div className="relative aspect-[415/555] h-[296px] max-h-[34vh]">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -inset-11"
+          style={{
+            background: 'radial-gradient(closest-side, rgba(63,169,245,.28), transparent 72%)',
+            animation: 'ez-glow-pulse 4s ease-in-out infinite',
+          }}
+        />
+        <div
+          className="h-full"
+          style={{
+            filter: 'drop-shadow(0 30px 60px rgba(0,0,0,.65))',
+            animation: 'ez-floaty 6s ease-in-out infinite',
+          }}
+        >
+          <CardImage cardId={showcaseCard} className="h-full w-auto" />
+        </div>
+      </div>
+
+      <Wordmark compact />
+
+      <div className="ez-panel flex items-center gap-2.5 px-4 py-2.5">
+        <label htmlFor="deck" className="text-sm text-ez-muted">
+          {t('menu.deck')}
         </label>
         <select
           id="deck"
-          className="rounded bg-slate-800 px-3 py-1"
-          value={deckEscolhido}
-          onChange={(evento) =>
-            setDeckEscolhido(evento.target.value === 'padrao' ? 'padrao' : Number(evento.target.value))
+          className="ez-select ez-select-sm"
+          value={chosenDeckId}
+          onChange={(event) =>
+            setChosenDeckId(
+              event.target.value === 'default' ? 'default' : Number(event.target.value),
+            )
           }
         >
-          <option value="padrao">Deck de demonstração</option>
-          {carregado &&
+          <option value="default">{t('menu.demoDeck')}</option>
+          {loaded &&
             decks.map((deck) => (
               <option key={deck.id} value={deck.id}>
-                {deck.nome}
+                {deck.name} — {t(`format.${deck.format ?? 'classic'}`)}
               </option>
             ))}
         </select>
       </div>
 
-      <div className="flex gap-3">
-        <button
-          type="button"
-          onClick={aoAbrirLobby}
-          className="rounded-lg bg-sky-700 px-8 py-3 text-lg font-bold shadow hover:bg-sky-600"
-        >
-          JOGAR ONLINE
+      <div className="flex flex-wrap justify-center gap-4">
+        <button type="button" onClick={onOpenLobby} className="ez-btn ez-btn-blue min-w-55 py-4">
+          {t('menu.playOnline')}
         </button>
-        <button
-          type="button"
-          onClick={treinar}
-          className="rounded-lg bg-emerald-700 px-8 py-3 text-lg font-bold shadow hover:bg-emerald-600"
-        >
-          TREINO VS BOT
+        <button type="button" onClick={train} className="ez-btn ez-btn-gold min-w-55 py-4">
+          {t('menu.trainVsBot')}
         </button>
       </div>
 
-      <div className="flex gap-3">
-        <button type="button" onClick={aoAbrirDecks} className="rounded bg-slate-800 px-5 py-2 hover:bg-slate-700">
-          Meus decks
+      <div className="flex flex-wrap justify-center gap-3">
+        <button type="button" onClick={onOpenDecks} className="ez-btn ez-btn-ghost ez-btn-sm">
+          {t('menu.myDecks')}
         </button>
-        <button type="button" onClick={aoAbrirColecao} className="rounded bg-slate-800 px-5 py-2 hover:bg-slate-700">
-          Coleção
+        <button type="button" onClick={onOpenCollection} className="ez-btn ez-btn-ghost ez-btn-sm">
+          {t('menu.collection')}
         </button>
-        <button type="button" onClick={aoSair} className="rounded px-5 py-2 text-slate-500 hover:bg-slate-800">
-          Sair
-        </button>
+        {onOpenStudio && (
+          <button type="button" onClick={onOpenStudio} className="ez-btn ez-btn-ghost ez-btn-sm">
+            {t('admin.open')}
+          </button>
+        )}
+        <LanguagePicker />
       </div>
 
-      <p className="text-xs text-slate-600">
-        Partidas online: entre na fila ou crie uma sala com código de convite.
-      </p>
+      <p className="text-[13px] text-ez-dim">{t('menu.onlineHint')}</p>
     </main>
   );
 }

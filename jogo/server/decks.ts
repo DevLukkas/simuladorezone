@@ -1,190 +1,190 @@
-import { validarDeck, type DeckProposto } from '../src/data/regras.ts';
-import { FORMATOS, type Formato } from '../src/data/tipos.ts';
-import { inteiro, texto } from './banco.ts';
-import { comConta } from './contas.ts';
-import { criado, ok, recusado } from './http.ts';
-import type { Banco, Linha } from './banco.ts';
-import type { Rota } from './http.ts';
+import { validateDeck, type DeckDraft } from '../src/data/deckRules.ts';
+import { FORMATS, type Format } from '../src/data/types.ts';
+import { asInt, text } from './db.ts';
+import { withAccount } from './accounts.ts';
+import { created, ok, rejected } from './http.ts';
+import type { Db, Row } from './db.ts';
+import type { Route } from './http.ts';
 
 // A validação usa a MESMA função do cliente (src/data/regras.ts) — o padrão da
 // casa: servidor e jogo compartilham o código, o servidor é a autoridade.
 
-const ehObjeto = (valor: unknown): valor is Record<string, unknown> =>
-  typeof valor === 'object' && valor !== null && !Array.isArray(valor);
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const NOME_MAXIMO = 60;
+const MAX_NAME_LENGTH = 60;
 
-const ehFormato = (valor: unknown): valor is Formato =>
-  FORMATOS.includes(valor as Formato);
+const isFormat = (value: unknown): value is Format =>
+  FORMATS.includes(value as Format);
 
-function propostaDoCorpo(corpo: unknown): DeckProposto | null {
-  if (!ehObjeto(corpo)) return null;
-  if (typeof corpo.nome !== 'string' || typeof corpo.heroi !== 'string') return null;
-  if (!ehObjeto(corpo.cartas)) return null;
-  if (corpo.formato !== undefined && !ehFormato(corpo.formato)) return null;
+function draftFromBody(body: unknown): DeckDraft | null {
+  if (!isObject(body)) return null;
+  if (typeof body.name !== 'string' || typeof body.hero !== 'string') return null;
+  if (!isObject(body.cards)) return null;
+  if (body.format !== undefined && !isFormat(body.format)) return null;
 
-  const cartas: Record<number, number> = {};
-  for (const [chave, valor] of Object.entries(corpo.cartas)) {
-    const id = Number(chave);
-    const quantidade = Number(valor);
-    if (!Number.isInteger(id) || !Number.isInteger(quantidade)) return null;
-    cartas[id] = quantidade;
+  const cards: Record<number, number> = {};
+  for (const [key, value] of Object.entries(body.cards)) {
+    const id = Number(key);
+    const amount = Number(value);
+    if (!Number.isInteger(id) || !Number.isInteger(amount)) return null;
+    cards[id] = amount;
   }
 
   return {
-    nome: corpo.nome.trim().slice(0, NOME_MAXIMO),
-    heroi: corpo.heroi,
-    cartas,
-    formato: ehFormato(corpo.formato) ? corpo.formato : 'classico',
+    name: body.name.trim().slice(0, MAX_NAME_LENGTH),
+    hero: body.hero,
+    cards,
+    format: isFormat(body.format) ? body.format : 'classic',
   };
 }
 
-function deckCompleto(banco: Banco, linha: Linha): Record<string, unknown> {
-  const id = inteiro(linha.id);
-  const cartas: Record<number, number> = {};
-  for (const cartaLinha of banco.todas(
-    'SELECT carta_id, quantidade FROM deck_cartas WHERE deck_id = ?',
+function fullDeck(db: Db, row: Row): Record<string, unknown> {
+  const id = asInt(row.id);
+  const cards: Record<number, number> = {};
+  for (const cardRow of db.all(
+    'SELECT card_id, amount FROM deck_cards WHERE deck_id = ?',
     id,
   )) {
-    cartas[inteiro(cartaLinha.carta_id)] = inteiro(cartaLinha.quantidade);
+    cards[asInt(cardRow.card_id)] = asInt(cardRow.amount);
   }
   return {
     id,
-    nome: texto(linha.nome),
-    heroi: texto(linha.heroi),
-    cartas,
-    formato: texto(linha.formato) || 'classico',
+    name: text(row.name),
+    hero: text(row.hero),
+    cards,
+    format: text(row.format) || 'classic',
   };
 }
 
-function gravarCartas(banco: Banco, deckId: number, cartas: Record<number, number>): void {
-  banco.executar('DELETE FROM deck_cartas WHERE deck_id = ?', deckId);
-  for (const [cartaId, quantidade] of Object.entries(cartas)) {
-    banco.executar(
-      'INSERT INTO deck_cartas (deck_id, carta_id, quantidade) VALUES (?, ?, ?)',
+function saveDeckCards(db: Db, deckId: number, cards: Record<number, number>): void {
+  db.run('DELETE FROM deck_cards WHERE deck_id = ?', deckId);
+  for (const [cardId, amount] of Object.entries(cards)) {
+    db.run(
+      'INSERT INTO deck_cards (deck_id, card_id, amount) VALUES (?, ?, ?)',
       deckId,
-      Number(cartaId),
-      quantidade,
+      Number(cardId),
+      amount,
     );
   }
 }
 
-export const rotasDeDecks = (banco: Banco): Rota[] => [
+export const deckRoutes = (db: Db): Route[] => [
   {
-    metodo: 'GET',
-    padrao: '/api/decks',
-    responder: comConta(banco, (_pedido, conta) => {
-      const linhas = banco.todas(
-        'SELECT id, nome, heroi, formato FROM decks WHERE conta_id = ? ORDER BY id',
-        conta.id,
+    method: 'GET',
+    pattern: '/api/decks',
+    handle: withAccount(db, (_pedido, account) => {
+      const rows = db.all(
+        'SELECT id, name, hero, format FROM decks WHERE account_id = ? ORDER BY id',
+        account.id,
       );
-      return ok({ decks: linhas.map((linha) => deckCompleto(banco, linha)) });
+      return ok({ decks: rows.map((row) => fullDeck(db, row)) });
     }),
   },
   {
-    metodo: 'POST',
-    padrao: '/api/decks',
-    responder: comConta(banco, (pedido, conta) => {
-      const proposta = propostaDoCorpo(pedido.corpo);
-      if (!proposta) return recusado(400, 'deck malformado');
-      const problemas = validarDeck(proposta);
-      if (problemas.length) return recusado(422, problemas.join(' '));
+    method: 'POST',
+    pattern: '/api/decks',
+    handle: withAccount(db, (request, account) => {
+      const draft = draftFromBody(request.body);
+      if (!draft) return rejected(400, 'deck_malformed');
+      const problems = validateDeck(draft);
+      if (problems.length) return rejected(422, 'deck_malformed', undefined, problems);
 
-      return banco.emTransacao(() => {
-        banco.executar(
-          'INSERT INTO decks (conta_id, nome, heroi, formato, criada_em) VALUES (?, ?, ?, ?, ?)',
-          conta.id,
-          proposta.nome,
-          proposta.heroi,
-          proposta.formato ?? 'classico',
+      return db.inTransaction(() => {
+        db.run(
+          'INSERT INTO decks (account_id, name, hero, format, created_at) VALUES (?, ?, ?, ?, ?)',
+          account.id,
+          draft.name,
+          draft.hero,
+          draft.format ?? 'classic',
           new Date().toISOString(),
         );
-        const id = inteiro(banco.uma('SELECT last_insert_rowid() AS id')?.id);
-        gravarCartas(banco, id, proposta.cartas);
-        return criado({
+        const id = asInt(db.one('SELECT last_insert_rowid() AS id')?.id);
+        saveDeckCards(db, id, draft.cards);
+        return created({
           id,
-          nome: proposta.nome,
-          heroi: proposta.heroi,
-          cartas: proposta.cartas,
-          formato: proposta.formato ?? 'classico',
+          name: draft.name,
+          hero: draft.hero,
+          cards: draft.cards,
+          format: draft.format ?? 'classic',
         });
       });
     }),
   },
   {
-    metodo: 'PUT',
-    padrao: '/api/decks/:id',
-    responder: comConta(banco, (pedido, conta) => {
-      const id = Number(pedido.parametros.id);
-      const dono = banco.uma('SELECT id FROM decks WHERE id = ? AND conta_id = ?', id, conta.id);
-      if (!dono) return recusado(404, 'deck não encontrado');
+    method: 'PUT',
+    pattern: '/api/decks/:id',
+    handle: withAccount(db, (request, account) => {
+      const id = Number(request.params.id);
+      const owner = db.one('SELECT id FROM decks WHERE id = ? AND account_id = ?', id, account.id);
+      if (!owner) return rejected(404, 'deck_not_found');
 
-      const proposta = propostaDoCorpo(pedido.corpo);
-      if (!proposta) return recusado(400, 'deck malformado');
-      const problemas = validarDeck(proposta);
-      if (problemas.length) return recusado(422, problemas.join(' '));
+      const draft = draftFromBody(request.body);
+      if (!draft) return rejected(400, 'deck_malformed');
+      const problems = validateDeck(draft);
+      if (problems.length) return rejected(422, 'deck_malformed', undefined, problems);
 
-      return banco.emTransacao(() => {
-        banco.executar(
-          'UPDATE decks SET nome = ?, heroi = ?, formato = ? WHERE id = ?',
-          proposta.nome,
-          proposta.heroi,
-          proposta.formato ?? 'classico',
+      return db.inTransaction(() => {
+        db.run(
+          'UPDATE decks SET name = ?, hero = ?, format = ? WHERE id = ?',
+          draft.name,
+          draft.hero,
+          draft.format ?? 'classic',
           id,
         );
-        gravarCartas(banco, id, proposta.cartas);
+        saveDeckCards(db, id, draft.cards);
         return ok({
           id,
-          nome: proposta.nome,
-          heroi: proposta.heroi,
-          cartas: proposta.cartas,
-          formato: proposta.formato ?? 'classico',
+          name: draft.name,
+          hero: draft.hero,
+          cards: draft.cards,
+          format: draft.format ?? 'classic',
         });
       });
     }),
   },
   {
-    metodo: 'DELETE',
-    padrao: '/api/decks/:id',
-    responder: comConta(banco, (pedido, conta) => {
-      const id = Number(pedido.parametros.id);
-      const apagadas = banco.executar(
-        'DELETE FROM decks WHERE id = ? AND conta_id = ?',
+    method: 'DELETE',
+    pattern: '/api/decks/:id',
+    handle: withAccount(db, (request, account) => {
+      const id = Number(request.params.id);
+      const removedRows = db.run(
+        'DELETE FROM decks WHERE id = ? AND account_id = ?',
         id,
-        conta.id,
+        account.id,
       );
-      if (!apagadas) return recusado(404, 'deck não encontrado');
+      if (!removedRows) return rejected(404, 'deck_not_found');
       return ok({ apagado: true });
     }),
   },
 ];
 
 /** Carrega um deck da conta no formato do engine (lista de ids + herói). */
-export function deckParaPartida(
-  banco: Banco,
-  contaId: number,
+export function deckForMatch(
+  db: Db,
+  accountId: number,
   deckId: number,
-): { heroi: string; cartas: number[]; formato: Formato } | null {
-  const linha = banco.uma(
-    'SELECT id, heroi, formato FROM decks WHERE id = ? AND conta_id = ?',
+): { hero: string; cards: number[]; format: Format } | null {
+  const row = db.one(
+    'SELECT id, hero, format FROM decks WHERE id = ? AND account_id = ?',
     deckId,
-    contaId,
+    accountId,
   );
-  if (!linha) return null;
-  const cartas: number[] = [];
-  for (const cartaLinha of banco.todas(
-    'SELECT carta_id, quantidade FROM deck_cartas WHERE deck_id = ?',
+  if (!row) return null;
+  const cards: number[] = [];
+  for (const cardRow of db.all(
+    'SELECT card_id, amount FROM deck_cards WHERE deck_id = ?',
     deckId,
   )) {
-    for (let i = 0; i < inteiro(cartaLinha.quantidade); i++) {
-      cartas.push(inteiro(cartaLinha.carta_id));
+    for (let i = 0; i < asInt(cardRow.amount); i++) {
+      cards.push(asInt(cardRow.card_id));
     }
   }
-  if (!cartas.length) return null;
-  const formato = texto(linha.formato);
+  if (!cards.length) return null;
+  const format = text(row.format);
   return {
-    heroi: texto(linha.heroi),
-    cartas,
-    formato: FORMATOS.includes(formato as Formato) ? (formato as Formato) : 'classico',
+    hero: text(row.hero),
+    cards,
+    format: FORMATS.includes(format as Format) ? (format as Format) : 'classic',
   };
 }

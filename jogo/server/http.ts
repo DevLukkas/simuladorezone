@@ -1,170 +1,188 @@
 import http from 'node:http';
+import { errorText, type ErrorCode } from '../src/shared/errors.ts';
+import type { TextRef } from '../src/shared/text.ts';
 import https from 'node:https';
 
 // Roteador mínimo sobre node:http (padrão jogo-gacha). Rotas JSON devolvem
 // `Resposta`; rotas `bruta` (SSE) recebem a resposta crua e cuidam dela.
 
-export type Pedido = {
-  metodo: string;
-  caminho: string;
-  parametros: Record<string, string>;
-  busca: URLSearchParams;
-  corpo: unknown;
-  autorizacao: string | null;
+export type ApiRequest = {
+  method: string;
+  path: string;
+  params: Record<string, string>;
+  search: URLSearchParams;
+  body: unknown;
+  authorization: string | null;
+  /** cabeçalhos crus, para quem precisa de um que não seja o de autorização */
+  headers: http.IncomingHttpHeaders;
   // endereço de quem pediu, usado só pelo contador de tentativas de login.
   // Atrás de proxy é o do proxy — confiar em x-forwarded-for sem conhecer o
   // proxy deixaria quem varre escolher a própria chave
-  origem: string;
+  origin: string;
 };
 
-export type Resposta = {
+export type ApiReply = {
   status: number;
-  corpo: unknown;
+  body: unknown;
 };
 
-export type Rota =
+export type Route =
   | {
-      metodo: string;
-      padrao: string;
-      responder: (pedido: Pedido) => Promise<Resposta> | Resposta;
-      bruta?: undefined;
+      method: string;
+      pattern: string;
+      handle: (request: ApiRequest) => Promise<ApiReply> | ApiReply;
+      /** teto do corpo desta rota; sem isto vale `MAX_BODY_BYTES` */
+      maxBody?: number;
+      raw?: undefined;
     }
   | {
-      metodo: string;
-      padrao: string;
-      responder?: undefined;
-      bruta: (pedido: Pedido, resposta: http.ServerResponse) => Promise<void> | void;
+      method: string;
+      pattern: string;
+      handle?: undefined;
+      maxBody?: undefined;
+      raw: (request: ApiRequest, reply: http.ServerResponse) => Promise<void> | void;
     };
 
-export const ok = (corpo: unknown): Resposta => ({ status: 200, corpo });
+export const ok = (body: unknown): ApiReply => ({ status: 200, body });
 
-export const criado = (corpo: unknown): Resposta => ({ status: 201, corpo });
+export const created = (body: unknown): ApiReply => ({ status: 201, body });
 
-export const recusado = (status: number, motivo: string): Resposta => ({
+/**
+ * Recusa com texto adiado: o corpo leva a CHAVE do erro (e os parâmetros), não a
+ * frase — quem escolhe o idioma é o cliente. `details` carrega a lista de
+ * problemas quando há mais de um (validação de deck).
+ */
+export const rejected = (
+  status: number,
+  code: ErrorCode,
+  params?: Record<string, string | number>,
+  details?: TextRef[],
+): ApiReply => ({
   status,
-  corpo: { erro: motivo },
+  body: details?.length ? { error: errorText(code, params), details } : { error: errorText(code, params) },
 });
 
-const LIMITE_DO_CORPO = 256 * 1024;
+const MAX_BODY_BYTES = 256 * 1024;
 
-const lerCorpo = async (requisicao: http.IncomingMessage): Promise<unknown> => {
-  const pedacos: Buffer[] = [];
-  let tamanho = 0;
+const readBody = async (req: http.IncomingMessage, limit: number): Promise<unknown> => {
+  const chunks: Buffer[] = [];
+  let size = 0;
 
-  for await (const pedaco of requisicao) {
-    const bloco = pedaco as Buffer;
-    tamanho += bloco.length;
-    if (tamanho > LIMITE_DO_CORPO) throw new Error('corpo grande demais');
-    pedacos.push(bloco);
+  for await (const chunk of req) {
+    const block = chunk as Buffer;
+    size += block.length;
+    if (size > limit) throw new Error('body_too_large');
+    chunks.push(block);
   }
 
-  if (pedacos.length === 0) return null;
+  if (chunks.length === 0) return null;
 
   try {
-    return JSON.parse(Buffer.concat(pedacos).toString('utf8'));
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } catch {
-    throw new Error('corpo não é json');
+    throw new Error('body_not_json');
   }
 };
 
-const casar = (padrao: string, caminho: string): Record<string, string> | null => {
-  const doPadrao = padrao.split('/').filter(Boolean);
-  const doCaminho = caminho.split('/').filter(Boolean);
-  if (doPadrao.length !== doCaminho.length) return null;
+const matchPattern = (pattern: string, path: string): Record<string, string> | null => {
+  const patternParts = pattern.split('/').filter(Boolean);
+  const pathParts = path.split('/').filter(Boolean);
+  if (patternParts.length !== pathParts.length) return null;
 
-  const parametros: Record<string, string> = {};
+  const params: Record<string, string> = {};
 
-  for (let indice = 0; indice < doPadrao.length; indice += 1) {
-    const esperado = doPadrao[indice] ?? '';
-    const veio = doCaminho[indice] ?? '';
-    if (esperado.startsWith(':')) {
-      parametros[esperado.slice(1)] = decodeURIComponent(veio);
+  for (let index = 0; index < patternParts.length; index += 1) {
+    const expected = patternParts[index] ?? '';
+    const gotPart = pathParts[index] ?? '';
+    if (expected.startsWith(':')) {
+      params[expected.slice(1)] = decodeURIComponent(gotPart);
       continue;
     }
-    if (esperado !== veio) return null;
+    if (expected !== gotPart) return null;
   }
 
-  return parametros;
+  return params;
 };
 
-const responderJson = (resposta: http.ServerResponse, status: number, corpo: unknown): void => {
-  const texto = JSON.stringify(corpo ?? null);
-  resposta.writeHead(status, {
+const sendJson = (reply: http.ServerResponse, status: number, body: unknown): void => {
+  const text = JSON.stringify(body ?? null);
+  reply.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(texto),
+    'content-length': Buffer.byteLength(text),
     'cache-control': 'no-store',
   });
-  resposta.end(texto);
+  reply.end(text);
 };
 
-export type Estatico = (caminho: string, resposta: http.ServerResponse) => Promise<boolean>;
+export type StaticHandler = (path: string, reply: http.ServerResponse) => Promise<boolean>;
 
 export type Tls = { cert: string | Buffer; key: string | Buffer };
 
-export const montarServidor = (
-  rotas: Rota[],
-  estatico: Estatico | null,
+export const createHttpServer = (
+  routes: Route[],
+  serveStatic: StaticHandler | null,
   tls: Tls | null = null,
 ): http.Server => {
-  const atender = montarManipulador(rotas, estatico);
+  const handleRequest = makeRequestHandler(routes, serveStatic);
   return tls
-    ? (https.createServer(tls, atender) as unknown as http.Server)
-    : http.createServer(atender);
+    ? (https.createServer(tls, handleRequest) as unknown as http.Server)
+    : http.createServer(handleRequest);
 };
 
-type Manipulador = (requisicao: http.IncomingMessage, resposta: http.ServerResponse) => void;
+type RequestHandler = (req: http.IncomingMessage, reply: http.ServerResponse) => void;
 
-const montarManipulador =
-  (rotas: Rota[], estatico: Estatico | null): Manipulador =>
-  (requisicao, resposta) => {
+const makeRequestHandler =
+  (routes: Route[], serveStatic: StaticHandler | null): RequestHandler =>
+  (req, reply) => {
     void (async (): Promise<void> => {
-      const endereco = new URL(requisicao.url ?? '/', 'http://interno');
-      const caminho = endereco.pathname;
-      const metodo = requisicao.method ?? 'GET';
+      const url = new URL(req.url ?? '/', 'http://interno');
+      const path = url.pathname;
+      const method = req.method ?? 'GET';
 
-      if (!caminho.startsWith('/api/')) {
-        if (estatico && (await estatico(caminho, resposta))) return;
-        responderJson(resposta, 404, { erro: 'não existe' });
+      if (!path.startsWith('/api/')) {
+        if (serveStatic && (await serveStatic(path, reply))) return;
+        sendJson(reply, 404, rejected(404, 'not_found').body);
         return;
       }
 
-      const compativel = rotas.filter((rota) => casar(rota.padrao, caminho) !== null);
-      if (compativel.length === 0) {
-        responderJson(resposta, 404, { erro: 'não existe' });
+      const matching = routes.filter((route) => matchPattern(route.pattern, path) !== null);
+      if (matching.length === 0) {
+        sendJson(reply, 404, { error: 'não existe' });
         return;
       }
 
-      const rota = compativel.find((candidata) => candidata.metodo === metodo);
-      if (!rota) {
-        responderJson(resposta, 405, { erro: 'método não vale para este caminho' });
+      const route = matching.find((candidate) => candidate.method === method);
+      if (!route) {
+        sendJson(reply, 405, rejected(405, 'method_not_allowed').body);
         return;
       }
 
       try {
-        const corpo = metodo === 'GET' ? null : await lerCorpo(requisicao);
-        const pedido: Pedido = {
-          metodo,
-          caminho,
-          parametros: casar(rota.padrao, caminho) ?? {},
-          busca: endereco.searchParams,
-          corpo,
-          autorizacao: requisicao.headers.authorization ?? null,
-          origem: requisicao.socket.remoteAddress ?? 'desconhecida',
+        const body = method === 'GET' ? null : await readBody(req, route.maxBody ?? MAX_BODY_BYTES);
+        const request: ApiRequest = {
+          method,
+          path,
+          params: matchPattern(route.pattern, path) ?? {},
+          search: url.searchParams,
+          body,
+          authorization: req.headers.authorization ?? null,
+          headers: req.headers,
+          origin: req.socket.remoteAddress ?? 'desconhecida',
         };
 
-        if (rota.bruta) {
-          await rota.bruta(pedido, resposta);
+        if (route.raw) {
+          await route.raw(request, reply);
           return;
         }
 
-        const devolvida = await rota.responder(pedido);
-        responderJson(resposta, devolvida.status, devolvida.corpo);
-      } catch (erro) {
-        const motivo = erro instanceof Error ? erro.message : 'falha ao atender';
-        const doCliente = motivo === 'corpo não é json' || motivo === 'corpo grande demais';
-        if (!doCliente) console.error('[servidor]', erro);
-        if (!resposta.headersSent) {
-          responderJson(resposta, doCliente ? 400 : 500, { erro: motivo });
+        const returned = await route.handle(request);
+        sendJson(reply, returned.status, returned.body);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'falha ao atender';
+        const fromClient = reason === 'corpo não é json' || reason === 'corpo grande demais';
+        if (!fromClient) console.error('[servidor]', error);
+        if (!reply.headersSent) {
+          sendJson(reply, fromClient ? 400 : 500, { error: reason });
         }
       }
     })();

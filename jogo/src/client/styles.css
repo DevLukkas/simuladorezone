@@ -1,0 +1,670 @@
+@import 'tailwindcss';
+
+/*
+  Tema da interface (decisão nº 26 — redesign importado do Claude Design).
+
+  A carta continua com a tipografia e as cores do molde impresso (ComposedCard);
+  isto aqui é a MOLDURA em volta dela: pergaminho escuro, ouro gravado e o azul de
+  Atlantis. Tudo que aparece mais de uma vez virou token ou classe `.ez-*` — repetir
+  o gradiente do botão em quinze arquivos foi o que a importação veio desfazer.
+*/
+@theme {
+  /* fundos, do mais fundo para o mais próximo */
+  --color-ez-ink: #06080f;
+  --color-ez-abyss: #0a0e1d;
+  --color-ez-panel: #101731;
+  --color-ez-field: #0b1020;
+
+  /* traços */
+  --color-ez-line: #2b3757;
+  --color-ez-line-soft: #1c2543;
+  --color-ez-line-strong: #33405f;
+
+  /* texto, do mais forte ao mais apagado */
+  --color-ez-parchment: #f0e6c8;
+  --color-ez-text: #dfe6f5;
+  --color-ez-soft: #c3cfe8;
+  --color-ez-muted: #8b99bd;
+  --color-ez-dim: #5f6d90;
+  --color-ez-faint: #3a4666;
+
+  /* ouro: título, ação principal, tudo que o jogo quer que seja clicado */
+  --color-ez-gold: #c9992e;
+  --color-ez-gold-pale: #f8e3a4;
+  --color-ez-gold-light: #f6dd9a;
+  --color-ez-gold-deep: #8f6620;
+
+  /* azul de Atlantis: ação secundária, oponente, deck */
+  --color-ez-blue: #2371cd;
+  --color-ez-blue-light: #5cb6f7;
+
+  /* brasa: batalha, troca, o que empurra o jogo adiante */
+  --color-ez-ember: #cf6420;
+  --color-ez-ember-light: #f7a44a;
+
+  /* sangue: apagar, desistir, derrota */
+  --color-ez-blood: #7e3328;
+  --color-ez-blood-light: #f0a496;
+
+  /* esmeralda: o pareamento online — a fila, a sala e o código que a abre */
+  --color-ez-emerald: #15805a;
+  --color-ez-emerald-light: #3fd68f;
+
+  /* verde de sereno: o SEU lado do tabuleiro */
+  --color-ez-moss: #8fce4f;
+  --color-ez-moss-light: #cfe8b0;
+
+  /* elemento — a cor da gema da coleção e da pílula da carta ampliada */
+  --color-ez-fire: #ff7a45;
+  --color-ez-water: #4aa8ff;
+  --color-ez-earth: #8fce4f;
+  --color-ez-wind: #6fded0;
+  --color-ez-neutral: #d9a940;
+  --color-ez-void: #a875f0;
+  --color-ez-arcane: #e46fd0;
+
+  /* raridade — a cor do halo da carta */
+  --color-ez-common: #aab8d0;
+  --color-ez-rare: #4aa8ff;
+  --color-ez-legendary: #eec052;
+
+  --font-title: 'Cinzel', 'Grenze', serif;
+  --font-sans: 'Alegreya Sans', ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ez-ink);
+  color: var(--color-ez-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-ez-dim);
+}
+
+/* o menu nativo do <select> não herda o tema da página */
+select option {
+  background: #0c1122;
+  color: var(--color-ez-text);
+}
+
+@layer components {
+  /* ── fundo ──────────────────────────────────────────────────────────────── */
+
+  /* a névoa azul no alto e a brasa embaixo: o fundo de toda tela fora da partida */
+  .ez-page {
+    min-height: 100dvh;
+    background:
+      radial-gradient(800px 420px at 50% 112%, rgba(201, 120, 38, 0.15), transparent 60%),
+      radial-gradient(1200px 700px at 50% -10%, #131c3a 0%, #0a0e1e 45%, #06080f 100%);
+    background-attachment: fixed;
+  }
+
+  /* ── painéis ────────────────────────────────────────────────────────────── */
+
+  .ez-panel {
+    background: linear-gradient(180deg, var(--color-ez-panel), var(--color-ez-abyss));
+    border: 1px solid var(--color-ez-line);
+    border-radius: 14px;
+    box-shadow:
+      0 24px 60px rgba(0, 0, 0, 0.6),
+      inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
+  /* painel que reage ao ponteiro: linha de deck, cartão de sala */
+  .ez-panel-hover:hover {
+    border-color: #3d4c75;
+  }
+
+  /* ── títulos ────────────────────────────────────────────────────────────── */
+
+  /* ouro gravado: o degradê corre no texto, não atrás dele */
+  .ez-title {
+    font-family: var(--font-title);
+    font-weight: 800;
+    background: linear-gradient(180deg, #f8e3a4 10%, #dfae45 48%, #8f6620 90%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .ez-heading {
+    font-family: var(--font-title);
+    font-weight: 700;
+    color: var(--color-ez-parchment);
+  }
+
+  /* ── botões ─────────────────────────────────────────────────────────────── */
+
+  .ez-btn {
+    font-family: var(--font-title);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    border-radius: 10px;
+    padding: 0.7rem 1.35rem;
+    cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+
+  .ez-btn:disabled {
+    cursor: default;
+    opacity: 0.4;
+    filter: none !important;
+  }
+
+  .ez-btn:not(:disabled):hover {
+    filter: brightness(1.1);
+  }
+
+  /* ouro em relevo: a ação principal da tela, uma por tela */
+  .ez-btn-gold {
+    background: linear-gradient(180deg, #f2d381, #cb9c31 55%, #96691b);
+    color: #221503;
+    border: 1px solid rgba(255, 230, 160, 0.5);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      inset 0 -2px 0 rgba(0, 0, 0, 0.25),
+      0 8px 22px rgba(203, 156, 49, 0.28);
+  }
+
+  /* azul: a ação paralela (online ao lado do treino, editar ao lado de apagar) */
+  .ez-btn-blue {
+    background: linear-gradient(180deg, #5cb6f7, #2371cd 55%, #154a92);
+    color: #eaf5ff;
+    border: 1px solid rgba(150, 210, 255, 0.45);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 8px 22px rgba(35, 113, 205, 0.35);
+  }
+
+  /* brasa: passar para a batalha, trocar a mão — o que não dá para desfazer */
+  .ez-btn-ember {
+    background: linear-gradient(180deg, #f7a44a, #cf6420 55%, #934011);
+    color: #fff3e4;
+    border: 1px solid rgba(255, 200, 140, 0.5);
+    box-shadow: 0 6px 16px rgba(207, 100, 32, 0.4);
+  }
+
+  /*
+    esmeralda: entrar na fila. É a única ação do jogo que não termina no clique —
+    fica pendurada esperando OUTRA pessoa, e por isso não usa o ouro (que promete
+    resposta imediata) nem o azul (que é a ação paralela).
+  */
+  .ez-btn-emerald {
+    background: linear-gradient(180deg, #2fae7d, #15805a 55%, #0d5a3e);
+    color: #eafff5;
+    border: 1px solid rgba(110, 230, 180, 0.45);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.3),
+      0 8px 22px rgba(21, 128, 90, 0.35);
+  }
+
+  /* painel em forma de botão: a ação secundária que não é recuo (criar sala, entrar com código) */
+  .ez-btn-panel {
+    background: linear-gradient(180deg, var(--color-ez-panel), var(--color-ez-abyss));
+    border: 1px solid var(--color-ez-line-strong);
+    color: var(--color-ez-parchment);
+    font-family: var(--font-sans);
+    letter-spacing: normal;
+  }
+
+  .ez-btn-panel:not(:disabled):hover {
+    border-color: var(--color-ez-gold);
+    color: var(--color-ez-gold-light);
+    filter: none;
+  }
+
+  /* fantasma: voltar, cancelar, tudo que não é a ação da tela */
+  .ez-btn-ghost {
+    background: rgba(16, 23, 49, 0.6);
+    border: 1px solid var(--color-ez-line-strong);
+    color: var(--color-ez-soft);
+    font-family: var(--font-sans);
+    font-weight: 400;
+    letter-spacing: normal;
+  }
+
+  .ez-btn-ghost:not(:disabled):hover {
+    border-color: var(--color-ez-gold);
+    color: var(--color-ez-gold-light);
+    filter: none;
+  }
+
+  /* o fantasma que DESFAZ (sair da fila, fechar a sala): só o hover muda de ouro para sangue */
+  .ez-btn-ghost-danger:not(:disabled):hover {
+    border-color: var(--color-ez-blood);
+    color: var(--color-ez-blood-light);
+  }
+
+  /* sangue: apagar deck, desistir da partida */
+  .ez-btn-danger {
+    background: rgba(150, 45, 35, 0.25);
+    border: 1px solid var(--color-ez-blood);
+    color: var(--color-ez-blood-light);
+    font-family: var(--font-sans);
+    font-weight: 400;
+    letter-spacing: normal;
+  }
+
+  .ez-btn-danger:not(:disabled):hover {
+    background: rgba(150, 45, 35, 0.45);
+    filter: none;
+  }
+
+  /* botão pequeno: barra de turno, linha de deck, ±1 cópia */
+  .ez-btn-sm {
+    padding: 0.45rem 0.9rem;
+    font-size: 0.8125rem;
+    border-radius: 9px;
+  }
+
+  /* ── campos ─────────────────────────────────────────────────────────────── */
+
+  .ez-input,
+  .ez-select {
+    background: var(--color-ez-field);
+    border: 1px solid var(--color-ez-line);
+    border-radius: 10px;
+    color: #e8eefb;
+    padding: 0.7rem 0.85rem;
+    outline: none;
+    transition:
+      border-color 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+
+  .ez-select {
+    cursor: pointer;
+    color: var(--color-ez-soft);
+  }
+
+  .ez-input:focus,
+  .ez-select:focus {
+    border-color: var(--color-ez-gold);
+    box-shadow: 0 0 0 3px rgba(201, 153, 46, 0.15);
+  }
+
+  .ez-input-sm,
+  .ez-select-sm {
+    padding: 0.5rem 0.7rem;
+    font-size: 0.875rem;
+    border-radius: 9px;
+  }
+
+  /* filtro de tipo: pastilha ligada/desligada */
+  .ez-chip {
+    border-radius: 999px;
+    border: 1px solid var(--color-ez-line-strong);
+    background: rgba(16, 23, 49, 0.6);
+    color: var(--color-ez-muted);
+    padding: 0.4rem 0.85rem;
+    font-size: 0.8125rem;
+    cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+
+  .ez-chip:hover {
+    filter: brightness(1.15);
+  }
+
+  .ez-chip-on {
+    border-color: rgba(255, 230, 160, 0.55);
+    background: linear-gradient(180deg, #f2d381, #cb9c31 60%, #96691b);
+    color: #221503;
+    font-weight: 700;
+  }
+
+  /* etiqueta redonda: tipo, elemento e raridade na carta ampliada */
+  .ez-pill {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 0.25rem 0.65rem;
+    border-radius: 999px;
+    background: rgba(43, 55, 87, 0.4);
+    border: 1px solid var(--color-ez-line-strong);
+    color: var(--color-ez-soft);
+  }
+
+  /* o texto de regras da carta, com o filete de ouro na lateral */
+  .ez-rules {
+    background: rgba(240, 230, 200, 0.06);
+    border: 1px solid rgba(217, 169, 64, 0.25);
+    border-left: 3px solid var(--color-ez-gold);
+    border-radius: 8px;
+    padding: 0.75rem 0.9rem;
+    line-height: 1.55;
+  }
+
+  /* ── cartas em grade ────────────────────────────────────────────────────── */
+
+  /*
+    Carta na coleção e no editor de deck: sobe ao passar o ponteiro e acende o
+    halo da PRÓPRIA raridade — quem põe a cor é o TSX, em `--halo` (theme.ts),
+    porque ela muda carta a carta.
+  */
+  .ez-card-tile {
+    border-radius: 12px;
+    transition:
+      transform 0.18s ease,
+      filter 0.18s ease;
+  }
+
+  .ez-card-tile:hover {
+    transform: translateY(-8px) scale(1.03);
+    filter: drop-shadow(0 16px 26px rgba(0, 0, 0, 0.55))
+      drop-shadow(0 0 14px var(--halo, transparent));
+  }
+
+  /*
+    Carta na mão: o leque a inclina (o TSX calcula rotação e passo), e o ponteiro
+    a levanta reta e grande por cima das vizinhas. `!important` porque o `transform`
+    de repouso vem do `style` inline, calculado por posição na mão.
+  */
+  .ez-hand-card {
+    transition:
+      transform 0.18s ease,
+      filter 0.18s ease;
+  }
+
+  .ez-hand-card:hover {
+    transform: rotate(0deg) translateY(-40px) scale(1.35) !important;
+    z-index: 60;
+    filter: drop-shadow(0 20px 34px rgba(0, 0, 0, 0.65));
+  }
+
+  /* ── ornamentos ─────────────────────────────────────────────────────────── */
+
+  /* o losango azul que separa e assina: divisórias, pontos, idioma */
+  .ez-gem {
+    transform: rotate(45deg);
+    background: radial-gradient(circle at 35% 30%, #9fd8ff, #2f7fd6 60%, #123c72);
+    border: 1px solid var(--color-ez-gold-light);
+  }
+
+  /*
+    Os cristais do dano direto: cada jogador tem DIRECT_DAMAGE_PER_POINT deles, e
+    cada ponto de dano direto quebra um — quando o último se vai, o oponente marca
+    ponto e a fileira se refaz. Substituem o "Dano 0/5" escrito (o número segue no
+    `title` da fileira, para quem quiser conferir).
+
+    O cristal quebrado CONTINUA desenhado, escuro e lascado: apagá-lo tiraria do
+    jogador a régua de quanto ainda falta.
+  */
+  .ez-crystal {
+    clip-path: polygon(50% 0%, 92% 27%, 74% 92%, 50% 100%, 26% 92%, 8% 27%);
+    /* a face DIREITA, no escuro: a esquerda vem por cima, no ::before */
+    background: linear-gradient(150deg, #2f86d6 0%, #1f5ca8 45%, #0f2f5e 100%);
+    box-shadow: 0 0 7px rgba(92, 182, 247, 0.65);
+  }
+
+  /* a face esquerda, a que pega a luz — é o contraste entre as duas que lapida a pedra */
+  .ez-crystal::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    clip-path: polygon(50% 0%, 50% 100%, 26% 92%, 8% 27%);
+    background: linear-gradient(165deg, #eaf8ff 0%, #93d3ff 40%, #4f9fe4 100%);
+  }
+
+  /* o fio de luz na aresta de cima da face escura: sem ele a direita fica chapada */
+  .ez-crystal::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    clip-path: polygon(50% 0%, 92% 27%, 87% 30%, 50% 6%);
+    background: rgba(255, 255, 255, 0.32);
+  }
+
+  /*
+    A pedra apagada: mesma silhueta, sem luz e rachada ao meio. Manter o contorno
+    inteiro (em vez de um toco) é o que deixa a fileira contável de longe — é o
+    mesmo partido dos losangos de ponto, que também ficam desenhados e vazios.
+  */
+  .ez-crystal-out {
+    clip-path: polygon(50% 0%, 92% 27%, 74% 92%, 50% 100%, 26% 92%, 8% 27%);
+    background: linear-gradient(150deg, #2a3455 0%, #161d33 55%, #0a0e1c 100%);
+  }
+
+  /* a fenda: o zigue-zague que atravessa a pedra de cima a baixo */
+  .ez-crystal-out::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    clip-path: polygon(44% 0%, 70% 34%, 46% 48%, 66% 72%, 50% 100%, 44% 74%, 26% 44%, 36% 30%);
+    background: rgba(4, 6, 12, 0.92);
+  }
+
+  /* o estilhaço do instante da quebra: a silhueta inteira saindo voando e sumindo */
+  .ez-crystal-shard {
+    clip-path: polygon(50% 0%, 92% 27%, 74% 92%, 50% 100%, 26% 92%, 8% 27%);
+    background: radial-gradient(circle at 50% 40%, #ffffff, #9fd8ff 45%, rgba(92, 182, 247, 0));
+    pointer-events: none;
+    animation: ezone-shatter 0.5s ease-out forwards;
+  }
+
+  /* cantoneira de ouro em volta do cartão de login */
+  .ez-corner {
+    position: absolute;
+    width: 26px;
+    height: 26px;
+    pointer-events: none;
+  }
+
+  /* ── modais ─────────────────────────────────────────────────────────────── */
+
+  .ez-backdrop {
+    background: rgba(4, 6, 12, 0.75);
+    backdrop-filter: blur(5px);
+  }
+}
+
+/* ── animações da moldura (redesign) ──────────────────────────────────────── */
+
+/* a carta do menu boiando */
+@keyframes ez-floaty {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(-14px) rotate(2deg);
+  }
+}
+
+/* o halo por trás dela, respirando */
+@keyframes ez-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* o círculo de runas do login */
+@keyframes ez-spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* qualquer coisa que ENTRA: modal, carta ampliada, fim de partida */
+@keyframes ez-card-in {
+  0% {
+    transform: scale(0.4) translateY(40px);
+    opacity: 0;
+    filter: brightness(2.2);
+  }
+  60% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
+@keyframes ez-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* o slot livre chamando a carta escolhida na mão */
+@keyframes ez-slot-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(232, 193, 90, 0.45),
+      inset 0 0 18px rgba(232, 193, 90, 0.15);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px rgba(246, 221, 154, 0.9),
+      inset 0 0 34px rgba(232, 193, 90, 0.4);
+  }
+}
+
+/* ── animações do tabuleiro (ver components/AnimationLayer.tsx) ───────────── */
+
+/* fumaça vermelha quando a criatura entra no descarte */
+@keyframes ezone-puff {
+  0% {
+    transform: scale(0.25) translateY(0);
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.95;
+  }
+  100% {
+    transform: scale(2.4) translateY(-26px);
+    opacity: 0;
+  }
+}
+
+/* clarão no alvo no instante da pancada */
+@keyframes ezone-impact {
+  0% {
+    transform: scale(0.35);
+    opacity: 0.95;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+/* o ponto conquistado entrando e saindo no meio da tela */
+@keyframes ezone-score {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  12% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  22% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  82% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.15);
+    opacity: 0;
+  }
+}
+
+/* faixa de virada de turno/fase (AnimationLayer > AnnounceBand) */
+@keyframes ezone-announce {
+  0% {
+    transform: translateX(-8%) scaleY(0.4);
+    opacity: 0;
+  }
+  12% {
+    transform: translateX(0) scaleY(1);
+    opacity: 1;
+  }
+  78% {
+    transform: translateX(0) scaleY(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(8%) scaleY(0.5);
+    opacity: 0;
+  }
+}
+
+/* criatura com efeito ativável agora: brilho que respira em volta dela */
+@keyframes ezone-ready {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 2px rgba(56, 189, 248, 0.85),
+      0 0 12px 2px rgba(56, 189, 248, 0.45);
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px rgba(125, 211, 252, 0.95),
+      0 0 26px 8px rgba(56, 189, 248, 0.75);
+  }
+}
+
+/* ícone sobre a carta da mão que pode ser ativada */
+/* o cristal de dano direto estourando: clarão, gira e some */
+@keyframes ezone-shatter {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  35% {
+    opacity: 0.9;
+    transform: scale(1.55) rotate(-12deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.4) rotate(18deg);
+  }
+}
+
+@keyframes ezone-blink {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1.06);
+    box-shadow: 0 0 12px 3px rgba(56, 189, 248, 0.75);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.94);
+    box-shadow: 0 0 4px 0 rgba(56, 189, 248, 0.35);
+  }
+}

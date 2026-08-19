@@ -3,133 +3,133 @@
  * Falha (exit 1) se qualquer partida travar, gerar comando ilegal ou violar a
  * conservação de cartas. Uso: `npm run sim` (ou `node scripts/sim.ts 500`).
  */
-import { criarPartida } from '../src/engine/criar.ts';
-import { aplicarComando } from '../src/engine/reduzir.ts';
-import { decidirComando } from '../src/engine/ia.ts';
-import { embaralhar, inteiroAleatorio, normalizarSeed } from '../src/engine/rng.ts';
-import { cartasDoFormato } from '../src/data/cartas.ts';
-import { herois } from '../src/data/herois.ts';
-import { MAXIMO_DE_COPIAS, MAXIMO_DE_CARTAS_NO_DECK } from '../src/data/regras.ts';
-import { FORMATOS, NOME_DO_FORMATO, type Formato } from '../src/data/tipos.ts';
-import type { EstadoDoJogo, LadoId } from '../src/engine/estado.ts';
+import { createMatch } from '../src/engine/createMatch.ts';
+import { reduce } from '../src/engine/reduce.ts';
+import { decideCommand } from '../src/engine/bot.ts';
+import { shuffle, randomInt, normalizeSeed } from '../src/engine/rng.ts';
+import { cardsOfFormat } from '../src/data/cards.ts';
+import { heroes } from '../src/data/heroes.ts';
+import { MAX_COPIES, MAX_DECK_CARDS } from '../src/data/deckRules.ts';
+import { FORMATS, FORMAT_NAME, type Format } from '../src/data/types.ts';
+import type { GameState, SideId } from '../src/engine/state.ts';
 
-const TURNO_LIMITE = 300;
+const TURN_LIMIT = 300;
 
 /**
  * Sorteia dentro de UM formato: partida tem um formato só. A fumaça roda os dois —
  * o Quatro Elementos entrou aqui quando as palavras-chave (MARCIAL, VORPAL,
  * REGENERAR) passaram a valer em jogo, mesmo com o resto do texto pendente.
  */
-function deckAleatorio(
+function randomDeck(
   rng: number,
-  formato: Formato,
-): { rng: number; heroi: string; cartas: number[] } {
+  format: Format,
+): { rng: number; hero: string; cards: number[] } {
   const pool: number[] = [];
-  for (const carta of cartasDoFormato(formato)) {
-    for (let i = 0; i < MAXIMO_DE_COPIAS; i++) pool.push(carta.id);
+  for (const card of cardsOfFormat(format)) {
+    for (let i = 0; i < MAX_COPIES; i++) pool.push(card.id);
   }
-  const embaralhado = embaralhar(rng, pool);
-  const sorteioHeroi = inteiroAleatorio(embaralhado.rng, 0, herois.length - 1);
+  const shuffled = shuffle(rng, pool);
+  const heroRoll = randomInt(shuffled.rng, 0, heroes.length - 1);
   return {
-    rng: sorteioHeroi.rng,
-    heroi: herois[sorteioHeroi.valor]!.chave,
-    cartas: embaralhado.itens.slice(0, MAXIMO_DE_CARTAS_NO_DECK),
+    rng: heroRoll.rng,
+    hero: heroes[heroRoll.value]!.key,
+    cards: shuffled.items.slice(0, MAX_DECK_CARDS),
   };
 }
 
-interface ResumoDaPartida {
-  vencedor: LadoId | null;
-  turnos: number;
-  comandos: number;
+interface MatchSummary {
+  winner: SideId | null;
+  turns: number;
+  commands: number;
 }
 
-function jogar(seed: number, formato: Formato): ResumoDaPartida {
-  let rng = normalizarSeed(seed * 7919);
-  const deckA = deckAleatorio(rng, formato);
+function play(seed: number, format: Format): MatchSummary {
+  let rng = normalizeSeed(seed * 7919);
+  const deckA = randomDeck(rng, format);
   rng = deckA.rng;
-  const deckB = deckAleatorio(rng, formato);
+  const deckB = randomDeck(rng, format);
 
-  const criada = criarPartida({
+  const created = createMatch({
     seed,
-    formato,
+    format,
     decks: {
-      a: { heroi: deckA.heroi, cartas: deckA.cartas },
-      b: { heroi: deckB.heroi, cartas: deckB.cartas },
+      a: { hero: deckA.hero, cards: deckA.cards },
+      b: { hero: deckB.hero, cards: deckB.cards },
     },
   });
 
-  let estado: EstadoDoJogo = criada.estado;
-  let comandos = 0;
+  let state: GameState = created.state;
+  let commands = 0;
 
-  while (!estado.vencedor && estado.turno <= TURNO_LIMITE) {
-    const preferido = estado.pendencia?.lado ?? (estado.fase === 'mulligan' ? 'a' : estado.ladoAtivo);
-    const comando =
-      decidirComando(estado, preferido) ??
-      decidirComando(estado, preferido === 'a' ? 'b' : 'a');
-    if (!comando) throw new Error(`seed ${seed}: bot sem comando no turno ${estado.turno}`);
-    const resultado = aplicarComando(estado, comando);
-    if (resultado.erro) {
-      throw new Error(`seed ${seed}: comando ilegal ${comando.tipo}: ${resultado.erro}`);
+  while (!state.winner && state.turn <= TURN_LIMIT) {
+    const preferred = state.pending?.side ?? (state.phase === 'mulligan' ? 'a' : state.activeSide);
+    const command =
+      decideCommand(state, preferred) ??
+      decideCommand(state, preferred === 'a' ? 'b' : 'a');
+    if (!command) throw new Error(`seed ${seed}: bot sem comando no turno ${state.turn}`);
+    const result = reduce(state, command);
+    if (result.error) {
+      throw new Error(`seed ${seed}: comando ilegal ${command.type}: ${result.error}`);
     }
-    estado = resultado.estado;
-    if (++comandos > 100_000) throw new Error(`seed ${seed}: partida não converge`);
+    state = result.state;
+    if (++commands > 100_000) throw new Error(`seed ${seed}: partida não converge`);
   }
 
-  verificarConservacao(estado, seed);
-  return { vencedor: estado.vencedor, turnos: estado.turno, comandos };
+  checkConservation(state, seed);
+  return { winner: state.winner, turns: state.turn, commands };
 }
 
-function verificarConservacao(estado: EstadoDoJogo, seed: number): void {
-  for (const lado of ['a', 'b'] as const) {
-    const dono = estado.lados[lado];
+function checkConservation(state: GameState, seed: number): void {
+  for (const side of ['a', 'b'] as const) {
+    const owner = state.sides[side];
     const uids = new Set<string>();
     const coletar = (uid: string, onde: string) => {
       if (uids.has(uid)) throw new Error(`seed ${seed}: uid ${uid} duplicado em ${onde}`);
       uids.add(uid);
     };
-    dono.deck.forEach((carta) => coletar(carta.uid, 'deck'));
-    dono.mao.forEach((carta) => coletar(carta.uid, 'mao'));
-    dono.descarte.forEach((carta) => coletar(carta.uid, 'descarte'));
-    dono.exilio.forEach((carta) => coletar(carta.uid, 'exilio'));
-    if (dono.cenario) coletar(dono.cenario.uid, 'cenario');
-    for (const criatura of dono.campo) {
-      if (!criatura) continue;
-      if (criatura.cartaId !== null) coletar(criatura.uid, 'campo');
-      criatura.anexos.forEach((anexo) => coletar(anexo.uid, 'anexo'));
+    owner.deck.forEach((card) => coletar(card.uid, 'deck'));
+    owner.hand.forEach((card) => coletar(card.uid, 'mao'));
+    owner.discard.forEach((card) => coletar(card.uid, 'descarte'));
+    owner.exile.forEach((card) => coletar(card.uid, 'exilio'));
+    if (owner.scenario) coletar(owner.scenario.uid, 'scenario');
+    for (const creature of owner.field) {
+      if (!creature) continue;
+      if (creature.cardId !== null) coletar(creature.uid, 'campo');
+      creature.attachments.forEach((attachment) => coletar(attachment.uid, 'anexo'));
     }
-    if (uids.size !== MAXIMO_DE_CARTAS_NO_DECK) {
-      throw new Error(`seed ${seed}: lado ${lado} tem ${uids.size} cartas (esperava 40)`);
+    if (uids.size !== MAX_DECK_CARDS) {
+      throw new Error(`seed ${seed}: lado ${side} tem ${uids.size} cartas (esperava 40)`);
     }
   }
 }
 
-function rodarFormato(formato: Formato, quantas: number): void {
-  const inicio = performance.now();
-  let vitoriasA = 0;
-  let vitoriasB = 0;
-  let empates = 0;
-  let totalTurnos = 0;
-  let totalComandos = 0;
+function runFormat(format: Format, howMany: number): void {
+  const start = performance.now();
+  let winsA = 0;
+  let winsB = 0;
+  let draws = 0;
+  let totalTurns = 0;
+  let totalCommands = 0;
 
-  for (let seed = 1; seed <= quantas; seed++) {
-    const resumo = jogar(seed, formato);
-    if (resumo.vencedor === 'a') vitoriasA++;
-    else if (resumo.vencedor === 'b') vitoriasB++;
-    else empates++;
-    totalTurnos += resumo.turnos;
-    totalComandos += resumo.comandos;
+  for (let seed = 1; seed <= howMany; seed++) {
+    const summary = play(seed, format);
+    if (summary.winner === 'a') winsA++;
+    else if (summary.winner === 'b') winsB++;
+    else draws++;
+    totalTurns += summary.turns;
+    totalCommands += summary.commands;
   }
 
-  const duracao = ((performance.now() - inicio) / 1000).toFixed(1);
-  console.log(`${NOME_DO_FORMATO[formato]}: ${quantas} partidas em ${duracao}s`);
-  console.log(`  vitorias A: ${vitoriasA} | vitorias B: ${vitoriasB} | sem vencedor ate o turno ${TURNO_LIMITE}: ${empates}`);
-  console.log(`  media de turnos: ${(totalTurnos / quantas).toFixed(1)} | media de comandos: ${(totalComandos / quantas).toFixed(0)}`);
+  const duration = ((performance.now() - start) / 1000).toFixed(1);
+  console.log(`${FORMAT_NAME[format]}: ${howMany} partidas em ${duration}s`);
+  console.log(`  vitorias A: ${winsA} | vitorias B: ${winsB} | sem vencedor ate o turno ${TURN_LIMIT}: ${draws}`);
+  console.log(`  media de turnos: ${(totalTurns / howMany).toFixed(1)} | media de comandos: ${(totalCommands / howMany).toFixed(0)}`);
 
-  if (empates > quantas * 0.2) {
-    console.error(`Empate demais em ${NOME_DO_FORMATO[formato]}: as regras atuais estao travando partidas.`);
+  if (draws > howMany * 0.2) {
+    console.error(`Empate demais em ${FORMAT_NAME[format]}: as regras atuais estao travando partidas.`);
     process.exit(1);
   }
 }
 
-const quantas = Number(process.argv[2]) || 200;
-for (const formato of FORMATOS) rodarFormato(formato, quantas);
+const howMany = Number(process.argv[2]) || 200;
+for (const format of FORMATS) runFormat(format, howMany);

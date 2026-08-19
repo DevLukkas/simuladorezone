@@ -1,0 +1,441 @@
+import type { AbilityCard } from './types.ts';
+
+/**
+ * Cartas do tipo HABILIDADE — anexam-se a uma criatura em campo.
+ */
+export const abilities: AbilityCard[] = [
+  {
+    id: 9,
+    type: 'ability',
+    name: 'Tridente Poderoso de Atlas',
+    text: 'A criatura anexada recebe +1/+1. Se houver dois "Tridente Poderosos de Atlas" anexados a uma criatura, seu oponente descarta uma carta aleatoria.',
+    element: 'water',
+    rarity: 'common',
+    img: '09.png',
+    edition: 'Abismos & Profundezas',
+    effects: [
+      { type: 'modify_stat', target: 'host', stat: 'attack', value: 1 },
+      { type: 'modify_stat', target: 'host', stat: 'defense', value: 1 },
+    ],
+    triggeredAbilities: [
+      {
+        id: 'tridente_atlas_double_discard',
+        trigger: 'host_attachment_count_reaches',
+        attachedName: 'Tridente Poderoso de Atlas',
+        count: 2,
+        action: {
+          type: 'opponent_discards_at_random',
+          count: 1,
+        },
+      },
+    ],
+  },
+  {
+    id: 10,
+    type: 'ability',
+    name: 'Tridente do Assassino',
+    text: 'A criatura anexada recebe +2 de ATQ.',
+    element: 'water',
+    rarity: 'common',
+    img: '10.png',
+    edition: 'Abismos & Profundezas',
+    effects: [{ type: 'modify_stat', target: 'host', stat: 'attack', value: 2 }],
+  },
+  {
+    id: 11,
+    type: 'ability',
+    name: 'defesa Absoluta do Tridente',
+    text: 'A criatura anexada recebe +2 de Vida. Se esta carta for exilada, retorne-a para a mão do seu dono.',
+    element: 'water',
+    rarity: 'common',
+    img: '11.png',
+    edition: 'Abismos & Profundezas',
+    effects: [{ type: 'modify_stat', target: 'host', stat: 'defense', value: 2 }],
+    triggeredAbilities: [
+      {
+        id: 'defesa_absoluta_return_on_exile',
+        trigger: 'self_exiled',
+        action: {
+          type: 'return_to_hand',
+          target: 'self',
+        },
+      },
+    ],
+  },
+  {
+    id: 12,
+    type: 'ability',
+    name: 'Tridente Mágico de Corais',
+    text: 'A criatura anexada recebe +1/+1. Sempre que esta criatura anexada atacar, escolha uma criatura inimiga. No proxio turno, a criatura especificada não pode atacar.',
+    element: 'water',
+    rarity: 'common',
+    img: '12.png',
+    edition: 'Abismos & Profundezas',
+    effects: [
+      { type: 'modify_stat', target: 'host', stat: 'attack', value: 1 },
+      { type: 'modify_stat', target: 'host', stat: 'defense', value: 1 },
+    ],
+    triggeredAbilities: [
+      {
+        id: 'corais_prevent_attack_on_attached_attack',
+        trigger: 'host_attacks',
+        action: {
+          type: 'prevent_attack',
+          target: 'chosen_enemy',
+          duration: 'next_turn',
+        },
+      },
+    ],
+  },
+  {
+    id: 13,
+    type: 'ability',
+    name: 'Reflexos de Morte',
+    text: 'A criatura anexada recebe +1 de Vida. Sempre que esta criatura for atacada , voce causa 1 de dano na direto em uma criatura inimiga.',
+    element: 'water',
+    rarity: 'common',
+    img: '13.png',
+    edition: 'Abismos & Profundezas',
+    effects: [{ type: 'modify_stat', target: 'host', stat: 'defense', value: 1 }],
+    triggeredAbilities: [
+      {
+        id: 'reflexos_damage_on_attacked',
+        trigger: 'host_is_attacked',
+        action: {
+          type: 'deal_damage',
+          target: 'chosen_enemy',
+          damage: 1,
+        },
+      },
+    ],
+  },
+  {
+    id: 14,
+    type: 'ability',
+    name: 'Afogamento',
+    text: 'A criatura anexada escolha uma criatura inimiga. A criatura escolhida recebe -1 de Vida para cada carta anexada a ela. Se a criatura escolhida morrer destrua esta carta.',
+    element: 'water',
+    rarity: 'common',
+    img: '14.png',
+    edition: 'Abismos & Profundezas',
+    onAttach: [
+      {
+        type: 'add_marker',
+        target: 'chosen_enemy',
+        stats: ['defense'],
+        value_per_card: {
+          zone: 'target_attachments',
+          value: -1,
+        },
+      },
+    ],
+    triggeredAbilities: [
+      {
+        id: 'afogamento_destroy_self_on_target_death',
+        trigger: 'chosen_creature_dies',
+        action: {
+          type: 'destroy',
+          target: 'self',
+        },
+      },
+    ],
+  },
+  {
+    id: 37,
+    type: 'ability',
+    name: 'Totem do guardião Ancestral',
+    text: 'A criatura anexada recebe +0/+2. Se ela for do tipo besta, recebe +3 de Vida ao invés de +0/+2.',
+    element: 'earth',
+    rarity: 'common',
+    img: '37.png',
+    edition: 'Matilhas & Predadores',
+    effects: [
+      {
+        type: 'modify_stat',
+        target: 'host',
+        stat: 'defense',
+        value: 2,
+        conditionals: [{ if: { race: 'Beast' }, value: 3 }],
+      },
+    ],
+  },
+  {
+    id: 38,
+    type: 'ability',
+    name: 'Estouro da Manada',
+    text: 'A criatura anexada recebe +1/+1. A criatura anexada recebe a palavra-chave ATROPELAR.',
+    element: 'earth',
+    rarity: 'common',
+    img: '38.png',
+    edition: 'Matilhas & Predadores',
+    effects: [
+      { type: 'modify_stat', target: 'host', stat: 'attack', value: 1 },
+      { type: 'modify_stat', target: 'host', stat: 'defense', value: 1 },
+      { type: 'grant_keyword', target: 'host', keyword: 'trample' },
+    ],
+  },
+  {
+    id: 39,
+    type: 'ability',
+    name: 'Guardião Enlouquecido',
+    text: 'A criatura anexada recebe +2 ATK e +2 VIDA. Quando ela atacar, outras criaturas do tipo Besta que você controla recebem +1 ATK até o final do turno. Se ela não atacar neste turno, destrua.',
+    element: 'earth',
+    rarity: 'common',
+    img: '39.png',
+    edition: 'Matilhas & Predadores',
+    effects: [
+      { type: 'modify_stat', target: 'host', stat: 'attack', value: 2 },
+      { type: 'modify_stat', target: 'host', stat: 'defense', value: 2 },
+    ],
+    triggeredAbilities: [
+      {
+        id: 'guardiao_enlouquecido_besta_ataca',
+        trigger: 'host_attacks',
+        action: {
+          type: 'modify_stats',
+          target: 'all_allies',
+          duration: 'until_end_of_turn',
+          filter: { race: 'Beast' },
+          stats: ['attack'],
+          value: 1,
+          exclude_source: true,
+        },
+      },
+      {
+        id: 'guardiao_enlouquecido_sem_ataque',
+        trigger: 'host_did_not_attack_this_turn',
+        action: { type: 'destroy', target: 'host' },
+      },
+    ],
+  },
+  {
+    id: 40,
+    type: 'ability',
+    name: 'Coração do Sapoescudeiro',
+    text: 'Quando o elemento da criatura anexada for alterado, você pode escolher uma criatura com Contos no nome, troque o ATQ e VIDA dela até o final do turno. Se o elemento da criatura for alterado, retorne esta carta para sua mão imediatamente ao invés de enviá-la para o descarte.',
+    element: 'earth',
+    rarity: 'common',
+    img: '40.png',
+    edition: 'Matilhas & Predadores',
+    triggeredAbilities: [
+      {
+        id: 'coracao_sapoescudeiro_elemento_alterado',
+        trigger: 'host_element_changed',
+        action: {
+          type: 'swap_stats',
+          target: 'chosen_ally',
+          duration: 'until_end_of_turn',
+          optional: true,
+          filter: { name_includes: 'Contos' },
+          return_attachment_to_hand: true,
+        },
+      },
+    ],
+  },
+  {
+    id: 41,
+    type: 'ability',
+    name: 'Posse de Objetos Inanimados',
+    text: 'A criatura anexada recebe +1/+1. Quando esta carta sai do campo para o descarte, exceto durante a fase de batalha, você pode comprar uma carta.',
+    element: 'void',
+    rarity: 'common',
+    img: '41.png',
+    edition: 'Matilhas & Predadores',
+    effects: [
+      { type: 'modify_stat', target: 'host', stat: 'attack', value: 1 },
+      { type: 'modify_stat', target: 'host', stat: 'defense', value: 1 },
+    ],
+    triggeredAbilities: [
+      {
+        id: 'posse_objetos_descartada',
+        trigger: 'self_sent_to_discard_outside_battle',
+        action: { type: 'draw', count: 1 },
+      },
+    ],
+  },
+  {
+    id: 42,
+    type: 'ability',
+    name: 'Corpo Translúcido',
+    text: 'A criatura anexada nao pode ser atacada por criaturas com 3+ de VIDA.',
+    element: 'void',
+    rarity: 'common',
+    img: '42.png',
+    edition: 'Matilhas & Predadores',
+    effects: [
+      {
+        type: 'cannot_be_attacked_by_creatures_with_min_defense',
+        target: 'host',
+        min_defense: 3,
+      },
+    ],
+  },
+  {
+    id: 43,
+    type: 'ability',
+    name: 'Proteção do Escudeiro',
+    text: 'A criatura anexada recebe +1/+2. Uma vez por turno, quando uma criatura que você controla que tenha Contos no nome for alvo de um ataque, você pode enviar esta carta para o descarte e negar o ataque.',
+    element: 'earth',
+    rarity: 'common',
+    img: '43.png',
+    edition: 'Matilhas & Predadores',
+    effects: [
+      { type: 'modify_stat', target: 'host', stat: 'attack', value: 1 },
+      { type: 'modify_stat', target: 'host', stat: 'defense', value: 2 },
+    ],
+    triggeredAbilities: [
+      {
+        id: 'protecao_escudeiro_nega_ataque',
+        trigger: 'ally_is_attacked',
+        action: {
+          type: 'discard_self_to_prevent_attack',
+          filter: { name_includes: 'Contos' },
+        },
+      },
+    ],
+  },
+  {
+    id: 44,
+    type: 'ability',
+    name: 'Resistência',
+    text: 'A criatura anexada recebe +2 VIDA. Na primeira vez que ela receber dano a cada turno, reduza esse dano em 1.',
+    element: 'earth',
+    rarity: 'common',
+    img: '44.png',
+    edition: 'Matilhas & Predadores',
+    effects: [
+      { type: 'modify_stat', target: 'host', stat: 'defense', value: 2 },
+      { type: 'reduce_combat_damage_taken', target: 'host', value: 1, once_per_turn: true },
+    ],
+  },
+
+  // --- Quatro Elementos ---
+  {
+    id: 55,
+    type: 'ability',
+    name: 'Abraço da Floresta',
+    text:
+      'Esta carta é considerada “Moeda da Floresta” em campo ou no baralho. \nA criatura anexada recebe +1/0, e a criatura inimiga da mesma coluna recebe -1/0.',
+    element: 'wind',
+    rarity: 'common',
+    art: '55.webp',
+    edition: 'Quatro Elementos',
+    ref: 'GES-0004',
+    behaviorPending: true,
+  },
+  {
+    id: 56,
+    type: 'ability',
+    name: 'Ataque Aéreo da Harpia',
+    text:
+      'A criatura anexada recebe +2/+1. Ao atacar uma criatura que não seja do elemento “Vento” recebe +1 para cada carta Habilidade de Vento com nomes diferentes em seu descarte.',
+    element: 'wind',
+    rarity: 'common',
+    art: '56.webp',
+    edition: 'Quatro Elementos',
+    ref: 'GES-0004',
+    behaviorPending: true,
+  },
+  {
+    id: 57,
+    type: 'ability',
+    name: 'Broto Devorador de Virgens',
+    text:
+      'Durante o turno inimigo, a criatura anexada recebe +0/+3 até o fim do turno. Quando anexado em “Devoradora de virgens” e ela for destruída, adiciona uma criatura do tipo planta do seu baralho pra mão.',
+    element: 'wind',
+    rarity: 'common',
+    art: '57.webp',
+    edition: 'Quatro Elementos',
+    ref: 'GES-0004',
+    behaviorPending: true,
+  },
+  {
+    id: 58,
+    type: 'ability',
+    name: 'Brotos de Arborium',
+    text:
+      'Esta carta é considerada “Moeda da Floresta” em campo ou no baralho. \nA criatura anexada recebe +1/+1 para cada criatura Arborium aliada em campo.',
+    element: 'wind',
+    rarity: 'common',
+    art: '58.webp',
+    edition: 'Quatro Elementos',
+    ref: 'GES-0004',
+    behaviorPending: true,
+  },
+  {
+    id: 59,
+    type: 'ability',
+    name: 'Espírito da Tempestade',
+    text:
+      'Quando anexar esta carta em sua criatura, a criatura inimiga da mesma coluna recebe -1/0 permanentemente. Se houver duas cartas com o mesmo nome anexado a esta criatura, ela recebe um contador \n+2/+1.',
+    element: 'wind',
+    rarity: 'common',
+    art: '59.webp',
+    edition: 'Quatro Elementos',
+    ref: 'GES-0004',
+    behaviorPending: true,
+  },
+  {
+    id: 71,
+    type: 'ability',
+    name: 'Baforada do Ifreet',
+    text: 'A criatura anexada recebe +2/+1.',
+    element: 'fire',
+    rarity: 'common',
+    art: '71.webp',
+    edition: 'Quatro Elementos',
+    ref: 'GES-0004',
+    behaviorPending: true,
+  },
+  {
+    id: 72,
+    type: 'ability',
+    name: 'Caçada do Nortenho',
+    text: 'Quando anexada, a criatura inimiga da mesma coluna recebe -2/0.',
+    element: 'fire',
+    rarity: 'common',
+    art: '72.webp',
+    edition: 'Quatro Elementos',
+    ref: 'GES-0004',
+    behaviorPending: true,
+  },
+  {
+    id: 73,
+    type: 'ability',
+    name: 'Engenhoca Kabum Nortenho',
+    text:
+      'A criatura inimiga da mesma coluna recebe -1/0 permanentemente.\n\nExile esta carta, junto com outras duas cartas “Nortenho” do seu descarte. Escolha uma criatura inimiga, ele recebe -1/0.',
+    element: 'fire',
+    rarity: 'common',
+    art: '73.webp',
+    edition: 'Quatro Elementos',
+    ref: 'GES-0004',
+    behaviorPending: true,
+  },
+  {
+    id: 74,
+    type: 'ability',
+    name: 'Runas de Hefestus',
+    text:
+      'A criatura anexada recebe +3/+0. Se uma criatura inimiga for destruída em batalha enquanto esta carta estiver anexada, a criatura anexada recebe um ponto de dano à VIDA.',
+    element: 'fire',
+    rarity: 'common',
+    art: '74.webp',
+    edition: 'Quatro Elementos',
+    ref: 'GES-0004',
+    behaviorPending: true,
+  },
+  {
+    id: 75,
+    type: 'ability',
+    name: 'Sopro Flamejante',
+    text:
+      'A criatura anexada recebe +4/0, após atacar destrua esta carta. A criatura anexada, não ataca o seu próximo turno quando esta carta é destruída.',
+    element: 'fire',
+    rarity: 'common',
+    art: '75.webp',
+    edition: 'Quatro Elementos',
+    ref: 'GES-0004',
+    behaviorPending: true,
+  },
+];

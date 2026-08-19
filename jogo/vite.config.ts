@@ -10,11 +10,13 @@ const porTunel = process.env.TUNEL === '1';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: { target: 'es2022' },
-  // em dev o cliente esta em 5173 e o servidor em 8787; o proxy mantem tudo numa
+  // em dev o cliente esta em 5173 e o servidor em 8788; o proxy mantem tudo numa
   // origem so. Em producao o proprio servidor serve o dist/, entao o cliente pede
   // sempre /api relativo, sem endereco escrito em lugar nenhum (e sem CORS)
   server: {
-    proxy: { '/api': 'http://127.0.0.1:8787' },
+    // API= aponta o proxy para outra porta quando a 8788 estiver ocupada por
+    // outro projeto (o servidor aceita PORTA= do outro lado)
+    proxy: { '/api': process.env.API ?? 'http://127.0.0.1:8788' },
     host: true,
     allowedHosts: ['.trycloudflare.com'],
     ...(porTunel ? { hmr: { protocol: 'wss', clientPort: 443 } } : {}),
