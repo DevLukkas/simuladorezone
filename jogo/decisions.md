@@ -794,3 +794,75 @@ Verificado no navegador (1600x1000, 1366x768 e 1280x720): invocar de ponta a pon
 as larguras, `elementFromPoint` acertando o botão com e sem hover, os cristais quebrando
 numa partida de treino com o estilhaço na tela, e desistir → cancelar → desistir →
 confirmar levando a "DERROTA — Por desistência". 374 testes, `sim` e `api` verdes.
+
+## 29. O console: o redesign entra por fora da partida, e o baralho ganha dono (2026-08-19)
+
+O DevLukkas trouxe um desenho novo do Claude Design (projeto "Estilo TCG atraente", arquivo
+`Elemental Zone.dc.html`) e pediu fidelidade total a ele, **deixando o login e o tabuleiro
+fora do escopo desta leva**. O que entrou foram hub, construtor, coleção e jogar online,
+mais a moldura que passa a embrulhar as quatro.
+
+**O desenho é outro sistema visual, e ele ganhou prefixo próprio (`zn-`).** Nada de canto
+arredondado, gradiente ou sombra: a hierarquia sai de filete de 1px, chapada de fundo e
+tipografia. Quatro vozes, cada uma com um trabalho — Cinzel 800 só no brasão, Barlow
+Condensed em nome próprio e título de ação, JetBrains Mono em toda etiqueta e todo número
+(é dela o `letter-spacing` largo que dá o ar de terminal), Alegreya Sans só na prosa. Como
+o login e o tabuleiro **não** foram refeitos, reescrever `--color-ez-panel` por baixo deles
+trocaria a cara de telas que ninguém revisou; então os dois sistemas convivem em
+`styles.css`, cada um no seu prefixo, e o `ez-` sai inteiro quando os dois últimos
+migrarem. Barlow Condensed e JetBrains Mono entram self-hospedadas por `scripts/fonts.ts`,
+pelo mesmo motivo das outras seis (SIL OFL, e o jogo carrega offline sem vazar navegação).
+
+**A moldura substitui o menu, e com ele o botão "voltar".** `AppShell` é trilha à esquerda
+(brasão, os quatro itens numerados, o estúdio como 05 quando o servidor sobe com `--admin`)
+e barra no topo (título, subtítulo, idioma, formato, quem está logado). Toda tela de fora da
+partida mora dentro dela, e nenhuma tem mais `ScreenHeader` nem `← Voltar`: a trilha nunca
+sai da vista, então o recuo virou ruído. `ScreenHeader.tsx` foi apagado.
+
+**O seletor de idioma foi acrescentado ao desenho.** O protótipo nasceu só em português e
+não previa nenhum; ele entra na barra do topo como `.zn-select`, no mesmo tamanho e na mesma
+voz mono das outras etiquetas, para não virar o único controle "de site" no meio de um
+painel de terminal. `LanguagePicker` ficou com duas peças — a do login (tema anterior) e a
+do console —, e a primeira sai junto com o login.
+
+**O baralho ativo passa a existir.** O desenho supõe UM baralho: o nome no rodapé da trilha,
+o construtor editando aquele, a fila online mandando aquele. A conta tem vários desde sempre
+(`/api/decks`), e o que reconcilia as duas coisas é o **ativo**, guardado no cliente
+(`decksStore` + `localStorage`), nunca no servidor — qual baralho está na mesa é escolha de
+quem está sentado nela, não um dado da conta. O rodapé da trilha é a porta da gaveta: lista,
+troca, cria e apaga. Criar é ficar sem ativo e ir ao construtor, que sem ativo abre um
+rascunho vazio; gravar é que devolve o ativo. Com isso saíram três coisas: a tela "Meus
+decks" (virou a gaveta), o `select` de deck do lobby (agora é o ativo) e o `select` de deck
+do menu (o treino usa o ativo).
+
+**O construtor edita rascunho; a coleção grava na hora.** São superfícies diferentes e a
+promessa de cada uma precisa ser diferente: o construtor tem "salvar baralho" no rodapé, e o
+± da ficha da coleção não tem onde prometer isso — então ali a cópia entra no baralho ativo
+na hora. Trocar de ativo recarrega o rascunho.
+
+**O que o desenho pedia e não entrou, porque a carta composta já faz** (mesma régua da
+decisão nº 26): a faixa "tipo · raridade" no pé da carta na coleção. A composta imprime os
+dois, e a faixa em largura inteira ainda tapava o rodapé impresso (código de coleção e
+crédito da arte). Sobrou dela o que a carta NÃO sabe — quantas cópias já estão no baralho
+ativo —, e encolhida para o canto direito.
+
+**As condições de vitória são as do MOTOR, não as do protótipo.** O `.dc.html` listava "A
+Entidade" e "Apocalipse", que são regras do legado sem nenhuma implementação aqui. O quadro
+mantém as quatro casas do desenho e mostra o que o `reduce` de fato faz: `POINTS_TO_WIN`,
+`DIRECT_DAMAGE_PER_POINT`, desistência e `TURN_SECONDS`. Mesma coisa no resumo da mesa, em
+"jogar online", e no adversário da mesa: o protótipo desenhava dois heróis fixos, e aqui o
+segundo é uma moldura vazia — antes do pareamento não existe oponente para retratar.
+
+**Três ajustes de layout que o protótipo não tinha como pegar**, todos medidos no
+navegador: a fileira da curva de ataque perdeu a altura fixa de 52px (ela empurrava a
+contagem do topo da barra mais alta para fora da caixa, em cima da etiqueta); o painel do
+deck passa a rolar inteiro quando os blocos fixos não cabem, com a barra de gravar grudada
+no rodapé (em 720px de altura ela saía pela borda e não havia como salvar); e o filete de
+repouso das cartas em grade virou `--tile-line` em vez de cor no `style`, porque inline
+vence classe e o `:hover` nunca chegava a acontecer.
+
+Verificado no navegador (Chrome headless por CDP) em 1600x1000, 1280x720 e 1000x800: hub,
+construtor, coleção, online, escolha de herói, gaveta de baralhos, mão inicial simulada,
+ficha da coleção, conta sem nenhum baralho e o estúdio como item 05 — sem rolagem
+horizontal em nenhuma largura e sem erro de console. 374 testes, `typecheck` e `build`
+verdes.

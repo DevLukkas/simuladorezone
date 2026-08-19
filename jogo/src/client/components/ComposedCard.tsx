@@ -292,6 +292,18 @@ export interface DisplayStats {
   defense: number;
 }
 
+/**
+ * O código de coleção impresso no rodapé. O clássico não o declara e o deriva do
+ * id; o Quatro Elementos traz o valor do Figma como está (ver `ref` no catálogo).
+ *
+ * Sai daqui, e não do TSX que desenha o rodapé, porque a ficha da coleção
+ * imprime o MESMO código ao lado da carta — duas derivações do mesmo dado
+ * acabariam divergindo no dia em que o clássico ganhar `ref` de verdade.
+ */
+export function collectionCode(card: Card): string {
+  return card.ref ?? `RDI - 080/${String(card.id).padStart(3, '0')}`;
+}
+
 export function ComposedCard({
   card,
   art,
@@ -478,7 +490,7 @@ export function ComposedCard({
           color: '#e8e2d6',
         }}
       >
-        {card.ref ?? `RDI - 080/${String(card.id).padStart(3, '0')}`}
+        {collectionCode(card)}
       </div>
       <div
         style={{

@@ -32,3 +32,31 @@ export const RARITY_COLOR: Record<Rarity, string> = {
 export function rarityHalo(rarity: Rarity): string {
   return `${RARITY_COLOR[rarity]}66`;
 }
+
+/**
+ * As cores do console (decisão nº 29) que precisam entrar em `style` calculado —
+ * filete de painel selecionado, barra de proporção, cor do herói sem elemento.
+ *
+ * Mesma razão de `ELEMENT_COLOR` estar aqui: `border-zn-gold` não resolve numa
+ * string montada em runtime. Os mesmos valores vivem como token em styles.css.
+ */
+export const ZN = {
+  gold: '#e0a33c',
+  green: '#63c77b',
+  red: '#e8705c',
+  line: '#1d2027',
+  edge: '#23262f',
+  edgeHi: '#3e4554',
+  panel: '#0f1115',
+  slot: '#2c313b',
+  track: '#1a1d24',
+} as const;
+
+/**
+ * A cor do herói é a do elemento dele; Tennor e Morgon não têm elemento no
+ * catálogo, e para esses o ouro do console faz as vezes — sem ele o retrato
+ * ficaria sem filete e a lista de heróis perderia a única pista de leitura.
+ */
+export function heroColor(element: Element | null): string {
+  return element ? ELEMENT_COLOR[element] : ZN.gold;
+}

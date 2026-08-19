@@ -70,6 +70,64 @@
 
   --font-title: 'Cinzel', 'Grenze', serif;
   --font-sans: 'Alegreya Sans', ui-sans-serif, system-ui, sans-serif;
+
+  /* ── console (decisão nº 29) ───────────────────────────────────────────────
+     O redesign de 2026-08-19 é OUTRO sistema visual: sem canto arredondado, sem
+     gradiente e sem sombra, só filete de 1px e chapado. Ele mora no prefixo
+     `zn-` (de Zone) porque convive com o `ez-` acima enquanto o login e o
+     tabuleiro não forem refeitos — os dois ficaram fora do escopo desta leva, e
+     reescrever `--color-ez-panel` por baixo deles trocaria a cara de telas que
+     ninguém revisou. Tela nova é `zn-`; quando login e batalha migrarem, o `ez-`
+     sai inteiro. */
+
+  /* superfícies, do mais fundo ao mais próximo */
+  --color-zn-ink: #08090b;
+  --color-zn-rail: #0c0d11;
+  --color-zn-bar: #0b0c0f;
+  --color-zn-panel: #0f1115;
+  --color-zn-raise: #14171c;
+  --color-zn-raise-hi: #15181d;
+
+  /* filetes: o desenho inteiro é feito deles */
+  --color-zn-line: #1d2027;
+  --color-zn-edge: #23262f;
+  --color-zn-edge-hi: #3a4050;
+  --color-zn-edge-hot: #4a5162;
+
+  /* texto, do mais forte ao mais apagado */
+  --color-zn-bright: #f0eadc;
+  --color-zn-soft: #dcd8ce;
+  --color-zn-text: #e6e2d8;
+  --color-zn-muted: #8a90a0;
+  --color-zn-dim: #7b8291;
+  --color-zn-faint: #6a7080;
+  --color-zn-fainter: #575d6c;
+  --color-zn-ghost: #4b505c;
+
+  /* ouro: a seleção, o número que importa e a ação principal */
+  --color-zn-gold: #e0a33c;
+  --color-zn-gold-light: #f5c46a;
+  --color-zn-gold-ink: #12130f;
+  --color-zn-gold-shade: #1a1710;
+  --color-zn-gold-edge: #3a3527;
+
+  /* verde: o que está em ordem, e o pareamento que fica esperando alguém */
+  --color-zn-green: #63c77b;
+  --color-zn-green-deep: #1d6b4b;
+  --color-zn-green-pale: #dffbec;
+  --color-zn-green-light: #8fe8ae;
+
+  /* vermelho: o que passou do limite, o que apaga, o adversário */
+  --color-zn-red: #e8705c;
+  --color-zn-red-light: #e88070;
+  --color-zn-red-deep: #7e3328;
+
+  /* trilhos de barra e contorno de slot vazio */
+  --color-zn-track: #1a1d24;
+  --color-zn-slot: #2c313b;
+
+  --font-head: 'Barlow Condensed', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
 }
 
 :root {
@@ -666,5 +724,487 @@ select option {
     opacity: 0.55;
     transform: scale(0.94);
     box-shadow: 0 0 4px 0 rgba(56, 189, 248, 0.35);
+  }
+}
+
+/* ══ console: o redesign de 2026-08-19 (decisão nº 29) ═════════════════════════
+
+   Tudo abaixo é o sistema `zn-`, importado do Claude Design ("Estilo TCG
+   atraente"). A regra do desenho é uma só: NADA de canto arredondado, gradiente
+   ou sombra — a hierarquia sai do filete de 1px, da chapada de fundo e da
+   tipografia. Quatro vozes, e cada uma diz uma coisa:
+
+   - Cinzel 800 (`.zn-wordmark`) só no brasão, uma vez por tela;
+   - Barlow Condensed (`.zn-head`, `.zn-name`) em nome próprio e título de ação;
+   - JetBrains Mono (`.zn-label`, `.zn-num`) em toda etiqueta e todo número — é o
+     que dá o ar de terminal, e é onde mora o `letter-spacing` largo;
+   - Alegreya Sans (herdada do body) só na prosa corrida.
+
+   Botão novo escolhe um `.zn-btn-*` pelo PAPEL, como no `ez-`: `gold` é a ação
+   principal, `green` a que confirma um estado válido, `wire` a secundária de
+   contorno, `flat` a da barra colada, `quiet` o ± de uma cópia. */
+
+@layer components {
+  /* ── esqueleto ──────────────────────────────────────────────────────────── */
+
+  /* a moldura inteira: coluna fixa + conteúdo, sem rolagem no corpo da página */
+  .zn-shell {
+    display: flex;
+    height: 100dvh;
+    overflow: hidden;
+    background: var(--color-zn-ink);
+    color: var(--color-zn-text);
+    font-size: 15px;
+  }
+
+  .zn-rail {
+    width: 210px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-zn-rail);
+    border-right: 1px solid var(--color-zn-line);
+  }
+
+  /* linha do menu: número mono à esquerda, nome condensado, filete de seleção */
+  .zn-nav {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    padding: 12px 18px;
+    border: 0;
+    border-left: 3px solid transparent;
+    background: transparent;
+    color: var(--color-zn-muted);
+    cursor: pointer;
+  }
+
+  .zn-nav:hover {
+    background: var(--color-zn-raise);
+    color: var(--color-zn-bright);
+  }
+
+  .zn-nav-on {
+    border-left-color: var(--color-zn-gold);
+    background: var(--color-zn-raise);
+    color: var(--color-zn-bright);
+  }
+
+  .zn-topbar {
+    flex: none;
+    height: 62px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 0 24px;
+    background: var(--color-zn-bar);
+    border-bottom: 1px solid var(--color-zn-line);
+  }
+
+  /* ── tipografia ─────────────────────────────────────────────────────────── */
+
+  .zn-wordmark {
+    font-family: var(--font-title);
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: 0.02em;
+    color: var(--color-zn-bright);
+  }
+
+  /* título de ação e nome de tela */
+  .zn-head {
+    font-family: var(--font-head);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--color-zn-bright);
+  }
+
+  /* nome próprio em lista e em carta: um peso abaixo do título */
+  .zn-name {
+    font-family: var(--font-head);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-zn-soft);
+  }
+
+  /* a etiqueta de terminal: caixa alta, bem espaçada, bem apagada */
+  .zn-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.3em;
+    color: var(--color-zn-faint);
+  }
+
+  /* número e código: mono, sem o espaçamento largo da etiqueta */
+  .zn-num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── superfícies ────────────────────────────────────────────────────────── */
+
+  .zn-panel {
+    background: var(--color-zn-panel);
+    border: 1px solid var(--color-zn-edge);
+  }
+
+  .zn-panel-hover:hover {
+    background: var(--color-zn-raise);
+    border-color: var(--color-zn-edge-hi);
+  }
+
+  /* o fundo de dentro do painel: campo, código de sala, botão apagado */
+  .zn-inset {
+    background: var(--color-zn-bar);
+    border: 1px solid var(--color-zn-edge);
+  }
+
+  /*
+    Mosaico de fio de cabelo: a grade é o PRÓPRIO fundo aparecendo por um vão de
+    1px entre as células. Substitui a borda em cada célula, que dobraria de
+    espessura nos encontros — o desenho inteiro depende de o filete ficar em 1px.
+  */
+  .zn-hair {
+    display: grid;
+    gap: 1px;
+    background: var(--color-zn-line);
+  }
+
+  .zn-hair > * {
+    background: var(--color-zn-panel);
+  }
+
+  /* o canto chanfrado do modal e do retrato de herói */
+  .zn-notch {
+    clip-path: polygon(
+      0 0,
+      calc(100% - 12px) 0,
+      100% 12px,
+      100% 100%,
+      12px 100%,
+      0 calc(100% - 12px)
+    );
+  }
+
+  .zn-notch-lg {
+    clip-path: polygon(
+      0 0,
+      calc(100% - 16px) 0,
+      100% 16px,
+      100% 100%,
+      16px 100%,
+      0 calc(100% - 16px)
+    );
+  }
+
+  .zn-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 5, 8, 0.84);
+    backdrop-filter: blur(3px);
+    display: grid;
+    place-items: center;
+    padding: 28px;
+  }
+
+  /* ── botões ─────────────────────────────────────────────────────────────── */
+
+  .zn-btn {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    padding: 0 14px;
+    height: 34px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition:
+      border-color 0.14s ease,
+      background-color 0.14s ease,
+      color 0.14s ease;
+  }
+
+  .zn-btn:disabled {
+    cursor: default;
+    opacity: 0.42;
+  }
+
+  /* contorno: a secundária de toda tela — voltar, criar sala, abrir construtor */
+  .zn-btn-wire {
+    background: var(--color-zn-bar);
+    border-color: var(--color-zn-edge-hi);
+    color: var(--color-zn-text);
+  }
+
+  .zn-btn-wire:not(:disabled):hover {
+    border-color: var(--color-zn-gold);
+    color: var(--color-zn-gold-light);
+    background: var(--color-zn-raise-hi);
+  }
+
+  /* ouro chapado: a ação principal, uma por tela */
+  .zn-btn-gold {
+    background: var(--color-zn-gold);
+    border-color: var(--color-zn-gold);
+    color: var(--color-zn-gold-ink);
+    font-weight: 700;
+  }
+
+  .zn-btn-gold:not(:disabled):hover {
+    filter: brightness(1.12);
+  }
+
+  /* verde: o que confirma um estado JÁ válido (gravar deck pronto, manter mão) */
+  .zn-btn-green {
+    background: var(--color-zn-green-deep);
+    border-color: var(--color-zn-green-deep);
+    color: var(--color-zn-green-pale);
+  }
+
+  .zn-btn-green:not(:disabled):hover {
+    filter: brightness(1.12);
+  }
+
+  /* colado na barra: sem contorno próprio, o vão de 1px do `.zn-hair` o separa */
+  .zn-btn-flat {
+    background: var(--color-zn-panel);
+    border: 0;
+    color: var(--color-zn-text);
+  }
+
+  .zn-btn-flat:not(:disabled):hover {
+    background: var(--color-zn-raise-hi);
+    color: var(--color-zn-gold-light);
+  }
+
+  /* o ± de uma cópia e o × de fechar: some no fundo até o ponteiro chegar */
+  .zn-btn-quiet {
+    background: var(--color-zn-bar);
+    border-color: var(--color-zn-edge);
+    color: var(--color-zn-muted);
+    padding: 0;
+    letter-spacing: 0;
+  }
+
+  .zn-btn-quiet:not(:disabled):hover {
+    border-color: var(--color-zn-gold);
+    color: var(--color-zn-gold-light);
+  }
+
+  /* o mesmo botão quando o que ele faz é TIRAR: o hover vai para o vermelho */
+  .zn-btn-undo:not(:disabled):hover {
+    border-color: var(--color-zn-red-deep);
+    color: var(--color-zn-red-light);
+  }
+
+  /* aba de filtro: ligada em ouro chapado, desligada em painel */
+  .zn-tab {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    border: 0;
+    padding: 0 13px;
+    height: 32px;
+    background: var(--color-zn-panel);
+    color: var(--color-zn-muted);
+    cursor: pointer;
+  }
+
+  .zn-tab:hover {
+    color: var(--color-zn-bright);
+  }
+
+  .zn-tab-on {
+    background: var(--color-zn-gold);
+    color: var(--color-zn-gold-ink);
+  }
+
+  /* ── campos ─────────────────────────────────────────────────────────────── */
+
+  .zn-input {
+    background: var(--color-zn-panel);
+    border: 1px solid var(--color-zn-edge);
+    color: var(--color-zn-bright);
+    padding: 0 12px;
+    height: 34px;
+    outline: none;
+    transition: border-color 0.14s ease;
+  }
+
+  .zn-input:focus {
+    border-color: var(--color-zn-gold);
+  }
+
+  /* o select do idioma e do formato: mono, chapado, sem seta desenhada */
+  .zn-select {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    background: var(--color-zn-panel);
+    border: 1px solid var(--color-zn-edge);
+    color: var(--color-zn-muted);
+    padding: 0 10px;
+    height: 30px;
+    cursor: pointer;
+    outline: none;
+    transition:
+      border-color 0.14s ease,
+      color 0.14s ease;
+  }
+
+  .zn-select:hover,
+  .zn-select:focus {
+    border-color: var(--color-zn-gold);
+    color: var(--color-zn-gold-light);
+  }
+
+  .zn-select option {
+    background: var(--color-zn-panel);
+    color: var(--color-zn-text);
+    letter-spacing: normal;
+  }
+
+  /* ── miudezas ───────────────────────────────────────────────────────────── */
+
+  /* barra de proporção: trilho chapado, preenchimento na cor que o TSX manda */
+  .zn-track {
+    background: var(--color-zn-track);
+    display: flex;
+  }
+
+  /* o quadradinho de estado que pisca: fila, sala aberta, oponente por chegar */
+  .zn-beacon {
+    animation: zn-scan 2.4s ease-in-out infinite;
+  }
+
+  .zn-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    transform: translateX(-50%);
+    z-index: 70;
+    background: var(--color-zn-panel);
+    border: 1px solid var(--color-zn-edge-hi);
+    border-left: 3px solid var(--color-zn-gold);
+    padding: 12px 20px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--color-zn-text);
+    animation: zn-rise 0.18s ease both;
+  }
+
+  /*
+    A carta na grade: o filete acende ao passar o ponteiro.
+
+    A cor de repouso vem de `--tile-line`, posta no `style` de quem desenha (ela
+    muda carta a carta: no baralho, escolhida, nenhum dos dois). Passar a cor
+    direto no `style` não daria — inline vence classe, e o `:hover` abaixo nunca
+    chegaria a acontecer. A variável é o que deixa as duas conviverem.
+  */
+  .zn-tile {
+    border: 1px solid var(--tile-line, var(--color-zn-line));
+    background: var(--color-zn-panel);
+    transition:
+      border-color 0.14s ease,
+      background-color 0.14s ease;
+  }
+
+  .zn-tile:hover {
+    border-color: var(--color-zn-edge-hot);
+    background: var(--color-zn-raise);
+  }
+}
+
+/* ── animações do console ─────────────────────────────────────────────────── */
+
+/* o que entra por baixo: painel da fila, código de sala, carta selecionada */
+@keyframes zn-fade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* o pulso do que está esperando: fila, sala, oponente por chegar */
+@keyframes zn-scan {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+/* o que entra por cima: modal, mão simulada, escolha de herói */
+@keyframes zn-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+  Abaixo de 1100px o desenho de duas colunas não cabe: a trilha encolhe para os
+  números e o painel do deck desce para baixo da grade, em vez de espremer os
+  dois até a carta virar selo.
+*/
+/* o brasão curto e o rótulo do menu só existem numa das duas larguras */
+.zn-rail-narrow {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .zn-rail {
+    width: 62px;
+  }
+
+  .zn-rail-wide {
+    display: none;
+  }
+
+  .zn-rail-narrow {
+    display: block;
+  }
+
+  /* o rodapé da trilha encolhe para o número, mas continua clicável */
+  .zn-rail > button:last-child {
+    padding-inline: 8px;
+    align-items: center;
+  }
+
+  .zn-nav {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    padding: 12px 6px;
+  }
+
+  /* `!important` porque quem desenha a divisão pede `overflow-hidden` de utilitário,
+     e utilitário do Tailwind vem depois desta camada — sem ele a coluna estreita
+     cortaria o conteúdo em vez de rolar */
+  .zn-split {
+    flex-direction: column;
+    overflow: auto !important;
+  }
+
+  .zn-split > * {
+    width: 100% !important;
+    flex: none !important;
+    border-left: 0 !important;
+    border-top: 1px solid var(--color-zn-line);
   }
 }

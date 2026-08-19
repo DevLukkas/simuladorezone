@@ -26,10 +26,11 @@ const SUBSETS = ['latin', 'latin-ext'];
  * (Cinzel, Alegreya SC, Vollkorn SC, Eczar, Oranienbaum, Forum...), a Grenze Medium é a
  * que casa em peso, condensação e serifas.
  *
- * Cinzel e Alegreya Sans não entram na carta: são a tipografia da INTERFACE (decisão
- * nº 26) — Cinzel nos títulos e botões de ação, Alegreya Sans no corpo. Ficam aqui, e
- * não num <link> para o Google, porque o jogo carrega offline e não vaza navegação do
- * jogador — o mesmo motivo das quatro da carta.
+ * Cinzel, Alegreya Sans, Barlow Condensed e JetBrains Mono não entram na carta: são a
+ * tipografia da INTERFACE (decisões nº 26 e nº 29) — Cinzel só no brasão, Barlow
+ * Condensed nos títulos e rótulos de ação, JetBrains Mono em número e etiqueta, Alegreya
+ * Sans no corpo. Ficam aqui, e não num <link> para o Google, porque o jogo carrega
+ * offline e não vaza navegação do jogador — o mesmo motivo das quatro da carta.
  */
 const FAMILIES =
   'family=Kanit:wght@400' +
@@ -37,7 +38,9 @@ const FAMILIES =
   '&family=Grenze:wght@500' +
   '&family=Palanquin+Dark:wght@400;600' +
   '&family=Cinzel:wght@600;700;800' +
-  '&family=Alegreya+Sans:wght@400;500;700';
+  '&family=Alegreya+Sans:wght@400;500;700' +
+  '&family=Barlow+Condensed:wght@500;600;700' +
+  '&family=JetBrains+Mono:wght@400;500;700';
 
 /** o UA decide o formato servido; este garante woff2 */
 const UA =
@@ -86,8 +89,9 @@ for (const block of blocks) {
 
 writeFileSync(
   join(dest, 'fontes.css'),
-  `/* Gerado por scripts/fontes.ts — não edite à mão.\n` +
-    `   Kanit, Manjari, Grenze e Palanquin Dark, todas sob SIL OFL. */\n\n` +
+  `/* Gerado por scripts/fonts.ts — não edite à mão.\n` +
+    `   Todas sob SIL OFL: Kanit, Manjari, Grenze e Palanquin Dark (a carta),\n` +
+    `   Cinzel, Alegreya Sans, Barlow Condensed e JetBrains Mono (a interface). */\n\n` +
     deckRules.join('\n\n') +
     '\n',
 );

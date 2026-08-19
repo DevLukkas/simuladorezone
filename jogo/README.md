@@ -27,7 +27,7 @@ Para criar ou editar carta pela tela — identidade, arte, texto nos três idiom
 npm run estudio    # mesmo servidor, com --admin; imprime a chave de acesso no console
 ```
 
-O botão **Estúdio** aparece no menu; ele pede a chave que saiu no console. Fixe a chave com
+O **Estúdio** vira o item 05 da trilha da esquerda; ele pede a chave que saiu no console. Fixe a chave com
 `EZONE_ADMIN_KEY=...` se preferir uma estável.
 
 O estúdio grava **nos arquivos do catálogo** (`src/data/*.ts` + `src/i18n/locales/cards.*`),

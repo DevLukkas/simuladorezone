@@ -52,8 +52,12 @@ autoritativo. O legado é somente-leitura e serve de especificação de regras a
 - `src/i18n/` — dicionários por idioma (`locales/pt-BR.ts` é a fonte; os outros são
   tipados contra ele, então tradução faltando não compila)
 - `src/client/` — React 18 + Zustand + Tailwind. O tema da interface é o bloco
-  `@theme` + `@layer components` de `styles.css` (decisão nº 26): tela nova usa
-  `.ez-panel`, `.ez-btn ez-btn-<papel>`, `.ez-input`… e não escreve gradiente na mão
+  `@theme` + `@layer components` de `styles.css`, e ali convivem DOIS sistemas:
+  o **console** `zn-` (decisão nº 29), que é o redesign e vale para tudo que fica
+  fora da partida — `.zn-shell`, `.zn-panel`, `.zn-btn zn-btn-<papel>`,
+  `.zn-label`, `.zn-num`, `.zn-head` —, e o `ez-` anterior (decisão nº 26), que
+  sobrevive só no login e no tabuleiro até eles serem refeitos. Tela nova é `zn-`,
+  escolhe o botão pelo PAPEL e não escreve gradiente nem canto arredondado na mão
 - `server/` — Node 22+, SQLite, SSE para push + POST para comandos
 - `scripts/` — harness headless
 

@@ -4,6 +4,10 @@ import { useTranslation } from '../useTranslation.ts';
 /**
  * Troca de idioma. O padrão vem do sistema (`navigator.language`); a escolha
  * feita aqui é guardada e passa a valer por cima dele.
+ *
+ * Duas peças porque há dois temas em pé: o console (decisão nº 29) só cobriu as
+ * telas de fora da partida, e o login segue no tema anterior. `LanguagePicker`
+ * é a do login e sai junto com ele; `ConsoleLanguagePicker` é a da barra do topo.
  */
 export function LanguagePicker({ className }: { className?: string }) {
   const { t, locale, setLocale } = useTranslation();
@@ -24,5 +28,31 @@ export function LanguagePicker({ className }: { className?: string }) {
         ))}
       </select>
     </label>
+  );
+}
+
+/**
+ * O mesmo seletor na barra do console. O desenho importado não o previa — nasceu
+ * num protótipo só em português —, então ele entra como `.zn-select`, do mesmo
+ * tamanho e da mesma voz mono das outras etiquetas da barra, para não virar o
+ * único controle "de site" no meio de um painel de terminal.
+ */
+export function ConsoleLanguagePicker() {
+  const { t, locale, setLocale } = useTranslation();
+
+  return (
+    <select
+      className="zn-select"
+      aria-label={t('common.language')}
+      title={t('common.language')}
+      value={locale}
+      onChange={(event) => setLocale(event.target.value as (typeof LOCALES)[number])}
+    >
+      {LOCALES.map((option) => (
+        <option key={option} value={option}>
+          {LOCALE_NAMES[option]}
+        </option>
+      ))}
+    </select>
   );
 }

@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { MAX_DECK_CARDS } from '../../data/deckRules.ts';
+import { DIRECT_DAMAGE_PER_POINT, STARTING_HAND } from '../../engine/state.ts';
 import { ApiError, api } from '../services/api.ts';
-import { ScreenHeader } from '../components/ScreenHeader.tsx';
-import { useDecksStore } from '../stores/decksStore.ts';
+import { HeroBadge } from '../components/HeroPortrait.tsx';
+import { useDecksStore, activeDeckOf } from '../stores/decksStore.ts';
+import { useToastStore } from '../stores/toastStore.ts';
+import { ELEMENT_COLOR, ZN } from '../theme.ts';
 import { useTranslation } from '../useTranslation.ts';
 import { text, type TextRef } from '../../shared/text.ts';
 
@@ -11,30 +15,34 @@ type Status =
   | { type: 'room_created'; code: string }
   | { type: 'error'; message: TextRef };
 
+/**
+ * Jogar online: dois modos lado a lado (fila e sala) e o resumo da mesa.
+ *
+ * O deck deixou de ser um `select` aqui: o que entra é o BARALHO ATIVO da trilha
+ * (decisão nº 29). Sem ele não há partida, e a tela diz isso em vez de oferecer
+ * uma fila que o servidor recusaria — a fila é por formato, e o formato vem do
+ * baralho.
+ */
 export function Lobby({
-  onBack,
   onEnterMatch,
+  onOpenBuilder,
 }: {
-  onBack: () => void;
   onEnterMatch: (matchId: number) => void;
+  onOpenBuilder: () => void;
 }) {
-  const { decks, loaded, load } = useDecksStore();
   const { t, resolve } = useTranslation();
-  const [deckId, setDeckId] = useState<number | null>(null);
+  const deck = useDecksStore(activeDeckOf);
+  const toast = useToastStore((state) => state.show);
   const [status, setStatus] = useState<Status>({ type: 'idle' });
   const [typedCode, setTypedCode] = useState('');
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
-    void load();
-    return () => {
+  useEffect(
+    () => () => {
       if (poll.current) clearInterval(poll.current);
-    };
-  }, [load]);
-
-  useEffect(() => {
-    if (loaded && deckId === null && decks[0]) setDeckId(decks[0].id);
-  }, [loaded, decks, deckId]);
+    },
+    [],
+  );
 
   function failed(error: unknown): Status {
     return {
@@ -55,11 +63,17 @@ export function Lobby({
     }, 2000);
   }
 
-  async function joinQueue() {
-    if (deckId === null) return;
+  async function toggleQueue() {
+    if (status.type === 'in_queue') {
+      if (poll.current) clearInterval(poll.current);
+      await api('DELETE', '/api/queue').catch(() => undefined);
+      setStatus({ type: 'idle' });
+      return;
+    }
+    if (!deck) return;
     try {
       const reply = await api<{ matchId?: number; waiting?: boolean }>('POST', '/api/queue', {
-        deckId,
+        deckId: deck.id,
       });
       if (reply.matchId) {
         onEnterMatch(reply.matchId);
@@ -72,17 +86,12 @@ export function Lobby({
     }
   }
 
-  async function leaveQueue() {
-    if (poll.current) clearInterval(poll.current);
-    await api('DELETE', '/api/queue').catch(() => undefined);
-    setStatus({ type: 'idle' });
-  }
-
   async function createRoom() {
-    if (deckId === null) return;
+    if (!deck) return;
     try {
-      const reply = await api<{ code: string }>('POST', '/api/rooms', { deckId });
+      const reply = await api<{ code: string }>('POST', '/api/rooms', { deckId: deck.id });
       setStatus({ type: 'room_created', code: reply.code });
+      toast(t('lobby.roomCreated', { code: reply.code }));
       pollForMatch();
     } catch (error) {
       setStatus(failed(error));
@@ -90,11 +99,17 @@ export function Lobby({
   }
 
   async function joinWithCode() {
-    if (deckId === null || !typedCode.trim()) return;
+    const code = typedCode.trim();
+    if (!deck) return;
+    if (!code) {
+      toast(t('lobby.typeCode'));
+      return;
+    }
     try {
+      toast(t('lobby.joining', { code }));
       const reply = await api<{ matchId: number }>('POST', '/api/rooms/join', {
-        deckId,
-        code: typedCode.trim(),
+        deckId: deck.id,
+        code,
       });
       onEnterMatch(reply.matchId);
     } catch (error) {
@@ -102,125 +117,157 @@ export function Lobby({
     }
   }
 
-  const noDecks = loaded && decks.length === 0;
-  const waiting = status.type === 'in_queue' || status.type === 'room_created';
+  const queued = status.type === 'in_queue';
+  const total = deck ? Object.values(deck.cards).reduce((sum, amount) => sum + amount, 0) : 0;
 
   return (
-    <main className="ez-page px-[clamp(18px,4vw,56px)] pb-16 pt-9">
-      <div className="mx-auto flex w-[min(640px,100%)] flex-col gap-4 pt-[8vh]">
-        <ScreenHeader title={t('lobby.title')} onBack={onBack} />
+    <div className="min-h-0 flex-1 overflow-auto px-6 py-7">
+      {!deck && (
+        <div className="zn-panel mb-5 flex max-w-270 flex-wrap items-center gap-3.5 px-5 py-4">
+          <span className="text-sm text-zn-gold-light">{t('lobby.needDeck')}</span>
+          <button
+            type="button"
+            onClick={onOpenBuilder}
+            className="zn-btn zn-btn-wire ml-auto uppercase"
+          >
+            {t('hub.openBuilder')}
+          </button>
+        </div>
+      )}
 
-        {noDecks && (
-          <p className="ez-panel border-[#6b4d12] p-3.5 text-sm text-ez-gold-light">
-            {t('lobby.needDeck')}
+      <div className="grid max-w-270 items-start gap-5 [grid-template-columns:repeat(auto-fit,minmax(320px,1fr))]">
+        <section className="zn-panel p-5.5" style={{ borderTop: `3px solid ${ZN.green}` }}>
+          <span className="zn-label uppercase">{t('lobby.modeTag', { n: '01' })}</span>
+          <h2 className="zn-head mt-2.5 text-[32px] tracking-[0.08em]">{t('lobby.quickTitle')}</h2>
+          <p className="mt-2.5 text-sm leading-normal text-zn-muted">{t('lobby.quickDesc')}</p>
+
+          <p className="zn-num mt-4.5 flex items-center gap-2.5 text-[10px] uppercase tracking-[0.16em] text-zn-dim">
+            <span aria-hidden className="h-1.5 w-1.5 shrink-0 bg-zn-green" />
+            {deck ? `${deck.name} · ${total}/${MAX_DECK_CARDS}` : t('shell.noDeck')}
           </p>
-        )}
 
-        <label className="flex items-center gap-3 text-sm text-ez-muted">
-          <span className="whitespace-nowrap">{t('lobby.deck')}</span>
-          <select
-            className="ez-select flex-1 text-[15px]"
-            value={deckId ?? ''}
-            disabled={waiting}
-            onChange={(event) => setDeckId(Number(event.target.value))}
+          <button
+            type="button"
+            disabled={!deck}
+            onClick={() => void toggleQueue()}
+            className={`zn-btn mt-5 h-11.5 w-full uppercase ${queued ? 'zn-btn-wire' : 'zn-btn-green'}`}
           >
-            {/*
-              o formato vem junto do nome: a fila é POR formato (server/rooms.ts) e a
-              sala recusa o convidado de outro — sem isto o jogador espera para sempre
-              ou leva "os dois decks precisam ser do mesmo formato" sem saber por quê
-            */}
-            {decks.map((deck) => (
-              <option key={deck.id} value={deck.id}>
-                {deck.name} — {t(`format.${deck.format ?? 'classic'}`)}
-              </option>
-            ))}
-          </select>
-        </label>
+            {queued ? t('lobby.leaveQueue') : t('lobby.joinQueue')}
+          </button>
 
-        {status.type === 'idle' || status.type === 'error' ? (
-          <>
-            <button
-              type="button"
-              disabled={deckId === null}
-              className="ez-btn ez-btn-emerald mt-2 w-full rounded-xl py-[17px] text-base tracking-[0.14em]"
-              onClick={() => void joinQueue()}
+          {queued && (
+            <div
+              className="zn-inset mt-4 flex items-center gap-3 p-3.5"
+              style={{ animation: 'zn-fade .2s ease both' }}
             >
-              {t('lobby.joinQueue')}
-            </button>
-
-            {/* a sala é a via de convite: criar de um lado, digitar o código do outro */}
-            <div className="grid items-stretch gap-2.5 sm:grid-cols-[1fr_150px_auto]">
-              <button
-                type="button"
-                disabled={deckId === null}
-                className="ez-btn ez-btn-panel text-[15px]"
-                onClick={() => void createRoom()}
-              >
-                {t('lobby.createRoom')}
-              </button>
-              <input
-                className="ez-input text-center text-[15px] tracking-[0.08em]"
-                placeholder={t('lobby.codePlaceholder')}
-                maxLength={8}
-                value={typedCode}
-                onChange={(event) => setTypedCode(event.target.value.toUpperCase())}
-              />
-              {/* o ouro só acende quando há código digitado: até lá o botão não promete nada */}
-              <button
-                type="button"
-                disabled={deckId === null || !typedCode.trim()}
-                className={`ez-btn ez-btn-panel text-[15px] ${
-                  typedCode.trim() ? 'border-ez-gold text-ez-gold-light hover:brightness-110' : ''
-                }`}
-                onClick={() => void joinWithCode()}
-              >
-                {t('lobby.join')}
-              </button>
+              <span aria-hidden className="zn-beacon h-2 w-2 shrink-0 bg-zn-gold" />
+              <span className="zn-num text-[10px] uppercase tracking-[0.16em] text-zn-muted">
+                {t('lobby.searching')}
+              </span>
             </div>
+          )}
+        </section>
 
-            <p className="text-center text-[13px] text-ez-dim">{t('lobby.hint')}</p>
-            {status.type === 'error' && (
-              <p className="text-center text-sm text-ez-gold-light">{resolve(status.message)}</p>
-            )}
-          </>
-        ) : (
-          <div
-            className="ez-panel mt-2 flex flex-col items-center gap-2.5 px-6 py-7"
-            style={{ animation: 'ez-fade-in .3s ease both' }}
+        <section
+          className="zn-panel p-5.5"
+          style={{ borderTop: `3px solid ${ELEMENT_COLOR.water}` }}
+        >
+          <span className="zn-label uppercase">{t('lobby.modeTag', { n: '02' })}</span>
+          <h2 className="zn-head mt-2.5 text-[32px] tracking-[0.08em]">{t('lobby.roomTitle')}</h2>
+          <p className="mt-2.5 text-sm leading-normal text-zn-muted">{t('lobby.roomDesc')}</p>
+
+          <button
+            type="button"
+            disabled={!deck}
+            onClick={() => void createRoom()}
+            className="zn-btn zn-btn-wire mt-4.5 h-10.5 w-full uppercase"
           >
-            {status.type === 'room_created' ? (
-              <>
-                <p className="text-base text-ez-soft">{t('lobby.roomCreated')}</p>
-                {/*
-                  o código é para ser LIDO EM VOZ ALTA para o oponente: grande, espaçado
-                  e na esmeralda do pareamento, não no ouro dos títulos
-                */}
-                <p
-                  className="font-title text-[40px] font-extrabold tracking-[0.1em] text-ez-emerald-light"
-                  style={{ textShadow: '0 0 26px rgba(63,214,143,.45)' }}
-                >
-                  {status.code}
-                </p>
-              </>
-            ) : (
-              <p className="text-[17px] text-ez-text">{t('lobby.searching')}</p>
-            )}
-            <p
-              className="text-[13px] tracking-[0.08em] text-ez-dim"
-              style={{ animation: 'ez-glow-pulse 1.6s ease-in-out infinite' }}
+            {t('lobby.createRoom')}
+          </button>
+
+          {status.type === 'room_created' && (
+            <div
+              className="zn-inset mt-3.5 p-4 text-center"
+              style={{ animation: 'zn-fade .2s ease both' }}
             >
-              {t('lobby.waiting')}
-            </p>
+              <div className="zn-label tracking-[0.26em] uppercase">{t('lobby.roomCodeLabel')}</div>
+              {/* o código é para ser LIDO EM VOZ ALTA: grande, espaçado e no verde do pareamento */}
+              <div className="zn-num mt-2 text-[30px] font-bold tracking-[0.16em] text-zn-green">
+                {status.code}
+              </div>
+              <div className="zn-num zn-beacon mt-2 text-[10px] uppercase tracking-[0.16em] text-zn-muted">
+                {t('lobby.waitingOpponent')}
+              </div>
+            </div>
+          )}
+
+          <div className="mt-3.5 grid gap-2 [grid-template-columns:1fr_auto]">
+            <input
+              className="zn-input h-10 text-center font-mono text-sm tracking-[0.14em]"
+              placeholder={t('lobby.codePlaceholder')}
+              maxLength={8}
+              value={typedCode}
+              onChange={(event) => setTypedCode(event.target.value.toUpperCase())}
+            />
             <button
               type="button"
-              className="ez-btn ez-btn-ghost ez-btn-ghost-danger ez-btn-sm mt-1.5 px-6"
-              onClick={() => void leaveQueue()}
+              disabled={!deck}
+              onClick={() => void joinWithCode()}
+              className="zn-btn zn-btn-wire h-10 px-5 uppercase"
             >
-              {t('common.cancel')}
+              {t('lobby.join')}
             </button>
           </div>
-        )}
+        </section>
+
+        <section className="zn-panel p-5.5">
+          <span className="zn-label uppercase">{t('lobby.tableTitle')}</span>
+          <div className="mt-4 flex items-center gap-3.5">
+            {deck ? <HeroBadge hero={deck.hero} size={52} /> : <UnknownHero />}
+            <span className="zn-num text-[11px] uppercase tracking-[0.2em] text-zn-fainter">vs</span>
+            {/* o adversário só existe depois do pareamento: até lá, a moldura vazia */}
+            <UnknownHero />
+          </div>
+
+          <ul className="mt-4 flex flex-col gap-2">
+            {[
+              t('lobby.rule.hand', { count: STARTING_HAND }),
+              t('lobby.rule.turn'),
+              t('lobby.rule.combat'),
+              t('lobby.rule.direct', { damage: DIRECT_DAMAGE_PER_POINT }),
+            ].map((rule) => (
+              <li
+                key={rule}
+                className="zn-num flex gap-2.5 text-[10px] uppercase tracking-[0.08em] text-zn-dim"
+              >
+                <span aria-hidden className="text-zn-gold">
+                  ·
+                </span>
+                {rule}
+              </li>
+            ))}
+          </ul>
+        </section>
       </div>
-    </main>
+
+      {status.type === 'error' && (
+        <p className="zn-num mt-5 text-[11px] uppercase tracking-[0.12em] text-zn-red-light">
+          {resolve(status.message)}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** a moldura do herói que ainda não se conhece: mesma caixa, sem retrato */
+function UnknownHero() {
+  return (
+    <span
+      aria-hidden
+      className="zn-notch zn-num grid h-13 w-13 shrink-0 place-items-center bg-zn-ink text-[16px] text-zn-fainter"
+      style={{ border: `1px solid ${ZN.edge}` }}
+    >
+      ?
+    </span>
   );
 }
