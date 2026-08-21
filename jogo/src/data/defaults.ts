@@ -108,6 +108,8 @@ export function blankCard(id: number, type: CardType): Card {
     element: 'neutral',
     rarity: 'common',
     edition: 'Quatro Elementos',
+    // carta nasce fora do jogo e sobe a esteira quando o autor mandar (decisão nº 41)
+    status: 'draft',
   };
 
   if (type === 'creature') return { ...base, ...CREATURE_START } as unknown as Card;
@@ -132,7 +134,7 @@ export function retype(card: Card, type: CardType): Card {
   const source = card as unknown as Record<string, unknown>;
   const next = blankCard(card.id, type) as unknown as Record<string, unknown>;
 
-  for (const key of ['name', 'text', 'element', 'rarity', 'edition', 'img', 'art', 'ref', 'author']) {
+  for (const key of ['name', 'text', 'element', 'rarity', 'edition', 'img', 'art', 'ref', 'author', 'status']) {
     if (source[key] !== undefined) next[key] = source[key];
   }
   if (source.behaviorPending === true) next.behaviorPending = true;

@@ -1,477 +1,185 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ALL_CARDS } from '../../data/cards.ts';
-import { retype } from '../../data/defaults.ts';
-import { validateCard } from '../../data/validate.ts';
-import {
-  CARD_TYPES,
-  EDITIONS,
-  ELEMENTS,
-  KEYWORDS,
-  RACES,
-  RARITIES,
-  type Card,
-  type CardType,
-} from '../../data/types.ts';
-import { ComposedCard } from '../components/ComposedCard.tsx';
-import { FilterBar, INITIAL_FILTER, filterCards } from '../components/CardFilters.tsx';
-import { EffectBuilder } from '../components/admin/EffectBuilder.tsx';
-import { useAdminStore, TRANSLATED_LOCALES, reopenableId } from '../stores/adminStore.ts';
+import { useEffect, useRef, useState } from 'react';
+import { ALL_CARDS, PLAYABLE_CARDS } from '../../data/cards.ts';
+import { CardForm } from '../components/admin/CardForm.tsx';
+import { CardList } from '../components/admin/CardList.tsx';
+import { ArtLibraryPanel } from '../components/admin/ArtLibraryPanel.tsx';
+import { StudioModal } from '../components/admin/StudioParts.tsx';
+import { draftBlocked, rememberedIntent, useAdminStore, type StudioTab } from '../stores/adminStore.ts';
+import { useToastStore } from '../stores/toastStore.ts';
 import { useTranslation } from '../useTranslation.ts';
-import type { TextKey } from '../../i18n/keys.ts';
 
 /**
- * Estúdio de cartas (decisão nº 22): edita o catálogo e grava em `src/data`.
+ * Estúdio de cartas (decisões nº 22 e nº 41): edita o catálogo e grava em `src/data`.
  *
- * A lista da esquerda lê `ALL_CARDS` — o mesmo import do resto do jogo. Depois de
- * gravar, quem atualiza essa lista é o HMR do Vite relendo o arquivo que o servidor
- * acabou de escrever; o estúdio não guarda catálogo próprio nem espera resposta com
- * a carta dentro.
+ * Três salas na mesma moldura — o FORMULÁRIO da carta aberta, as CARTAS CRIADAS
+ * (o catálogo visto pela esteira) e a BIBLIOTECA DE IMAGENS. Elas dividem uma
+ * store: escolher arte na biblioteca vincula na carta que está no formulário, e
+ * publicar pela lista grava o mesmo arquivo que o botão do formulário grava.
+ *
+ * O catálogo continua não passando pela store: quem lê carta é o import de
+ * `ALL_CARDS`, que o HMR do Vite recarrega quando o servidor reescreve o arquivo.
  */
 
-type Plain = Record<string, unknown>;
-
-const BOX = 'ez-input ez-input-sm text-sm';
-const PANEL = 'ez-panel p-3.5';
+const TABS: readonly StudioTab[] = ['form', 'cards', 'library'];
 
 export function Studio({ onBack }: { onBack: () => void }) {
-  const { t, resolve } = useTranslation();
-  const { key, setKey, draft, edit, create, close, change, translate, save, remove, busy, error, problems, savedTo } =
+  const { t } = useTranslation();
+  const { keyStatus, verifyKey, tab, goTab, draft, dirty, pending, resume, create } =
     useAdminStore();
-  const [filter, setFilter] = useState(INITIAL_FILTER);
+  const showToast = useToastStore((state) => state.show);
 
-  const cards = filterCards(ALL_CARDS, filter);
-  const localProblems = useMemo(() => (draft ? validateCard(draft.card) : []), [draft]);
+  /**
+   * `onBack` nasce de novo a cada render do App (que assina esta store inteira). No
+   * vetor de dependências da conferência abaixo ele a faria repetir sem fim, então
+   * chega por ref: a conferência é UMA por montagem, que é o que a tela promete.
+   */
+  const back = useRef(onBack);
+  back.current = onBack;
 
   // gravar recarrega a página pelo HMR; a carta que estava aberta volta sozinha
   useEffect(() => {
     if (draft) return;
-    const again = reopenableId();
-    if (again !== null) edit(again);
-  }, [draft, edit]);
+    const again = rememberedIntent();
+    if (again.kind !== 'none') resume(again);
+  }, [draft, resume]);
 
   /**
-   * O servidor recusa carta sem tradução (o teste de i18n exige as três), então a
-   * tela cobra antes: o problema aparece na mesma lista dos estruturais, com o
-   * idioma no lugar do caminho do campo.
+   * O recarregamento do HMR também apaga rascunho não gravado, e ele pode vir de
+   * um arquivo que o autor nem tocou. Esta é a mesma promessa da guarda de troca de
+   * carta, feita ao navegador.
    */
-  const missingTranslations = useMemo(
-    () =>
-      draft
-        ? TRANSLATED_LOCALES.filter((locale) => {
-            const entry = draft.translations[locale];
-            return !entry?.name.trim() || !entry?.text.trim();
-          })
-        : [],
-    [draft],
-  );
+  useEffect(() => {
+    function hold(event: BeforeUnloadEvent) {
+      if (!dirty()) return;
+      event.preventDefault();
+      event.returnValue = '';
+    }
+    window.addEventListener('beforeunload', hold);
+    return () => window.removeEventListener('beforeunload', hold);
+  }, [dirty]);
 
-  if (!key) return <KeyGate onBack={onBack} onSubmit={setKey} />;
+  /**
+   * A chave é do PROCESSO do servidor: sem `EZONE_ADMIN_KEY` ela é sorteada a cada
+   * `--admin`, e reiniciar o servidor mata a que está guardada no navegador. Conferir
+   * ao MONTAR — que é também o F5 — é o que impede a tela de abrir com uma chave que
+   * já não vale; antes disso a descoberta vinha no erro da gravação, e não havia
+   * lugar nenhum para pôr a chave nova.
+   */
+  useEffect(() => {
+    let watching = true;
+    void verifyKey().then((verdict) => {
+      if (!watching || verdict !== 'refused') return;
+      // recusa na entrada não se resolve aqui dentro: a chave morta já foi esquecida,
+      // o autor volta ao hub e a próxima entrada cai na portaria pedindo a nova
+      showToast(t('admin.keyChanged'));
+      back.current();
+    });
+    return () => {
+      watching = false;
+    };
+  }, [verifyKey, showToast, t]);
 
-  return (
-    <main className="ez-page mx-auto flex max-w-[110rem] flex-col gap-4 p-6">
-      <header className="flex items-center gap-3">
-        <button type="button" className="ez-btn ez-btn-ghost ez-btn-sm" onClick={onBack}>
-          {t('common.back')}
-        </button>
-        <h1 className="ez-title text-2xl">{t('admin.title')}</h1>
-        <p className="text-sm text-ez-dim">{t('admin.subtitle')}</p>
-        <button type="button" className="ez-btn ez-btn-gold ez-btn-sm ml-auto" onClick={create}>
-          {t('admin.newCard')}
-        </button>
-      </header>
-
-      <div className="flex flex-1 gap-4">
-        <aside className="w-72 shrink-0">
-          <FilterBar value={filter} onChange={setFilter} />
-          <ul className="max-h-[calc(100vh-12rem)] overflow-y-auto pr-1">
-            {cards.map((card) => (
-              <li key={card.id}>
-                <button
-                  type="button"
-                  className={`flex w-full cursor-pointer items-baseline gap-2 rounded px-2 py-1 text-left text-sm hover:bg-white/5 ${
-                    draft?.card.id === card.id ? 'bg-ez-panel text-ez-gold-light' : ''
-                  }`}
-                  onClick={() => edit(card.id)}
-                >
-                  <span className="w-8 shrink-0 font-mono text-xs text-slate-500">{card.id}</span>
-                  <span className="truncate">{card.name}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </aside>
-
-        {!draft ? (
-          <p className="m-auto text-slate-500">{t('admin.pickCard')}</p>
-        ) : (
-          <>
-            <div className="flex min-w-0 flex-1 flex-col gap-4">
-              <h2 className="text-lg font-bold text-slate-300">
-                {draft.fresh
-                  ? t('admin.creating', { id: draft.card.id })
-                  : t('admin.editing', { id: draft.card.id })}
-              </h2>
-
-              <Identity card={draft.card} onChange={change} />
-
-              <section className={PANEL}>
-                <h3 className="mb-2 text-sm font-bold text-sky-300">{t('admin.translations')}</h3>
-                {TRANSLATED_LOCALES.map((locale) => {
-                  const entry = draft.translations[locale] ?? { name: '', text: '' };
-                  return (
-                    <div key={locale} className="mb-2">
-                      <p className="font-mono text-xs text-slate-500">{locale}</p>
-                      <input
-                        className={`${BOX} mb-1 w-full`}
-                        value={entry.name}
-                        placeholder="name"
-                        onChange={(event) =>
-                          translate(locale, { ...entry, name: event.target.value })
-                        }
-                      />
-                      <textarea
-                        className={`${BOX} h-16 w-full`}
-                        value={entry.text}
-                        placeholder="text"
-                        onChange={(event) =>
-                          translate(locale, { ...entry, text: event.target.value })
-                        }
-                      />
-                    </div>
-                  );
-                })}
-              </section>
-
-              <section>
-                <h3 className="mb-2 text-sm font-bold text-sky-300">{t('admin.declarative')}</h3>
-                <EffectBuilder card={draft.card} onChange={change} />
-              </section>
-            </div>
-
-            <aside className="w-72 shrink-0">
-              <div className="sticky top-4 flex flex-col gap-3">
-                <ComposedCard
-                  card={draft.card}
-                  {...(artPreview(draft.card) === undefined
-                    ? {}
-                    : { art: artPreview(draft.card) })}
-                  draft={{ name: draft.card.name, text: draft.card.text ?? '' }}
-                />
-
-                <ArtUpload card={draft.card} onChange={change} />
-
-                {(localProblems.length > 0 || missingTranslations.length > 0) && (
-                  <ul className="rounded bg-amber-950/50 p-2 text-xs text-amber-300">
-                    {localProblems.map((problem) => (
-                      <li key={`${problem.path}:${problem.problem}`}>
-                        {t(`admin.problem.${problem.problem}` as TextKey, {
-                          path: problem.path || '·',
-                        })}
-                      </li>
-                    ))}
-                    {missingTranslations.map((locale) => (
-                      <li key={locale}>{t('error.translation_required', { locale })}</li>
-                    ))}
-                  </ul>
-                )}
-
-                {error && (
-                  <div className="rounded bg-rose-950/60 p-2 text-xs text-rose-300">
-                    <p className="font-bold">{resolve(error)}</p>
-                    <ul>
-                      {problems.map((item, index) => (
-                        <li key={index}>{resolve(item)}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {savedTo && (
-                  <div className="rounded bg-emerald-950/60 p-2 text-xs text-emerald-300">
-                    <p>{t('admin.saved', { file: savedTo })}</p>
-                    <p className="text-emerald-500">{t('admin.reloadHint')}</p>
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  disabled={busy || localProblems.length > 0 || missingTranslations.length > 0}
-                  className="ez-btn ez-btn-gold ez-btn-sm"
-                  onClick={() => void save()}
-                >
-                  {busy ? t('admin.saving') : t('admin.save')}
-                </button>
-
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className="ez-btn ez-btn-ghost ez-btn-sm flex-1"
-                    onClick={close}
-                  >
-                    {t('common.close')}
-                  </button>
-                  {!draft.fresh && (
-                    <button
-                      type="button"
-                      className="ez-btn ez-btn-danger ez-btn-sm"
-                      onClick={() => {
-                        if (confirm(t('admin.removeConfirm', { name: draft.card.name }))) {
-                          void remove();
-                        }
-                      }}
-                    >
-                      {t('admin.remove')}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </aside>
-          </>
-        )}
+  if (keyStatus === 'unknown') {
+    return (
+      <div className="grid min-h-0 flex-1 place-items-center p-8">
+        <p className="zn-num text-[11px] uppercase tracking-[0.16em] text-zn-fainter">
+          {t('admin.keyChecking')}
+        </p>
       </div>
-    </main>
-  );
-}
+    );
+  }
 
-/** o caminho que a prévia usa; igual ao do jogo, mas sem cache do navegador atrapalhar */
-function artPreview(card: Card): string | undefined {
-  const file = card.art ?? card.img?.replace(/\.png$/, '.webp');
-  return file ? `/assets/arte/${file}` : undefined;
-}
-
-// ---------------------------------------------------------------------------
-// Identidade
-// ---------------------------------------------------------------------------
-
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="flex items-center gap-2 py-0.5">
-      <span className="w-40 shrink-0 text-xs text-slate-400">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function Identity({ card, onChange }: { card: Card; onChange: (card: Card) => void }) {
-  const { t } = useTranslation();
-  const source = card as unknown as Plain;
-  const creature = card.type === 'creature' ? card : null;
-
-  const set = (key: string, value: unknown) => {
-    const next = { ...source };
-    if (value === undefined || value === '') delete next[key];
-    else next[key] = value;
-    onChange(next as unknown as Card);
-  };
-
-  const textOf = (key: string) => (typeof source[key] === 'string' ? (source[key] as string) : '');
+  if (keyStatus === 'missing') return <StudioGate onBack={onBack} />;
 
   return (
-    <section className={PANEL}>
-      <h3 className="mb-2 text-sm font-bold text-sky-300">{t('admin.identity')}</h3>
-
-      <Row label={t('admin.field.id')}>
-        <span className="font-mono text-sm text-slate-500">{card.id}</span>
-      </Row>
-
-      <Row label={t('admin.field.type')}>
-        <select
-          className={BOX}
-          value={card.type}
-          onChange={(event) => onChange(retype(card, event.target.value as CardType))}
-        >
-          {CARD_TYPES.map((type) => (
-            <option key={type} value={type}>
-              {type}
-            </option>
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex flex-none flex-wrap items-center gap-3.5 border-b border-zn-line bg-zn-bar px-5 py-2.5">
+        <div className="flex gap-px border border-zn-edge bg-zn-edge">
+          {TABS.map((entry) => (
+            <button
+              key={entry}
+              type="button"
+              className={`zn-tab ${tab === entry ? 'zn-tab-on' : ''}`}
+              onClick={() => goTab(entry)}
+            >
+              {t(`admin.tab.${entry}`)}
+            </button>
           ))}
-        </select>
-      </Row>
-
-      <Row label={t('admin.field.name')}>
-        <input
-          className={`${BOX} flex-1`}
-          value={card.name}
-          onChange={(event) => onChange({ ...card, name: event.target.value } as Card)}
-        />
-      </Row>
-
-      <label className="flex items-start gap-2 py-0.5">
-        <span className="w-40 shrink-0 text-xs text-slate-400">{t('admin.field.text')}</span>
-        <textarea
-          className={`${BOX} h-24 flex-1`}
-          value={card.text ?? ''}
-          onChange={(event) => onChange({ ...card, text: event.target.value } as Card)}
-        />
-      </label>
-
-      <div className="flex flex-wrap gap-x-6">
-        <Row label={t('admin.field.element')}>
-          <select className={BOX} value={card.element} onChange={(e) => set('element', e.target.value)}>
-            {ELEMENTS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </Row>
-        <Row label={t('admin.field.rarity')}>
-          <select className={BOX} value={card.rarity} onChange={(e) => set('rarity', e.target.value)}>
-            {RARITIES.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </Row>
-        <Row label={t('admin.field.edition')}>
-          <select className={BOX} value={card.edition} onChange={(e) => set('edition', e.target.value)}>
-            {EDITIONS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </Row>
-      </div>
-
-      {creature && (
-        <div className="flex flex-wrap gap-x-6">
-          <Row label={t('admin.field.race')}>
-            <select className={BOX} value={creature.race} onChange={(e) => set('race', e.target.value)}>
-              {RACES.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </Row>
-          <Row label={t('admin.field.attack')}>
-            <input
-              type="number"
-              min={0}
-              className={`${BOX} w-20`}
-              value={creature.attack}
-              onChange={(event) => set('attack', Number(event.target.value))}
-            />
-          </Row>
-          <Row label={t('admin.field.health')}>
-            <input
-              type="number"
-              min={0}
-              className={`${BOX} w-20`}
-              value={creature.health}
-              onChange={(event) => set('health', Number(event.target.value))}
-            />
-          </Row>
         </div>
-      )}
 
-      {creature && (
-        <Row label={t('admin.field.keywords')}>
-          <div className="flex flex-wrap gap-1">
-            {KEYWORDS.map((keyword) => {
-              const on = (creature.keywords ?? []).includes(keyword);
-              return (
-                <button
-                  key={keyword}
-                  type="button"
-                  className={`rounded px-2 py-0.5 text-xs ${
-                    on ? 'bg-emerald-800' : 'bg-slate-800 text-slate-400'
-                  }`}
-                  onClick={() => {
-                    const now = creature.keywords ?? [];
-                    const next = on ? now.filter((item) => item !== keyword) : [...now, keyword];
-                    set('keywords', next.length ? next : undefined);
-                  }}
-                >
-                  {keyword}
-                </button>
-              );
-            })}
-          </div>
-        </Row>
-      )}
+        <span className="zn-num truncate text-[9.5px] uppercase tracking-[0.14em] text-zn-fainter">
+          <TabHint tab={tab} />
+        </span>
 
-      {creature && (
-        <Row label={t('admin.field.summonRule')}>
-          <input
-            type="checkbox"
-            className="h-4 w-4 accent-emerald-500"
-            checked={creature.summonRule?.normal !== false}
-            onChange={(event) =>
-              set('summonRule', event.target.checked ? undefined : { normal: false })
-            }
-          />
-        </Row>
-      )}
-
-      <div className="flex flex-wrap gap-x-6">
-        <Row label={t('admin.field.ref')}>
-          <input className={`${BOX} w-40`} value={textOf('ref')} onChange={(e) => set('ref', e.target.value)} />
-        </Row>
-        <Row label={t('admin.field.author')}>
-          <input
-            className={`${BOX} w-52`}
-            value={textOf('author')}
-            onChange={(e) => set('author', e.target.value)}
-          />
-        </Row>
+        <div className="ml-auto flex items-center gap-2.5">
+          {dirty() && (
+            <span className="zn-num text-[9.5px] uppercase tracking-[0.14em] text-zn-gold">
+              {t('admin.unsavedBadge')}
+            </span>
+          )}
+          <button type="button" className="zn-btn zn-btn-gold uppercase" onClick={create}>
+            + {t('admin.newCard')}
+          </button>
+          <span className="zn-num hidden items-center gap-2 text-[9px] uppercase tracking-[0.16em] text-zn-green lg:flex">
+            <span aria-hidden className="zn-beacon h-1.5 w-1.5 bg-zn-green" />
+            {t('admin.session')}
+          </span>
+          <LockButton />
+        </div>
       </div>
 
-      <div className="flex flex-wrap gap-x-6">
-        <Row label={t('admin.field.art')}>
-          <input className={`${BOX} w-40`} value={textOf('art')} onChange={(e) => set('art', e.target.value)} />
-        </Row>
-        <Row label={t('admin.field.img')}>
-          <input className={`${BOX} w-40`} value={textOf('img')} onChange={(e) => set('img', e.target.value)} />
-        </Row>
-      </div>
+      {tab === 'form' && <CardForm />}
+      {tab === 'cards' && <CardList />}
+      {tab === 'library' && <ArtLibraryPanel />}
 
-      <label className="flex items-center gap-2 pt-1 text-xs text-slate-400">
-        <input
-          type="checkbox"
-          className="h-3 w-3 accent-amber-500"
-          checked={source.behaviorPending === true}
-          onChange={(event) => set('behaviorPending', event.target.checked ? true : undefined)}
-        />
-        {t('admin.behaviorPending')}
-      </label>
-    </section>
+      {pending && <UnsavedGate />}
+      {keyStatus === 'stale' && <StaleKeyGate onBack={onBack} />}
+    </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Ilustração
-// ---------------------------------------------------------------------------
+/** a linha ao lado das abas: o que cada sala está mostrando agora */
+function TabHint({ tab }: { tab: StudioTab }) {
+  const { t, cardName } = useTranslation();
+  const { draft, artFiles } = useAdminStore();
 
-function ArtUpload({ card, onChange }: { card: Card; onChange: (card: Card) => void }) {
-  const { t } = useTranslation();
-  const uploadArt = useAdminStore((state) => state.uploadArt);
-  const [sent, setSent] = useState(0);
+  if (tab === 'cards') {
+    return (
+      <>{t('admin.tabHint.cards', { count: ALL_CARDS.length, playable: PLAYABLE_CARDS.length })}</>
+    );
+  }
 
+  if (tab === 'library') {
+    const files = artFiles ?? [];
+    return (
+      <>
+        {t('admin.tabHint.library', {
+          count: files.length,
+          free: files.filter((art) => art.usedBy === null).length,
+        })}
+      </>
+    );
+  }
+
+  if (!draft) return <>{t('admin.tabHint.form')}</>;
   return (
-    <div className={PANEL}>
-      <h3 className="mb-1 text-sm font-bold text-sky-300">{t('admin.illustration')}</h3>
-      <input
-        type="file"
-        accept="image/png,image/webp,image/jpeg"
-        className="w-full text-xs text-slate-400 file:mr-2 file:rounded file:border-0 file:bg-slate-800 file:px-2 file:py-1 file:text-slate-300"
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (!file) return;
-          const extension = file.name.toLowerCase().endsWith('.png') ? 'png' : 'webp';
-          const name = card.art ?? `${card.id}.${extension}`;
-          void uploadArt(file, name).then((won) => {
-            if (!won) return;
-            if (!card.art) onChange({ ...card, art: name } as Card);
-            setSent((count) => count + 1);
-          });
-        }}
-      />
-      <p className="mt-1 text-[10px] text-slate-600">{t('admin.artHint')}</p>
-      {sent > 0 && <p className="text-[10px] text-emerald-400">✓ {card.art}</p>}
-    </div>
+    <>
+      {draft.fresh
+        ? t('admin.creating', { id: draft.card.id })
+        : t('admin.editing', { id: draft.card.id })}
+      {' · '}
+      {cardName(draft.card.id) || draft.card.name}
+    </>
+  );
+}
+
+function LockButton() {
+  const { t } = useTranslation();
+  const lock = useAdminStore((state) => state.lock);
+  return (
+    <button type="button" className="zn-btn zn-btn-quiet zn-btn-undo px-3" onClick={lock}>
+      {t('admin.lock')}
+    </button>
   );
 }
 
@@ -479,36 +187,170 @@ function ArtUpload({ card, onChange }: { card: Card; onChange: (card: Card) => v
 // Portaria
 // ---------------------------------------------------------------------------
 
-function KeyGate({ onBack, onSubmit }: { onBack: () => void; onSubmit: (key: string) => void }) {
+/**
+ * A portaria de entrada: ocupa a tela inteira e não deixa nada do estúdio aparecer
+ * por baixo. As três lajotas embaixo dizem o que existe do outro lado — o estúdio é
+ * ferramenta de bastidor, e quem chega nele pela primeira vez não tem como saber.
+ */
+function StudioGate({ onBack }: { onBack: () => void }) {
   const { t } = useTranslation();
-  const [typed, setTyped] = useState('');
+  const perks = ['form', 'library', 'review'] as const;
 
   return (
-    <main className="ez-page mx-auto flex max-w-md flex-col items-center justify-center gap-3 p-8">
-      <h1 className="ez-title text-2xl">{t('admin.keyTitle')}</h1>
-      <p className="text-center text-sm text-ez-dim">{t('admin.keyHint')}</p>
+    <div className="grid min-h-0 flex-1 place-items-center overflow-auto p-8">
+      <div className="flex w-full max-w-117 flex-col items-center gap-4.5">
+        <span
+          aria-hidden
+          className="grid h-14 w-14 rotate-45 place-items-center border border-zn-gold-edge bg-zn-panel"
+        >
+          <span className="flex -rotate-45 flex-col items-center gap-0.5">
+            <span className="h-3 w-3 rounded-full border-2 border-zn-gold" />
+            <span className="h-2.5 w-1 bg-zn-gold" />
+          </span>
+        </span>
+
+        <div className="flex flex-col items-center gap-2">
+          <h2 className="zn-wordmark text-[26px] uppercase">{t('admin.title')}</h2>
+          <span className="zn-label tracking-[0.32em] uppercase">{t('admin.gateNote')}</span>
+        </div>
+
+        <div className="zn-panel zn-notch-lg w-full p-5.5">
+          <KeyForm onBack={onBack} />
+        </div>
+
+        <div className="zn-hair w-full grid-cols-1 border border-zn-line sm:grid-cols-3">
+          {perks.map((perk) => (
+            <div key={perk} className="flex flex-col gap-1.5 bg-zn-bar px-3.5 py-3">
+              <span className="zn-label tracking-[0.16em] text-zn-gold uppercase">
+                {t(`admin.perk.${perk}`)}
+              </span>
+              <span className="text-[12.5px] leading-snug text-zn-dim">
+                {t(`admin.perk.${perk}Note`)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * O formulário da chave. A chave digitada só é GUARDADA depois que o servidor a
+ * aceita: guardar primeiro e conferir na hora de gravar era o que deixava o estúdio
+ * abrir inteiro com uma chave morta, e a recusa aparecia com a carta já editada.
+ *
+ * Serve as duas portarias — a da entrada, que ocupa a tela, e a que sobe por cima do
+ * rascunho quando a chave morre no meio do trabalho. Nenhuma das duas precisa avisar
+ * quando deu certo: quem some com elas é a própria `keyStatus`.
+ */
+function KeyForm({ onBack }: { onBack: () => void }) {
+  const { t, resolve } = useTranslation();
+  const { submitKey, busy, error } = useAdminStore();
+  const [typed, setTyped] = useState('');
+
+  const send = () => {
+    if (typed.trim() && !busy) void submitKey(typed.trim());
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <span className="zn-label tracking-[0.28em] uppercase">{t('admin.keyLabel')}</span>
       <input
-        className={`${BOX} w-full`}
+        className="zn-input zn-input-lg w-full text-center tracking-[0.22em] uppercase"
         placeholder={t('admin.keyPlaceholder')}
         value={typed}
         autoFocus
         onChange={(event) => setTyped(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === 'Enter' && typed.trim()) onSubmit(typed.trim());
+          if (event.key === 'Enter') send();
         }}
       />
-      <div className="flex gap-2">
-        <button type="button" className="ez-btn ez-btn-ghost ez-btn-sm" onClick={onBack}>
+      {error && (
+        <span className="zn-num flex items-center gap-2 text-[10px] tracking-[0.1em] text-zn-red">
+          <span aria-hidden className="h-1.5 w-1.5 bg-zn-red" />
+          {resolve(error)}
+        </span>
+      )}
+      <button
+        type="button"
+        disabled={busy}
+        className="zn-btn zn-btn-gold h-11 w-full uppercase"
+        onClick={send}
+      >
+        {t('admin.unlock')}
+      </button>
+      <div className="flex items-center gap-3 border-t border-zn-line pt-3">
+        <span className="text-[12px] leading-snug text-zn-fainter">{t('admin.keyHint')}</span>
+        <button type="button" className="zn-btn zn-btn-wire ml-auto uppercase" onClick={onBack}>
           {t('common.back')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A chave morreu com o estúdio JÁ aberto — o servidor foi reiniciado enquanto a
+ * carta estava sendo editada.
+ *
+ * Aqui a portaria NÃO manda ninguém embora: sair levaria junto o rascunho que ainda
+ * não foi para o catálogo. Ela sobe por cima da tela, recebe a chave nova e devolve
+ * o trabalho intacto — a gravação que tomou o 403 é só repetir.
+ */
+function StaleKeyGate({ onBack }: { onBack: () => void }) {
+  const { t } = useTranslation();
+
+  return (
+    <StudioModal title={t('admin.keyTitle')} width={480} onClose={null}>
+      <div className="flex flex-col gap-3.5">
+        <p className="text-[13px] leading-relaxed text-zn-gold-light">{t('admin.keyStale')}</p>
+        <KeyForm onBack={onBack} />
+      </div>
+    </StudioModal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A guarda do rascunho
+// ---------------------------------------------------------------------------
+
+/**
+ * Trocar de carta (ou sair) com campo mexido não pode simplesmente jogar fora o que
+ * foi digitado. As três saídas são explícitas: descartar, gravar antes de seguir, ou
+ * ficar onde está. "Gravar e continuar" fica indisponível enquanto a carta não puder
+ * ser gravada — é o mesmo bloqueio do botão principal, e sem ele a resposta óbvia
+ * levaria a um erro do servidor no meio da troca.
+ */
+function UnsavedGate() {
+  const { t } = useTranslation();
+  const { discardPending, savePending, cancelPending, busy, draft } = useAdminStore();
+  const blocked = busy || (draft !== null && draftBlocked(draft));
+
+  return (
+    <StudioModal title={t('admin.unsavedTitle')} width={480} onClose={null}>
+      <p className="text-[13.5px] leading-relaxed text-zn-soft">{t('admin.unsavedQuestion')}</p>
+      <div className="mt-5 flex flex-wrap justify-end gap-2">
+        <button type="button" className="zn-btn zn-btn-wire uppercase" onClick={cancelPending}>
+          {t('admin.unsavedCancel')}
+        </button>
+        <button type="button" className="zn-btn zn-btn-blood uppercase" onClick={discardPending}>
+          {t('admin.unsavedDiscard')}
         </button>
         <button
           type="button"
-          className="ez-btn ez-btn-gold ez-btn-sm"
-          onClick={() => typed.trim() && onSubmit(typed.trim())}
+          disabled={blocked}
+          className="zn-btn zn-btn-gold uppercase"
+          onClick={() => void savePending()}
         >
-          {t('auth.signInAction')}
+          {t('admin.unsavedSave')}
         </button>
       </div>
-    </main>
+      {blocked && (
+        <p className="zn-num mt-2.5 text-right text-[9.5px] uppercase tracking-[0.12em] text-zn-gold">
+          {t('admin.unsavedBlocked')}
+        </p>
+      )}
+    </StudioModal>
   );
 }

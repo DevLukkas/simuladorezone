@@ -1,5 +1,4 @@
 import { validateDeck, type DeckDraft } from '../src/data/deckRules.ts';
-import { FORMATS, type Format } from '../src/data/types.ts';
 import { asInt, text } from './db.ts';
 import { withAccount } from './accounts.ts';
 import { created, ok, rejected } from './http.ts';
@@ -14,14 +13,10 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 
 const MAX_NAME_LENGTH = 60;
 
-const isFormat = (value: unknown): value is Format =>
-  FORMATS.includes(value as Format);
-
 function draftFromBody(body: unknown): DeckDraft | null {
   if (!isObject(body)) return null;
   if (typeof body.name !== 'string' || typeof body.hero !== 'string') return null;
   if (!isObject(body.cards)) return null;
-  if (body.format !== undefined && !isFormat(body.format)) return null;
 
   const cards: Record<number, number> = {};
   for (const [key, value] of Object.entries(body.cards)) {
@@ -35,7 +30,6 @@ function draftFromBody(body: unknown): DeckDraft | null {
     name: body.name.trim().slice(0, MAX_NAME_LENGTH),
     hero: body.hero,
     cards,
-    format: isFormat(body.format) ? body.format : 'classic',
   };
 }
 
@@ -48,13 +42,7 @@ function fullDeck(db: Db, row: Row): Record<string, unknown> {
   )) {
     cards[asInt(cardRow.card_id)] = asInt(cardRow.amount);
   }
-  return {
-    id,
-    name: text(row.name),
-    hero: text(row.hero),
-    cards,
-    format: text(row.format) || 'classic',
-  };
+  return { id, name: text(row.name), hero: text(row.hero), cards };
 }
 
 function saveDeckCards(db: Db, deckId: number, cards: Record<number, number>): void {
@@ -75,7 +63,7 @@ export const deckRoutes = (db: Db): Route[] => [
     pattern: '/api/decks',
     handle: withAccount(db, (_pedido, account) => {
       const rows = db.all(
-        'SELECT id, name, hero, format FROM decks WHERE account_id = ? ORDER BY id',
+        'SELECT id, name, hero FROM decks WHERE account_id = ? ORDER BY id',
         account.id,
       );
       return ok({ decks: rows.map((row) => fullDeck(db, row)) });
@@ -92,22 +80,15 @@ export const deckRoutes = (db: Db): Route[] => [
 
       return db.inTransaction(() => {
         db.run(
-          'INSERT INTO decks (account_id, name, hero, format, created_at) VALUES (?, ?, ?, ?, ?)',
+          'INSERT INTO decks (account_id, name, hero, created_at) VALUES (?, ?, ?, ?)',
           account.id,
           draft.name,
           draft.hero,
-          draft.format ?? 'classic',
           new Date().toISOString(),
         );
         const id = asInt(db.one('SELECT last_insert_rowid() AS id')?.id);
         saveDeckCards(db, id, draft.cards);
-        return created({
-          id,
-          name: draft.name,
-          hero: draft.hero,
-          cards: draft.cards,
-          format: draft.format ?? 'classic',
-        });
+        return created({ id, name: draft.name, hero: draft.hero, cards: draft.cards });
       });
     }),
   },
@@ -125,21 +106,9 @@ export const deckRoutes = (db: Db): Route[] => [
       if (problems.length) return rejected(422, 'deck_malformed', undefined, problems);
 
       return db.inTransaction(() => {
-        db.run(
-          'UPDATE decks SET name = ?, hero = ?, format = ? WHERE id = ?',
-          draft.name,
-          draft.hero,
-          draft.format ?? 'classic',
-          id,
-        );
+        db.run('UPDATE decks SET name = ?, hero = ? WHERE id = ?', draft.name, draft.hero, id);
         saveDeckCards(db, id, draft.cards);
-        return ok({
-          id,
-          name: draft.name,
-          hero: draft.hero,
-          cards: draft.cards,
-          format: draft.format ?? 'classic',
-        });
+        return ok({ id, name: draft.name, hero: draft.hero, cards: draft.cards });
       });
     }),
   },
@@ -159,14 +128,20 @@ export const deckRoutes = (db: Db): Route[] => [
   },
 ];
 
-/** Carrega um deck da conta no formato do engine (lista de ids + herói). */
+/**
+ * Carrega um deck da conta no formato do engine (lista de ids + herói).
+ *
+ * O NOME vem junto porque o histórico o arquiva (decisão nº 43): a linha diz
+ * com que baralho a partida foi jogada, e o deck pode ser renomeado ou apagado
+ * depois — copiá-lo na hora é o que mantém a leitura de meses atrás de pé.
+ */
 export function deckForMatch(
   db: Db,
   accountId: number,
   deckId: number,
-): { hero: string; cards: number[]; format: Format } | null {
+): { deckName: string; hero: string; cards: number[] } | null {
   const row = db.one(
-    'SELECT id, hero, format FROM decks WHERE id = ? AND account_id = ?',
+    'SELECT id, name, hero FROM decks WHERE id = ? AND account_id = ?',
     deckId,
     accountId,
   );
@@ -181,10 +156,5 @@ export function deckForMatch(
     }
   }
   if (!cards.length) return null;
-  const format = text(row.format);
-  return {
-    hero: text(row.hero),
-    cards,
-    format: FORMATS.includes(format as Format) ? (format as Format) : 'classic',
-  };
+  return { deckName: text(row.name), hero: text(row.hero), cards };
 }

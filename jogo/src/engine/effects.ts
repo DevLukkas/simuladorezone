@@ -8,6 +8,7 @@ import type {
   ActivatedAbility,
 } from '../data/types.ts';
 import { canBeAttackTarget, effectDamageToCreature, removeCreatureFromField, resolveAttackNow } from './combat.ts';
+import { canAttack, canBeCommandTarget, commandTargetSpec } from './targeting.ts';
 import { cardMatches, creatureMatches, creatureDef, newCreatureInPlay } from './cardsInPlay.ts';
 import type { GameEvent } from './events.ts';
 import type { ErrorCode } from '../shared/errors.ts';
@@ -57,7 +58,13 @@ const YES_NO_OPTIONS: PendingOption[] = [
 ];
 
 function slotOption(state: GameState, side: SideId, slot: number): PendingOption {
-  return { id: `${side}:${slot}`, label: creatureLabel(state.sides[side].field[slot]) };
+  const creature = state.sides[side].field[slot];
+  return {
+    id: `${side}:${slot}`,
+    label: creatureLabel(creature),
+    // ficha não tem carta de catálogo: fica só com o rótulo
+    ...(creature?.cardId == null ? {} : { cardId: creature.cardId }),
+  };
 }
 
 /** Nome de uma criatura em campo: carta do catálogo, ficha, ou slot vazio. */
@@ -69,7 +76,7 @@ function creatureLabel(creature: CreatureInPlay | null | undefined): TextRef {
 
 /** Rótulo de uma carta do catálogo (mão, descarte, deck). */
 function cardOption(id: string, cardId: number): PendingOption {
-  return { id, label: text('common.cardName', { card: cardRef(cardId) }) };
+  return { id, label: text('common.cardName', { card: cardRef(cardId) }), cardId };
 }
 
 function slotsWithCreature(
@@ -84,6 +91,50 @@ function slotsWithCreature(
   return slots;
 }
 
+// ── janelas de bloqueio (decisão nº 33) ──────────────────────────────────────
+
+/**
+ * Até que turno vale um bloqueio de ATAQUE ("não pode atacar").
+ *
+ * A conta é sobre a próxima vez que o ALVO atacaria, não sobre o número do turno
+ * corrente: uma criatura só ataca no turno do dono dela. Marcar "este turno" numa
+ * criatura inimiga durante o SEU turno não impedia nada — o inimigo ataca no turno
+ * seguinte, e o bloqueio já tinha vencido (decisão nº 33).
+ *
+ * - `this_turn`  → a próxima janela de ataque do dono do alvo
+ * - `next_turn`  → a janela seguinte a essa
+ */
+function attackBlockedUntil(
+  state: GameState,
+  targetSide: SideId,
+  duration: 'this_turn' | 'next_turn',
+): number {
+  const targetIsActive = targetSide === state.activeSide;
+  if (duration === 'next_turn') return state.turn + (targetIsActive ? 2 : 1);
+  return state.turn + (targetIsActive ? 0 : 1);
+}
+
+/**
+ * Até que turno vale uma PROTEÇÃO ("não pode ser alvo de ataques").
+ *
+ * Espelho do de cima, com o sujeito trocado: quem ataca a criatura protegida é o
+ * ADVERSÁRIO do dono dela, então a janela que interessa é a dele. Alterando as
+ * Rotas jogada no seu turno tem de valer no turno seguinte, senão a criatura
+ * "protegida" era atacada normalmente (relato do DevLukkas).
+ */
+function protectedUntil(state: GameState, targetSide: SideId): number {
+  return state.turn + (targetSide === state.activeSide ? 1 : 0);
+}
+
+/**
+ * Até que turno a criatura fica OBRIGADA a atacar (Marionete de Guerra,
+ * Feiticeiro Tribal Badur). Mesma conta do bloqueio de ataque: o que importa é a
+ * próxima vez que ela poderia atacar.
+ */
+function forcedToAttackUntil(state: GameState, targetSide: SideId): number {
+  return attackBlockedUntil(state, targetSide, 'this_turn');
+}
+
 // ── fila ─────────────────────────────────────────────────────────────────────
 
 export function processQueue(state: GameState, events: GameEvent[]): void {
@@ -91,14 +142,18 @@ export function processQueue(state: GameState, events: GameEvent[]): void {
     const job = state.queue.shift()!;
     runJob(state, job, events);
   }
-  // a janela de reação só abre depois que todos os efeitos da jogada resolveram
+  // sobrou janela agendada sem trabalho na frente (invocação, anexo, fase de
+  // batalha): ela abre agora, com os efeitos da jogada já resolvidos
   if (!state.pending && !state.winner && !state.queue.length) {
-    offerReaction(state);
+    offerReaction(state, events);
   }
 }
 
 function runJob(state: GameState, job: Job, events: GameEvent[]): void {
   switch (job.type) {
+    case 'reaction_window':
+      offerReaction(state, events);
+      return;
     case 'attack':
       runAttack(state, job, events);
       return;
@@ -123,7 +178,7 @@ function runJob(state: GameState, job: Job, events: GameEvent[]): void {
       runTrigger(state, job.trigger, events);
       return;
     case 'on_enter':
-      runOnEnter(state, job.side, job.effect, events);
+      runOnEnter(state, job.side, job.slot, job.effect, events);
       return;
     case 'on_attach':
       runOnAttach(state, job.side, job.slot, job.attachmentUid, job.effect, events);
@@ -147,6 +202,22 @@ function runAttack(
   if (!attacker) return;
   const defenderSide = oppositeSide(side);
   const defender = state.sides[defenderSide].field[slot];
+
+  /*
+    Entre DECLARAR e RESOLVER cabe a janela de reação (decisão nº 38), e é
+    exatamente ali que o oponente joga a carta que trava o ataque (Riso
+    Histérico) ou protege a criatura da coluna (Alterando as Rotas). Por isso a
+    permissão é conferida DE NOVO aqui: o que valia quando o comando foi aceito
+    pode já não valer quando o trabalho sai da fila — sem esta conferência a
+    reação chegaria "a tempo" e mesmo assim o dano sairia.
+  */
+  if (
+    !canAttack(state, side, attacker) ||
+    (defender && !canBeAttackTarget(state.turn, defender, attacker, state.sides[side].field))
+  ) {
+    events.push({ type: 'ATTACK_BLOCKED', side, slot });
+    return;
+  }
 
   if (defender) {
     // Proteção do Escudeiro: qualquer anexo do defensor com o gatilho, ainda
@@ -179,6 +250,7 @@ function runAttack(
             card: cardRef(card.id),
             target: creatureLabel(defender),
           }),
+          sourceCardId: card.id,
           options: YES_NO_OPTIONS,
           canDecline: false,
           context: { type: 'shield', attackJob: job, attachmentHolderSlot, attachmentUid: attachment.uid },
@@ -229,15 +301,29 @@ export function scheduleReaction(
   against: SideId,
   action: ReactionTrigger,
   category: 'command' | 'ability',
+  sourceCardId?: number,
 ): void {
-  state.pendingReaction = { against, action, category };
+  state.pendingReaction = {
+    against,
+    action,
+    category,
+    ...(sourceCardId === undefined ? {} : { sourceCardId }),
+  };
 }
 
-function offerReaction(state: GameState): void {
+function offerReaction(state: GameState, events: GameEvent[]): void {
   const reactionWindow = state.pendingReaction;
   if (!reactionWindow) return;
   state.pendingReaction = null;
   const reactingSide = reactionWindow.against;
+
+  // o aviso sai ANTES de saber se há resposta possível, de propósito: é a pausa
+  // que ele gera na tela que esconde a mão do reator (decisão nº 39)
+  events.push({
+    type: 'REACTION_WINDOW',
+    side: reactingSide,
+    category: reactionWindow.category,
+  });
 
   if (reactionWindow.category === 'command') {
     const candidates = playableCommands(state, reactingSide);
@@ -246,6 +332,9 @@ function offerReaction(state: GameState): void {
       side: reactingSide,
       type: 'choose_card',
       title: text('pending.reactCommand', { action: text(`reactionTo.${reactionWindow.action}`) }),
+      ...(reactionWindow.sourceCardId === undefined
+        ? {}
+        : { sourceCardId: reactionWindow.sourceCardId }),
       options: candidates.map((inHand) => cardOption(inHand.uid, inHand.cardId)),
       canDecline: true,
       reaction: true,
@@ -260,6 +349,9 @@ function offerReaction(state: GameState): void {
     side: reactingSide,
     type: 'choose_target',
     title: text('pending.reactAbility', { action: text(`reactionTo.${reactionWindow.action}`) }),
+    ...(reactionWindow.sourceCardId === undefined
+      ? {}
+      : { sourceCardId: reactionWindow.sourceCardId }),
     options: slots.map((slot) => slotOption(state, reactingSide, slot)),
     canDecline: true,
     reaction: true,
@@ -313,6 +405,11 @@ function abilityUsableInReaction(
     if (!canPayCost(creature, ability.cost)) continue;
     const action = ability.action;
     if (action.type === 'prevent_attack') return ability;
+    // Feiticeiro Tribal Badur: obriga uma inimiga a atacar; sem inimiga em campo
+    // a habilidade não tem o que fazer
+    if (action.type === 'force_attack') {
+      if (slotsWithCreature(state, oppositeSide(side)).length) return ability;
+    }
     if (action.type === 'summon_from_discard') {
       const owner = state.sides[side];
       const hasTarget = owner.discard.some((node) => cardMatches(node.cardId, action.filter));
@@ -360,6 +457,7 @@ function runTrigger(state: GameState, trigger: PendingTrigger, events: GameEvent
         side: trigger.side,
         type: 'yes_no',
         title: text('pending.discardTrigger', { card: source }),
+        sourceCardId: trigger.sourceCardId,
         options: YES_NO_OPTIONS,
         canDecline: false,
         context: { type: 'optional_trigger', trigger },
@@ -378,6 +476,7 @@ function runTrigger(state: GameState, trigger: PendingTrigger, events: GameEvent
         side: trigger.side,
         type: 'yes_no',
         title: text('pending.summonCopy', { card: source }),
+        sourceCardId: trigger.sourceCardId,
         options: YES_NO_OPTIONS,
         canDecline: false,
         context: { type: 'optional_trigger', trigger },
@@ -394,6 +493,7 @@ function runTrigger(state: GameState, trigger: PendingTrigger, events: GameEvent
           draw: action.draw,
           discard: action.discard,
         }),
+        sourceCardId: trigger.sourceCardId,
         options: YES_NO_OPTIONS,
         canDecline: false,
         context: { type: 'optional_trigger', trigger },
@@ -411,6 +511,7 @@ function runTrigger(state: GameState, trigger: PendingTrigger, events: GameEvent
           side: trigger.side,
           type: 'yes_no',
           title: text('pending.swapStats', { card: source }),
+        sourceCardId: trigger.sourceCardId,
           options: YES_NO_OPTIONS,
           canDecline: false,
           context: {
@@ -435,6 +536,7 @@ function runTrigger(state: GameState, trigger: PendingTrigger, events: GameEvent
         side: trigger.side,
         type: 'choose_target',
         title: text('pending.chooseYourCreature', { card: source }),
+        sourceCardId: trigger.sourceCardId,
         options: slots.map((slot) => slotOption(state, trigger.side, slot)),
         canDecline: true,
         context: { type: 'trigger_target', trigger },
@@ -446,6 +548,7 @@ function runTrigger(state: GameState, trigger: PendingTrigger, events: GameEvent
         side: trigger.side,
         type: 'yes_no',
         title: text('pending.drawCards', { card: source, count: action.count }),
+        sourceCardId: trigger.sourceCardId,
         options: YES_NO_OPTIONS,
         canDecline: false,
         context: { type: 'optional_trigger', trigger },
@@ -461,6 +564,7 @@ function runTrigger(state: GameState, trigger: PendingTrigger, events: GameEvent
         side: trigger.side,
         type: 'choose_target',
         title: text('pending.chooseEnemyCreature', { card: source }),
+        sourceCardId: trigger.sourceCardId,
         options: slots.map((slot) => slotOption(state, enemy, slot)),
         canDecline: true,
         context: { type: 'trigger_target', trigger },
@@ -495,6 +599,7 @@ function continueAcceptedTrigger(
       side: trigger.side,
       type: 'choose_card',
       title: text('pending.chooseDiscard', { card: cardRef(trigger.sourceCardId) }),
+      sourceCardId: trigger.sourceCardId,
       options: hand.map((inHand) => cardOption(inHand.uid, inHand.cardId)),
       canDecline: false,
       context: { type: 'map_discard', side: trigger.side },
@@ -508,6 +613,7 @@ function continueAcceptedTrigger(
       side: trigger.side,
       type: 'choose_target',
       title: text('pending.chooseAlly', { card: cardRef(trigger.sourceCardId) }),
+      sourceCardId: trigger.sourceCardId,
       options: slots.map((slot) => slotOption(state, trigger.side, slot)),
       canDecline: true,
       context: { type: 'trigger_target', trigger },
@@ -559,12 +665,24 @@ function runTriggerOnTarget(
       applyMarker(target, targetSide, action.stats, action.value ?? 0, events);
       return;
     case 'prevent_attack': {
-      target.cannotAttackUntilTurn = Math.max(target.cannotAttackUntilTurn ?? 0, state.turn + 1);
+      const untilTurn = attackBlockedUntil(state, targetSide, action.duration);
+      target.cannotAttackUntilTurn = Math.max(target.cannotAttackUntilTurn ?? 0, untilTurn);
       events.push({
         type: 'PREVENTED_FROM_ATTACKING',
         side: targetSide,
         creatureUid: target.uid,
-        untilTurn: state.turn + 1,
+        untilTurn,
+      });
+      return;
+    }
+    case 'force_attack': {
+      const untilTurn = forcedToAttackUntil(state, targetSide);
+      target.mustAttackUntilTurn = Math.max(target.mustAttackUntilTurn ?? 0, untilTurn);
+      events.push({
+        type: 'FORCED_TO_ATTACK',
+        side: targetSide,
+        creatureUid: target.uid,
+        untilTurn,
       });
       return;
     }
@@ -577,6 +695,7 @@ function runTriggerOnTarget(
         side: trigger.side,
         type: 'choose_element',
         title: text('pending.chooseElementUntilEndOfTurn'),
+        sourceCardId: trigger.sourceCardId,
         options: CHOOSABLE_ELEMENTS.map((element) => ({
           id: element,
           label: text(`element.${element}`),
@@ -641,10 +760,12 @@ export function queueOnEnter(state: GameState, side: SideId, slot: number): void
 function runOnEnter(
   state: GameState,
   side: SideId,
+  slot: number,
   effect: Action,
   events: GameEvent[],
 ): void {
   const owner = state.sides[side];
+  const sourceCardId = owner.field[slot]?.cardId ?? undefined;
 
   switch (effect.type) {
     case 'discard_from_hand_then_search_deck': {
@@ -656,6 +777,7 @@ function runOnEnter(
         side,
         type: 'choose_card',
         title: text('pending.discardThenSearch'),
+        ...(sourceCardId === undefined ? {} : { sourceCardId }),
         options: candidates.map((inHand) => cardOption(inHand.uid, inHand.cardId)),
         canDecline: effect.optional === true,
         context: { type: 'atlas_discard', side, search: effect.search },
@@ -732,6 +854,7 @@ function runOnAttach(
         side,
         type: 'choose_target',
         title: text('pending.drowningTarget', { card: cardRef(attachmentCardId) }),
+        sourceCardId: attachmentCardId,
         options: slots.map((s) => slotOption(state, enemy, s)),
         canDecline: true,
         context: {
@@ -763,6 +886,7 @@ function runOnAttach(
         side,
         type: 'choose_element',
         title: text('pending.chooseCreatureElement'),
+        ...(attachmentCardId === undefined ? {} : { sourceCardId: attachmentCardId }),
         options: (effect.choose ?? CHOOSABLE_ELEMENTS).map((element) => ({
           id: element,
           label: text(`element.${element}`),
@@ -895,7 +1019,29 @@ export function answer(
 
   const context = pending.context;
   state.pending = null;
+  const failure = resolveAnswer(state, context, optionId, declined, events);
+  inheritSource(state, pending.sourceCardId);
+  return failure;
+}
 
+/**
+ * A segunda pergunta da MESMA carta herda a fonte (Atlas descarta e depois
+ * busca; Leviathan escolhe a coberta e depois a da mão). A tela mostra a
+ * ilustração de quem abriu a escolha, e ela não troca no meio do caminho.
+ */
+function inheritSource(state: GameState, sourceCardId: number | undefined): void {
+  const created = state.pending;
+  if (!created || sourceCardId === undefined || created.sourceCardId !== undefined) return;
+  created.sourceCardId = sourceCardId;
+}
+
+function resolveAnswer(
+  state: GameState,
+  context: PendingContext,
+  optionId: string,
+  declined: boolean,
+  events: GameEvent[],
+): ErrorCode | null {
   switch (context.type) {
     case 'shield': {
       if (optionId === 'yes') {
@@ -1096,6 +1242,7 @@ export function answer(
         side: context.side,
         type: 'choose_target',
         title: text('pending.commandTarget', { card: cardRef(card.id) }),
+      sourceCardId: card.id,
         options: slots.map((slot) => slotOption(state, targetSide, slot)),
         canDecline: true,
         reaction: true,
@@ -1240,14 +1387,15 @@ export function playCommand(
   /* importada do Figma e ainda sem comportamento modelado: não sai da mão */
   if (!card.effects?.length) return 'effect_not_implemented';
 
-  // valida alvo antes de mover a carta
-  for (const effect of card.effects) {
-    const needsTarget =
-      'target' in effect && (effect.target === 'chosen_enemy' || effect.target === 'chosen_ally');
-    if (!needsTarget) continue;
-    const expectedSide = effect.target === 'chosen_enemy' ? oppositeSide(side) : side;
+  // valida alvo antes de mover a carta: lado certo, coluna ocupada e filtro da
+  // carta atendido — a mesma conta que a tela usa para acender as colunas
+  const spec = commandTargetSpec(card);
+  if (spec) {
+    const expectedSide = spec.target === 'chosen_enemy' ? oppositeSide(side) : side;
     if (!target || target.side !== expectedSide) return 'command_needs_target';
-    if (!state.sides[target.side].field[target.slot]) return 'target_slot_empty';
+    if (!canBeCommandTarget(spec, state.sides[target.side].field[target.slot])) {
+      return 'target_slot_empty';
+    }
   }
 
   owner.hand.splice(index, 1);
@@ -1258,24 +1406,29 @@ export function playCommand(
       case 'prevent_attack': {
         const creature = state.sides[target!.side].field[target!.slot];
         if (!creature) break;
-        creature.cannotAttackUntilTurn = Math.max(creature.cannotAttackUntilTurn ?? 0, state.turn);
+        const untilTurn = attackBlockedUntil(state, target!.side, effect.duration);
+        creature.cannotAttackUntilTurn = Math.max(creature.cannotAttackUntilTurn ?? 0, untilTurn);
         events.push({
           type: 'PREVENTED_FROM_ATTACKING',
           side: target!.side,
           creatureUid: creature.uid,
-          untilTurn: state.turn,
+          untilTurn,
         });
         break;
       }
       case 'prevent_being_targeted': {
         const creature = state.sides[target!.side].field[target!.slot];
         if (!creature) break;
-        creature.cannotBeTargetedUntilTurn = Math.max(creature.cannotBeTargetedUntilTurn ?? 0, state.turn);
+        const untilTurn = protectedUntil(state, target!.side);
+        creature.cannotBeTargetedUntilTurn = Math.max(
+          creature.cannotBeTargetedUntilTurn ?? 0,
+          untilTurn,
+        );
         events.push({
           type: 'PROTECTED_FROM_ATTACKS',
           side: target!.side,
           creatureUid: creature.uid,
-          untilTurn: state.turn,
+          untilTurn,
         });
         break;
       }
@@ -1366,6 +1519,7 @@ export function playCommand(
           side,
           type: 'choose_card',
           title: text('pending.oracleChoose'),
+          sourceCardId: card.id,
           options: revealedUids.map((uid) => {
             const inHand = enemy.hand.find((c) => c.uid === uid)!;
             return cardOption(uid, inHand.cardId);
@@ -1375,10 +1529,22 @@ export function playCommand(
         });
         break;
       }
-      case 'force_attack':
-        // Sob a regra de ataque por coluna o alvo é sempre a coluna em frente;
-        // forçar alvo não tem efeito (paridade com o legado). Ver decisions.md.
+      case 'force_attack': {
+        // Sob a regra de ataque por coluna quem o alvo ataca já está decidido
+        // pela geometria; o que sobra da carta — e é o que ela faz — é a
+        // OBRIGAÇÃO de atacar (decisão nº 34).
+        const creature = state.sides[target!.side].field[target!.slot];
+        if (!creature) break;
+        const untilTurn = forcedToAttackUntil(state, target!.side);
+        creature.mustAttackUntilTurn = Math.max(creature.mustAttackUntilTurn ?? 0, untilTurn);
+        events.push({
+          type: 'FORCED_TO_ATTACK',
+          side: target!.side,
+          creatureUid: creature.uid,
+          untilTurn,
+        });
         break;
+      }
     }
   }
 
@@ -1431,7 +1597,11 @@ export function activateAbility(
       case 'prevent_attack': {
         const stillOnField = owner.field[slot];
         if (stillOnField) {
-          stillOnField.cannotAttackUntilTurn = state.turn + 1;
+          stillOnField.cannotAttackUntilTurn = attackBlockedUntil(
+            state,
+            side,
+            ability.action.duration,
+          );
           stillOnField.usedAbilities[abilityId] = state.turn;
         }
         return null;
@@ -1449,6 +1619,35 @@ export function activateAbility(
           ability.action.value,
           events,
         );
+        return null;
+      }
+      // Feiticeiro Tribal Badur: escolhe a inimiga que fica obrigada a atacar
+      case 'force_attack': {
+        const stillOnField = owner.field[slot];
+        if (!stillOnField) return null;
+        stillOnField.usedAbilities[abilityId] = state.turn;
+        const enemy = oppositeSide(side);
+        const slots = slotsWithCreature(state, enemy);
+        if (!slots.length) return null;
+        createPending(state, {
+          side,
+          type: 'choose_target',
+          title: text('pending.chooseEnemyCreature', { card: cardRef(card.id) }),
+          sourceCardId: card.id,
+          options: slots.map((enemySlot) => slotOption(state, enemy, enemySlot)),
+          canDecline: true,
+          ...(options.inReaction ? { reaction: true as const } : {}),
+          context: {
+            type: 'trigger_target',
+            trigger: {
+              side,
+              sourceUid: stillOnField.uid,
+              sourceCardId: card.id,
+              action: ability.action,
+              priority: 50,
+            },
+          },
+        });
         return null;
       }
       case 'summon_from_discard': {
@@ -1536,6 +1735,7 @@ export function activateAbility(
       side,
       type: 'choose_target',
       title: text('pending.coveredCreature'),
+      sourceCardId: card.id,
       options: targets.map((slot) => slotOption(state, side, slot)),
       canDecline: false,
       context: { type: 'leviathan_target', side, filter },

@@ -60,6 +60,8 @@ ficaram simétricos e uniformes (o motor não distingue "meu lado" de "lado do b
 - Marionete de Guerra e Feiticeiro Tribal (forçar ataque) não têm efeito sob a
   regra de ataque por coluna — igual ao legado, onde os campos eram gravados e
   ignorados. Redesenhar as duas cartas ou a regra é decisão de produto.
+  **Revogado pela decisão nº 34**: a metade que não depende da escolha (a
+  OBRIGAÇÃO de atacar) passou a valer, e o motor a cobra no fim de turno.
 - Janelas de resposta (comandos/habilidades no turno do oponente, 7s no legado
   solo) ficam para depois do PvP básico; a Proteção do Escudeiro — a única
   reação essencial ao combate — já funciona como pendência do defensor.
@@ -154,7 +156,8 @@ Continuam pendentes de DESIGN, não de implementação:
   mecânica de contra-magia que o motor não tem. Segue modelado só o custo + a restrição de
   ataque (decisão nº 5).
 - **Marionete de Guerra (23)** e **Feiticeiro Tribal Badur (32)**: forçar alvo não faz nada
-  sob a regra de ataque por coluna (decisão nº 6).
+  sob a regra de ataque por coluna (decisão nº 6) — resolvido pela decisão nº 34, que
+  implementa a obrigação de atacar; segue pendente só a escolha de QUEM ela ataca.
 - **Defesa Absoluta do Tridente (11)**: `self_exiled` nunca dispara porque nada no jogo
   exila cartas — a zona `exilio` existe e fica sempre vazia.
 - **Afogamento (14)**: a arte diz "a criatura ANEXADA recebe -1 VIDA para cada anexo ligado
@@ -866,3 +869,760 @@ construtor, coleção, online, escolha de herói, gaveta de baralhos, mão inici
 ficha da coleção, conta sem nenhum baralho e o estúdio como item 05 — sem rolagem
 horizontal em nenhuma largura e sem erro de console. 374 testes, `typecheck` e `build`
 verdes.
+
+## 30. O vocabulário se explica, e o estúdio para de perder trabalho (2026-08-19)
+
+Três pedidos do DevLukkas na mesma conversa, e todos caem na mesma pergunta: o estúdio
+mostra o vocabulário do motor cru, e quem escreve carta precisa saber de cor o que cada
+identificador faz.
+
+**A descrição entra, o identificador fica.** Isto REVOGA em parte a nota de `FieldInput.tsx`
+que dizia que nada do vocabulário sai do i18n. O que continua cru é o IDENTIFICADOR
+(`add_marker`, `until_end_of_turn`, `trigger_source`) — é o nome que o motor, este arquivo e
+o catálogo usam, e traduzi-lo criaria um segundo idioma de regras. O que passou a existir ao
+lado dele é a EXPLICAÇÃO, em `vocab.*` nos três dicionários: descrição sempre à vista para o
+tipo escolhido (ação, gatilho, efeito contínuo, cenário, custo) e para o bloco; dica no hover
+para o nome do campo (sublinhado pontilhado avisa que existe); e o VALOR se explica também
+onde ele é regra e não número — `target` e `trigger`.
+
+A cobertura é cobrada pelo compilador, no fim de `vocabulary.ts`: `Covers<'vocab.action.',
+ActionKind['type']> extends TextKey` falha quando falta chave, então ação nova no motor sem
+descrição não compila. Nome de campo é string livre e escapa disso, então quem cobra é um
+teste (`vocabulary.test.ts` varre todo `FieldMap` e exige `vocab.field.<nome>`). É o mesmo
+acordo do `SpecFor`, um degrau acima. Entrou junto `keywordHint.*`: a palavra-chave já tinha
+nome traduzido (`keyword.*`), agora tem o que ela FAZ.
+
+**Trocar de carta com campo mexido pergunta antes.** O rascunho aberto ganhou uma régua
+(`pristine`, um JSON com as chaves ordenadas — sem ordenar, ligar e desligar uma caixa
+"sujava" a carta sem mudar nada, porque o formulário apaga e recria a chave). Trocar de
+carta, criar outra, fechar, sair pela trilha ou recarregar a página passam todos pela mesma
+guarda: descartar, gravar e continuar, ou ficar. "Gravar e continuar" precisou de uma peça
+nova: gravar reescreve `src/data` e o HMR RECARREGA a página, então o que a tela deve mostrar
+depois virou uma INTENÇÃO em `sessionStorage` (`{kind:'edit',id}` / `{kind:'create'}`) em vez
+do id aberto — sem isso a gravação sempre reabria a carta gravada e a troca pedida se perdia.
+Sair do estúdio é a única guarda que NÃO mexe no rascunho (`intent: null`): voltar para cá tem
+de reencontrar a carta aberta.
+
+**A ilustração ganhou biblioteca.** O upload já existia; o que faltava era escolher um arquivo
+que chegou por FORA (recorte da carta impressa, exportação do Figma, cópia na mão) sem saber
+o nome de cor. `GET /api/admin/art` lista a pasta do disco — não o catálogo, justamente por
+isso — e a tela mostra a grade com miniatura, nome e de que carta cada arquivo já é. De
+quebra, o upload parou de gravar PNG dentro de um `.webp`: o nome mantém a base que a carta
+já usava e troca a extensão pela do arquivo enviado.
+
+**Limpeza de i18n no caminho.** Nome, raça e texto de efeito do herói viviam DUPLICADOS em
+`src/data/heroes.ts`, em português, e ninguém os lia — a interface já resolvia tudo por
+`t('hero.<key>.*')`. Saíram do tipo `Hero`, que ficou com o que é regra e caminho de arquivo
+(`key`, `element`, `img`). No estúdio, nome e texto em pt-BR saíram da "Identidade" e foram
+para o painel de textos, na primeira linha, marcados como FONTE: os três idiomas são a mesma
+coisa dita três vezes, e separá-los em painéis diferentes escondia isso.
+
+O que NÃO mudou, e foi decidido não mudar: o texto de carta continua num mapa por id
+(`cards.<locale>.ts`), e não em chave nomeada dentro de `Ui`. O pt-BR do catálogo é a FONTE
+que o motor lê (`cardById(id).name`, o filtro `name_includes`, o teste de integridade); movê-lo
+para o dicionário duplicaria a verdade ou tiraria do motor o que ele usa para casar carta. E
+uma chave com o TIPO dentro (`card_creature_5_title`) quebraria toda vez que o estúdio trocasse
+o tipo da carta, que é uma operação que ele suporta.
+
+Verificado no navegador (Chrome headless por CDP, 1600x1000): descrição de efeito e de bloco
+à vista com o identificador cru ao lado, 26 dicas de campo, guarda aparecendo ao trocar de
+carta e ao sair pela trilha, marca "não gravado" que some sozinha ao desfazer a edição,
+descartar levando para a outra carta, gravar-e-continuar sobrevivendo ao recarregamento do
+HMR, e a biblioteca com as 78 ilustrações identificadas por carta. 377 testes, `typecheck`,
+`sim` e `api` verdes.
+
+## 31. O console entra na partida, e a carta que se descarta ganha botão (2026-08-19)
+
+O mockup do Claude Design foi atualizado com as duas telas que a decisão nº 29 tinha
+deixado de fora — login e batalha — e o DevLukkas pediu alta fidelidade, com três ajustes
+nomeados. Isto fecha a migração: o `zn-` passa a ser O tema do jogo, e o `ez-` fica só no
+estúdio de cartas, que é bastidor e nunca entrou em redesign nenhum.
+
+**O login.** Uma coluna centrada: brasão em Cinzel, cartão de canto chanfrado com as duas
+abas (`.zn-tab-loud`/`.zn-tab-quiet`), campos altos (`.zn-input-lg`, 46px — o `.zn-input`
+da barra tem 34 e é para etiqueta, não para digitar), o ouro chapado da ação principal e o
+convidado SOLTO embaixo do cartão: dentro dele o olho o lia como um terceiro jeito de
+entrar com e-mail e senha. Do rodapé do desenho ficaram o pulso verde e o seletor de
+idioma; "SERVIDOR SA-BR" e "BUILD 0.5" não entraram porque seriam chrome inventado — o
+servidor não tem região nem rota de saúde, e escrever um número de build que ninguém
+incrementa é pior que não escrever. Saiu junto o par de seletores de idioma: com o login
+no mesmo tema sobrou um `LanguagePicker` só, o mesmo da barra do console.
+
+**O tabuleiro.** Quatro faixas em grade (`1fr / 50px / 1fr / 178px`), e cada fileira com as
+MESMAS três colunas declaradas (`minmax(196px,252px) / 1fr / 128px`) — é isso que põe as
+colunas de ataque uma sobre a outra, que é a regra do jogo ("só ataca quem está em frente")
+desenhada em vez de explicada. Isto REVOGA a medição por `ResizeObserver` das fileiras
+(decisão nº 24): a carta era dimensionada pela altura que sobrava, então crescer a placa do
+herói encolhia a carta. Agora o tamanho é declarado em `clamp`, e por `min(vw, vh)` e não
+só por `vw` — num monitor largo e alto o teto por largura deixava a carta pequena no meio
+de uma faixa vazia.
+
+A placa do herói ganhou os 15 cristais de vida: `POINTS_TO_WIN × DIRECT_DAMAGE_PER_POINT`
+pedras em três fileiras, e a conta é `pontos do adversário × 5 + dano direto acumulado`.
+Os três losangos ao lado do nome continuam sendo os pontos em si — a régua conta a mesma
+história em outra escala, e é a que se lê de relance no meio de uma partida. Os cristais
+azuis lapidados do tema anterior saíram inteiros: o desenho não tem gradiente.
+
+A criatura em campo segue sendo a carta COMPOSTA (invariante da decisão nº 23), e ganhou
+dois losangos pendurados meio para fora dos cantos de baixo com o ATQ e a VIDA vigentes. A
+120px o badge impresso na carta não se lê, e ATQ/VIDA é o que se olha o tempo todo. Ficam
+para FORA da carta de propósito: dentro tapariam a ilustração, e o número que interessa
+mora na borda, onde o olho o encontra sem procurar. O vão entre colunas foi calibrado para
+nunca ser menor que dois losangos vizinhos.
+
+O que NÃO virou o desenho: o desenho troca a faixa de anexos por um contador "+2" no canto
+do slot. A faixa ficou, porque ela responde uma pergunta que o contador não responde
+("+2 de quê?"), e o contador entrou também, no alto do slot — quem só quer o número o tem
+sem passar o ponteiro. E o botão de fase, que no desenho é um só que muda de rótulo, ficou
+sendo dois na fase principal: encerrar o turno sem passar pelo combate é lance legítimo do
+motor, e esconder isso custaria um clique inútil por turno.
+
+**A carta que se descarta da mão.** O pedido concreto: Leviathan de Esdras nunca foi
+jogável. O motor sempre soube resolvê-la (`activateAbility`, origem "carta na mão", custo
+`discard_self`), mas a tela só desenhava o que já estava utilizável — e a carta só fica
+utilizável com uma criatura sua em campo E uma segunda cópia na mão. Sem os dois, o
+jogador não via botão nenhum e concluía, com razão, que a carta estava quebrada.
+
+A correção é uma segunda leitura da mesma oferta, e não uma regra nova:
+`handActivations` segue sendo "o que dá para fazer agora" (o ícone que pisca na carta) e
+`handAbilityOffers` passa a ser "o que a carta SABE fazer" (o botão, desligado, com o
+porquê no `title` — e o porquê é a MESMA recusa que o motor devolveria, `ErrorCode`, não
+uma frase escrita à parte na tela). O acordo do teste continua valendo: a oferta ligada é
+exatamente o que `activateAbility` aceita.
+
+Com isso a carta escolhida na mão passa a mostrar uma LISTA de ações em vez de um botão:
+a de jogar (invocar / anexar / ativar comando / pôr cenário) e a da própria carta
+(descartar-se para ativar). Quando a primeira não existe — que é o caso do Leviathan, que
+não se invoca — a segunda leva o ouro, porque aí ela É a ação principal daquela carta.
+Carta sem ação nenhuma agora desenha um botão desligado dizendo por quê, em vez de nada.
+
+Auditoria pedida junto: o catálogo tem 6 habilidades ativadas, e Leviathan é a ÚNICA de
+origem "mão". As outras cinco (Mysticus, Badur bebê, Feiticeiro Tribal, Mamuthe,
+Sapocalibur) já tinham caminho pelo painel da criatura. Descarte como CUSTO de efeito de
+gatilho (Atlas, Mapa do Tesouro, Proteção do Escudeiro) já funcionava pela pendência —
+`atlas_discard`, `map_discard`, `discard_self_to_prevent_attack` — e a janela dessas
+escolhas agora desenha as cartas da mão no tema novo.
+
+**A carta ampliada** virou a MESMA ficha do painel da coleção (`CardFacts`): mosaico de
+fatos em fio de cabelo mais o texto de regras em corpo de leitura. Eram dois desenhos
+diferentes para os mesmos cinco dados, e a ampliada ainda estava no tema anterior. Ampliar
+segue sendo o clique DIREITO em qualquer carta, em qualquer tela.
+
+**Limpeza.** Com login e tabuleiro migrados, 20 classes `.ez-*`, 10 `@keyframes` e 27
+tokens de cor ficaram sem uso e saíram — o CSS caiu de 54 kB para 48,5 kB. O que sobrou do
+`ez-` é exatamente o que o estúdio usa.
+
+Verificado no navegador (Chrome headless por CDP) em 1920x1080, 1600x1000 e 1280x720:
+login com as duas abas, tabuleiro com criatura em campo, anexo, faixa de virada de fase,
+mão em leque, carta escolhida com os botões, Leviathan desligado com o motivo e ligado
+depois da segunda cópia + criatura em campo, mulligan, registro, visor de descarte,
+desistência e desfecho — sem rolagem horizontal em nenhuma largura e sem erro de console.
+379 testes, `typecheck`, `build` e `sim` (200 partidas por formato) verdes.
+## 32. A chave do estúdio se confere na porta, e a ilustração regravada aparece (2026-08-19)
+
+Dois defeitos do estúdio relatados juntos, e os dois eram a mesma coisa vista de dois
+lados: a tela acreditava em algo que só o servidor sabe.
+
+**A chave.** Sem `EZONE_ADMIN_KEY` ela é sorteada a cada `--admin`, e o navegador a guarda
+no `localStorage`. Reiniciar o servidor matava a chave guardada sem ninguém avisar: o
+estúdio abria inteiro, deixava editar a carta e só recusava na hora de GRAVAR — e não havia
+lugar nenhum na tela para pôr a chave nova, porque a portaria só aparecia quando NÃO havia
+chave guardada.
+
+Agora a chave se confere ao abrir a tela, na rota `GET /api/admin/access`, que passa pela
+mesma guarda das rotas de escrita (conta E chave): um 200 ali é a promessa de que gravar vai
+ser aceito. Ela é rota própria, e não uma bandeira no `/api/admin/status`, porque o status
+atende sem conta nenhuma — quem quiser adivinhar a chave continua tendo de estar logado
+para ouvir "não".
+
+O que a tela faz com a resposta depende de haver trabalho em risco:
+
+- **recusa na entrada** — a chave morta é esquecida, um aviso diz o que houve e o autor
+  volta ao hub. Não há rascunho a perder, e entrar de novo cai na portaria pedindo a chave
+  nova. É o pedido literal do DevLukkas: com chave errada a tela não se vê.
+- **recusa com a tela já aberta** (o servidor reiniciou no meio da edição) — a portaria
+  sobe POR CIMA do rascunho e recebe a chave nova ali mesmo. Mandar o autor embora aqui
+  levaria junto a carta que ainda não foi para o catálogo, que é justamente o que a decisão
+  nº 30 combinou não fazer.
+
+A chave digitada também deixou de ser guardada no escuro: ela vai ao servidor antes, e só
+é gravada se ele aceitar.
+
+**A ilustração.** Enviar a arte gravava o arquivo certo em `public/assets/arte` e a prévia
+continuava quebrada. São dois enganos empilhados, e nenhum deles no upload:
+
+1. Em dev quem serve `public/` é o Vite, que responde pela lista de arquivos montada ao
+   subir e atualizada pelo watcher. Existe uma janela em que o arquivo está no disco e
+   ainda não está na lista — e o pedido que cai nela não volta 404: volta o **index.html do
+   fallback da SPA, com status 200**, porque o `Accept` de uma tag `img` casa com `*/*`. O
+   navegador guarda esse HTML como se fosse a imagem, e ele não decodifica.
+2. O endereço da arte nunca mudava. Regravar `74.png` por cima de `74.png` deixa o `src`
+   idêntico, então o navegador reaproveita o que já tem naquele endereço — inclusive a
+   falha do item 1, e inclusive a imagem ANTIGA quando a nova entra com o mesmo nome.
+
+A store passou a carimbar cada arquivo regravado (`artStamps` → `?v=<carimbo>`), e o
+carimbo só sai depois que o endereço responde imagem de verdade — a espera pede com
+`accept: image/*`, que é o que tira o fallback do caminho e faz o "ainda não" chegar como
+404 honesto. Prévia e biblioteca leem o mesmo `useArtUrl`.
+
+No caminho, `.webp` entrou na tabela de MIME do servidor estático: a ilustração das cartas
+é webp e saía como `octet-stream`, dependendo de o navegador farejar o formato.
+
+Verificado no navegador (Chrome headless por CDP): 18 conferências — envio de arte que
+desenha, regravação por cima do mesmo nome que TROCA a prévia (sem o carimbo ela fica na
+antiga, e o experimento foi rodado para confirmar), servidor reiniciado com a tela fechada
+e com ela aberta, chave errada digitada, chave nova aceita — sem erro de console. 381
+testes e `typecheck` verdes.
+
+
+## 33. Bloqueio de ataque e proteção contam a janela do ALVO, não o turno corrente (2026-08-19)
+
+Relato de partida do DevLukkas: "usei Alterando as Rotas para minha criatura não ser
+atacada, e ela foi atacada do mesmo jeito". Estava certo — e não era só aquela carta.
+
+O legado gravava o bloqueio no NÚMERO DO TURNO CORRENTE
+(`cannotBeAttackTargetUntilTurn = this._turnNumber`), e a reescrita copiou. Só que uma
+criatura sua só é atacada no turno do adversário, e uma criatura inimiga só ataca no turno
+dela: a marca vencia antes de a janela que ela deveria cobrir sequer abrir. Na prática
+quatro cartas não faziam nada:
+
+| carta | o que prometia | o que acontecia |
+| --- | --- | --- |
+| **Alterando as Rotas (27)** | "não pode ser alvo de ataques neste turno" | protegia o seu próprio turno, em que ninguém a atacaria |
+| **Riso Histérico de Tashaa O (21)** | "não pode atacar neste turno" | prendia a inimiga no turno em que ela já não atacaria |
+| **Mysticus (3)** | "não pode atacar durante o SEU próximo turno" | soltava um turno antes |
+| **Poltergeist (34)** | "não pode atacar no próximo turno do controlador dela" | idem |
+
+A conta passa a ser sobre a janela do ALVO, e não sobre o relógio de quem jogou
+(`attackBlockedUntil`/`protectedUntil` em `effects.ts`):
+
+- **bloqueio de ataque, `this_turn`** → a próxima vez que o alvo atacaria: o turno corrente
+  se ele for do lado ativo, o seguinte se não for;
+- **bloqueio de ataque, `next_turn`** → a janela DEPOIS dessa (dois turnos à frente quando
+  o alvo é do lado ativo);
+- **proteção contra ataques** → espelho, com o sujeito trocado: quem ataca a criatura
+  protegida é o adversário do dono dela, então a janela que interessa é a DELE.
+
+As duas contas dependem de quem é o lado ativo, e é por isso que valem também jogadas
+dentro da janela de reação (decisão nº 8): Alterando as Rotas jogada em reação, no turno do
+oponente, protege o resto DAQUELE turno — não o seguinte.
+
+Isto REVOGA o item correspondente da decisão nº 6 (paridade com o legado nesse ponto): o
+legado errava a conta, e paridade com um efeito que nunca aconteceu não é paridade, é
+carta morta. `__tests__/attackWindows.test.ts` guarda o relato.
+
+## 34. Forçar ataque vira OBRIGAÇÃO de atacar, e o motor a cobra (2026-08-19)
+
+Segundo relato da mesma partida: "usei Marionete de Guerra para controlar a criatura
+inimiga, mas ao escolher ela nada aconteceu". Também estava certo — a decisão nº 6 tinha
+deixado `force_attack` inerte, porque sob a regra de ataque por coluna o alvo do ataque já
+está decidido pela geometria, e "deve atacar UMA CRIATURA À SUA ESCOLHA" não tinha o que
+escolher.
+
+Mas o texto das duas cartas tem duas metades, e só uma delas depende da escolha:
+
+- **Marionete de Guerra (23)**: "até o próximo turno dela, DEVE ATACAR uma criatura a sua
+  escolha";
+- **Feiticeiro Tribal Badur (32)**: "a criatura inimiga escolhida DEVE ATACAR a criatura
+  escolhida, se possível".
+
+A metade que sobra é a obrigação, e ela vale por si: obrigar um 1/1 a atacar o 5/5 que está
+na frente dele é o efeito inteiro da carta sob a regra de coluna. Foi o que entrou.
+
+- `mustAttackUntilTurn` na criatura, com a mesma conta de janela da decisão nº 33;
+- `END_TURN` é RECUSADO (`must_attack_first`) enquanto o dono tiver uma criatura obrigada
+  que ainda pode atacar — em qualquer fase, senão bastava não ir ao combate;
+- "se possível" é literal: criatura impedida de atacar por outro efeito, já invocada neste
+  turno, ou com a coluna da frente intocável (Corpo Translúcido) não prende ninguém;
+- o bot ataca com a obrigada PRIMEIRO, e por isso nunca fica preso no próprio turno;
+- a criatura obrigada ganha etiqueta no tabuleiro, dos dois lados do campo: quem jogou a
+  carta precisa ver que ela pegou, e quem a sofreu precisa saber por que o turno não fecha.
+
+A escolha da criatura ALIADA que o Feiticeiro faria (o `filter` de Besta) continua sem
+efeito, e agora é a única metade pendente. Redesenhar as duas cartas para a regra de coluna
+segue sendo decisão de produto — o que não valia era a carta sair da mão e não fazer nada.
+
+## 35. O prazo do turno não recomeça a cada lance (2026-08-19)
+
+Terceiro relato: "sempre que faço uma ação — invocar, anexar — a linha do tempo diminui e
+volta pra onde tava antes".
+
+Eram dois defeitos, um de cada lado, com o mesmo sintoma:
+
+- **no servidor**, `armTimer` rodava depois de TODO comando e dava 60 segundos novos. Quem
+  jogasse sem parar tinha turno infinito, e a barra do cliente voltava ao cheio a cada
+  lance;
+- **no cliente** (treino e online), a janela de reação do oponente trocava o prazo por um
+  de 7 segundos. A barra media esse prazo curto na régua de 60 — despencava para um
+  sexto — e voltava ao cheio quando a janela fechava.
+
+Agora o relógio é UMA peça só, em `src/shared/clock.ts`, usada pelo servidor e pelo treino
+(fora do motor porque depende de hora de parede — invariante 1):
+
+- o prazo do turno nasce uma vez por turno, identificado por `turno:lado:fase`;
+- a janela de reação tem prazo próprio e **segura** o do turno em vez de substituí-lo:
+  quem gasta os 7 segundos é quem responde, não quem está no turno. Fechada a janela, o
+  turno volta com o que sobrava;
+- o prazo que vai para a tela vem acompanhado do que ele É (`deadlineIsReaction`), e a
+  barra mede na régua certa;
+- no treino ele continua só COMEÇANDO a correr quando a animação esvazia (decisão nº 25) —
+  isso virou o parâmetro `start` da mesma função.
+
+## 36. A tela para de repetir a carta e passa a explicar a partida (2026-08-19)
+
+Quatro pedidos da mesma leva de relato, todos sobre a mesma coisa: a interface repetia o
+que a carta já dizia e calava o que só ela sabia.
+
+**Os losangos de ATQ/VIDA saíram do slot.** Eles vieram de quando a carta em campo era o
+PNG impresso, com números que não acompanhavam buff nem dano. Desde a carta composta
+(decisão nº 23) o número impresso JÁ é o vigente (`stats` entra do motor), e os losangos
+eram a mesma informação por cima da mesma carta, tapando a ilustração.
+
+**A carta ampliada ganhou a aba "Em campo".** O impresso continua sendo o impresso — é o
+que se lê para saber a regra. Ao lado, para uma criatura ampliada do tabuleiro: ATQ/VIDA
+vigentes, dano acumulado, marcadores, elemento, AS CARTAS ANEXADAS (miniaturas que
+ampliam) e as restrições em vigor com o turno em que vencem. A aba lê a visão de AGORA a
+partir da posição (lado, coluna, uid) — a criatura que morrer com a janela aberta perde a
+aba em vez de virar retrato velho. Desfazer é apagar `InPlayFacts` e o par de abas.
+
+**A pergunta mostra a carta do efeito.** `Pending.sourceCardId` é dado da pendência, não
+texto: o motor diz de que carta é a escolha e a tela desenha a ilustração ao lado. Vale
+para a corrente de efeitos ("Mapa do Tesouro: comprar 1 e descartar 1?") e para a janela de
+reação, onde a carta é a que o OPONENTE acabou de jogar — a segunda pergunta da mesma carta
+herda a fonte da primeira.
+
+**Só acende o que dá para escolher.** A fileira inteira acendia ao mirar um comando,
+inclusive colunas vazias; o clique ia ao motor e voltava recusado. Agora a coluna consulta
+a MESMA conta do motor (`commandTargetSpec`/`canBeCommandTarget`, `canAttachTo`), clicar
+fora não faz nada, e o botão da mão que não tem alvo já nasce desligado com o porquê
+(`Não há alvo válido para esta carta`, `Elemento incompatível`, `O efeito desta carta ainda
+não foi implementado`).
+
+**A habilidade que não dá para usar aparece desligada, dizendo o que falta.** O painel da
+criatura só conhecia o que estava utilizável e, para o Bebê Urso sem o Urso no descarte,
+respondia "esta criatura não tem habilidade ativável" — negando a existência da habilidade
+que a carta promete no texto impresso. `creatureAbilityOffers` passa a devolver TODAS as
+habilidades com o motivo da recusa (o mesmo `ErrorCode` que o motor devolveria), como já
+era na mão desde o Leviathan.
+
+## 37. Um formato só: o Quatro Elementos volta a ser edição (2026-08-19)
+
+O relato foi curto: "não entendi o porquê abriu este formato, algumas cartas não estão
+aparecendo no normal pois estão nele — temos que unir para apenas um".
+
+A decisão nº 11 criou um SEGUNDO formato de jogo para as 33 cartas importadas do Figma, com
+pool próprio, fila própria e deck que não mistura. Na prática o que isso produziu foi carta
+sumida: quem construía no clássico não via metade do catálogo, e a divisa não pagava nada em
+troca — não há uma regra que valha num formato e não valha no outro.
+
+`Format` saiu do código inteiro. O que sobrou é `Edition`, que sempre foi outra coisa: a
+PROCEDÊNCIA da carta (o rodapé impresso, a arte, a faixa de id — clássico em 1..45, Quatro
+Elementos de 46 em diante). Toda carta é legal em todo deck; a fila online é uma só; o
+construtor abre com o catálogo inteiro. As colunas `format` de `decks` e `matches` caíram
+numa migração — decks gravados no formato antigo continuam válidos, porque as cartas são
+exatamente as mesmas.
+
+## 38. A reação ao ataque vem ANTES do combate (2026-08-19)
+
+"Quando o oponente clica para atacar, caso tenhamos uma carta comando na mão podemos ativar
+ela em resposta ao ataque; atualmente está perguntando apenas depois do ataque."
+
+A janela de reação nasceu pós-jogada (decisão herdada do legado: a ação já resolveu e o
+outro responde). Para invocação e anexo isso funciona — o que se responde é o estado novo.
+Para o ATAQUE, não: quando a pergunta chegava, o dano já estava contado, e o comando que
+existe justamente para impedir um ataque ("Riso Histérico") chegava tarde por definição.
+
+Agora o ataque tem dois momentos, e a janela mora entre eles:
+
+- `ATTACK` emite `ATTACK_DECLARED` e enfileira **dois** trabalhos, nesta ordem:
+  `reaction_window` e depois `attack`;
+- o oponente responde com o combate ainda por acontecer;
+- `runAttack` **reconfere a permissão** antes de resolver. É a peça que faltava: o estado de
+  quando o comando foi aceito não é o de quando o trabalho sai da fila. Atacante impedido ou
+  alvo protegido no meio do caminho emite `ATTACK_BLOCKED` (evento que existia no vocabulário
+  e nunca era emitido) e o dano não sai.
+
+Invocação, anexo e início de batalha seguem abrindo a janela no fim da fila, como antes: lá
+não há nada declarado esperando para resolver.
+
+## 39. A espera de fachada: o relógio não pode entregar a mão do oponente (2026-08-19)
+
+Consequência direta da nº 38, e veio no mesmo relato: "para não ficar na cara pro oponente a
+espera, pois seria uma declaração de que temos ou não uma carta comando na mão".
+
+Sem janela para abrir, a jogada resolvia instantaneamente — e o tempo de resposta virava
+informação: resolveu na hora, o outro não tem comando. Com carta na mão, a pausa da decisão
+denunciava o contrário.
+
+O motor não espera (invariante 2), então a espera é da TELA. O que o motor faz é avisar:
+`offerReaction` emite `REACTION_WINDOW` **sempre** que avalia uma janela — tendo ela resposta
+possível ou não. Um aviso condicional teria exatamente o defeito que ele veio corrigir.
+
+O cliente transforma o aviso num passo da linha do tempo de ~1,25s ("o oponente está
+avaliando"), e só para quem NÃO decide: quem decide vê o próprio modal, e uma pausa antes
+dele só comeria o relógio curto da reação. Como o evento é idêntico nos dois casos, o que
+chega ao adversário é sempre a mesma espera.
+
+## 40. O que a partida faz, a partida mostra (2026-08-19)
+
+Quatro relatos da mesma leva, todos com a mesma forma: aconteceu no motor, não apareceu na
+tela.
+
+**Escolher entre cartas é escolher olhando as cartas.** A pergunta desenhava a ilustração
+só quando a opção era carta da PRÓPRIA mão (a tela procurava o uid na mão); carta revelada
+do oponente, criatura em campo, carta do deck e anexo caíam em botão com o nome escrito.
+Quem diz que a opção é uma carta passou a ser o motor, em `PendingOption.cardId`, e a regra
+vale para toda pergunta. Botão de texto ficou para o que carta não é: "Sim"/"Não", elemento,
+ficha sem carta de catálogo.
+
+**Descartar é um movimento.** Carta que ia para o descarte — da mão, do topo do deck
+(moagem) ou de cima de uma criatura (anexo) — simplesmente sumia da origem enquanto a pilha
+crescia. Agora ela faz o caminho até lá. Descartes seguidos para o mesmo lugar viram UM
+passo com várias cartas em leque: "descarte a mão inteira" não pode custar um comboio de
+dois segundos. Isso exigiu duas âncoras novas no tabuleiro — `hand:<lado>` (a minha é o
+leque; a do oponente é a linha de contagens da placa dele, que é o único lugar onde a mão
+dele existe na tela) e `deck:<lado>`.
+
+**Morrer é em dois tempos.** A criatura destruída deslizava para o descarte e pronto. Agora
+ela estoura NO SLOT — clarão, onda de choque, a carta branqueando e tremendo —, e só então
+tomba, desbota e cai. O primeiro tempo é o que diz "esta criatura morreu", e ele acontece
+onde ela estava lutando.
+
+**O herói existe.** "O efeito dos heróis não está acontecendo, testei o Ispisher e ele não
+curou minhas criaturas." O efeito acontecia: `HERO_ACTIVATED` + `CREATURE_HEALED` saíam do
+motor na virada do turno. O que não havia era passo de animação nenhum — a cura passava
+entre um turno e outro, e a leitura era "o herói não faz nada". Agora `HERO_ACTIVATED` vira
+uma placa curta com o retrato e o nome do efeito.
+
+Junto, dois defeitos de fora da tela na mesma leva:
+
+- **a revanche perdia o baralho.** "Jogar de novo" chamava `startTraining()` sem argumento e
+  caía no deck de demonstração do motor (com o herói Badur, o que ajudou a esconder o
+  problema do Ispisher). O treino agora lembra o baralho da última partida;
+- **a lista do deck estava espremida** (relato sobre o print): linha de 22px, nome truncado
+  e os botões colados nele. Ela ganhou miniatura da carta, altura de verdade, nome e
+  estatística em linhas separadas e cabeçalho de seção grudado no topo da rolagem — e o
+  painel inteiro ganhou largura, que a saída do seletor de formato (decisão nº 37) devolveu.
+
+## 41. O estúdio vira esteira: a carta ganha situação, a arte ganha marca e apagar é o fim da fila (2026-08-19)
+
+O estúdio era a última tela do tema anterior (decisão nº 26) e a única que o redesign do
+console (decisões nº 29 e nº 31) não tinha alcançado. O desenho novo veio do mesmo projeto
+de design das outras telas, e o DevLukkas apontou o que faltava nele — que é o que esta
+decisão resolve, junto com o redesenho.
+
+**A carta passa a ter SITUAÇÃO, e o jogo só enxerga a publicada.** São quatro:
+`draft` (rascunho), `review` (em revisão), `published` (publicada) e `archived`
+(arquivada). A coleção, o construtor e a validação de deck leem `PLAYABLE_CARDS`, que é só
+o publicado; `ALL_CARDS` — o catálogo inteiro — fica para o estúdio e para `cardById`, que
+precisa achar carta de qualquer situação (uma partida em andamento pode ter em campo uma
+carta que acabou de ser arquivada). É isto que permite escrever carta nova com o servidor
+no ar sem ela vazar meio pronta para uma partida.
+
+O campo é OPCIONAL e ausente quer dizer `published`. As 78 cartas que já estavam no jogo
+não passaram por esteira nenhuma, e carimbá-las uma a uma seria escrever no arquivo uma
+revisão que não houve — quem responde "em que situação esta carta está" é `cardStatus`,
+nunca o campo cru. Carta nova nasce em `draft` (ver `blankCard`).
+
+**Três abas, e a do meio é nova.** O formulário virava a tela inteira e a lista de cartas
+era uma coluna de nomes ao lado dele. Agora: NOVA CARTA (o formulário e a prévia), CARTAS
+CRIADAS (o catálogo visto pela esteira, com filtro por situação e a troca de situação na
+própria linha) e BIBLIOTECA DE IMAGENS. A do meio existe porque a coleção do jogo mostra só
+o publicado: sem ela, quem escrevesse uma carta em rascunho precisava lembrar o id para
+reabri-la.
+
+**A prévia é a carta de verdade.** O mockup desenhava uma aproximação da carta ao lado do
+formulário. Quem desenha a prévia é o `ComposedCard`, o mesmo componente da coleção, da mão
+e do tabuleiro (decisão nº 23), recebendo o rascunho que está sendo digitado. O que aparece
+no estúdio é, letra por letra e pixel por pixel, o que vai aparecer em jogo — que é a única
+maneira de a decisão de arte e de texto poder ser tomada aqui dentro.
+
+**Todo campo se explica, e a explicação fica à vista.** A descrição do vocabulário existia
+desde a decisão nº 30, mas morava no `title` do nome do campo — dica que só existe no hover
+é dica que não existe para quem não passa o ponteiro por cima. Agora ela é uma linha embaixo
+de cada campo, sempre visível: nos campos de identidade vem de `admin.hint.*`, nos do
+vocabulário de `vocab.field.*`, e o tipo de ação/gatilho/efeito escolhido continua se
+explicando ao lado do identificador cru. O componente `Field` EXIGE a descrição, então campo
+novo sem explicação aparece na revisão em vez de passar batido.
+
+**A arte ganha duas marcas: ARTE FINAL e ARQUIVADA.** Elas vivem num índice
+(`public/assets/arte/library.json`) ao lado das imagens, e não num banco, pela mesma razão
+que as cartas moram no código (decisão nº 22): quem edita arte é o time, e o resultado tem
+de virar diff no git e viajar com o repositório. O índice é só a lista de exceções — arte
+sem marca nenhuma não aparece nele, e biblioteca sem índice é biblioteca sem marca. A
+biblioteca também passou a dizer as DIMENSÕES de cada arquivo, lidas do cabeçalho da
+imagem: é o número que denuncia a arte que veio do lugar errado antes de a carta ser
+publicada com ela.
+
+**Apagar é o fim da esteira, nunca um atalho.** Só se apaga do catálogo a carta que está
+ARQUIVADA, e só se apaga do disco a imagem que está ARQUIVADA — o botão de excluir aparece
+apenas na faixa das arquivadas, nos dois casos. Quem confere é o SERVIDOR, lendo a situação
+do literal que está no arquivo (invariante nº 4): o cliente manda o pedido, mas quem sabe o
+que está gravado é quem grava. Some ainda uma trava a mais na arte: ilustração que uma
+carta usa não é apagada nem arquivada, senão a carta publicada ficaria apontando para um
+endereço que não responde mais.
+
+**O tema `ez-` acabou.** Ele sobrevivia só aqui (era o que a decisão nº 29 registrou), e o
+estúdio agora é `zn-` como todo o resto — o bloco inteiro saiu do `styles.css`. Entraram
+duas peças no sistema: `.zn-area` (o campo de várias linhas, que só existia como `ez-`) e
+`.zn-btn-blood`, o botão de apagar de vez, em contorno vermelho e não chapado: é a ação que
+a tela oferece, nunca a que ela sugere.
+
+## 42. O registro ganha cor, e o painel do deck ganha abas (2026-08-19)
+
+Três relatos sobre o mesmo par de prints, todos de leitura: o que está na tela não se lê.
+
+**O registro era uma parede.** Trinta linhas iguais, no mesmo cinza, no mesmo tamanho —
+"não dá para entender muita coisa". A informação estava lá; o que faltava era o que separa
+uma linha da outra. Agora cada linha é pintada duas vezes:
+
+- por ASSUNTO, no filete da esquerda e na cor do texto — virada de turno em ouro, lance em
+  ciano, pancada em vermelho, ponto e cura em verde, carta trocando de zona em azul,
+  modificador em roxo, ataque impedido em laranja, moldura da partida em cinza. É por ela
+  que se varre a gaveta procurando "onde começou o turno 4" sem ler frase nenhuma. O mapa
+  vive em `src/client/logTone.ts`, como DADO, e um teste cobra assunto para toda chave de
+  `log.*`: chave nova sem cor sumiria no cinza sem ninguém notar;
+- por PAPEL dentro da frase — nome de carta em ouro, número em branco forte, autor do lance
+  em verde quando é você e em vermelho quando é o oponente. Para isso o i18n ganhou
+  `resolveParts`, que devolve a mesma frase do `resolve` em pedaços etiquetados. Ela mora
+  no i18n, e não no cliente, porque quem sabe onde acaba a moldura e começa o parâmetro é
+  quem preenche o `{...}` — reconstituir isso a partir da frase pronta seria adivinhar por
+  casamento de texto, e quebraria no primeiro nome de carta que contivesse uma palavra da
+  moldura.
+
+A gaveta ganhou também um botão de COPIAR: o registro inteiro em texto puro, em ordem de
+partida (a gaveta mostra ao contrário, mas quem cola quer ler do começo). É o que se anexa
+a um relato de bug, e era feito à mão, print a print.
+
+**A lista do deck continuava espremida.** A decisão nº 40 já tinha dado a ela miniatura,
+altura de linha e cabeçalho grudado — e o print seguinte mostrou que não bastava, porque o
+problema não era a LINHA, era a altura que sobrava para a lista: o resto de uma pilha de
+cinco blocos fixos num painel de 440px. O painel virou de ABAS:
+
+- **RESUMO** é a leitura de montagem, na ordem em que se monta: carregar um deck pronto,
+  nome, herói, curva de ataque, mosaico de 40 slots e pendências — os NÚMEROS do baralho;
+- **CARTAS** é a lista, com o painel inteiro para ela.
+
+A lista mora numa aba só. A primeira versão a repetia no fim do resumo, e isso devolvia o
+problema que a divisão veio resolver: o resumo voltava a ser uma pilha alta com a lista
+espremida no fim dela.
+
+O carregar-pronto subiu para o topo de propósito: é a única ação que decide o deck inteiro,
+e estava enterrada abaixo do herói. As pendências saíram de dentro do bloco da curva e
+viraram bloco próprio — elas respondem "por que o botão de gravar não salva?", e não têm
+nada a ver com a distribuição de ataque.
+
+**A barra de gravar acompanhava o painel.** Ela era o último filho de um `aside` que rolava
+inteiro, então dependia de onde a rolagem tinha parado. Agora o `aside` não rola: ele é uma
+coluna de altura fixa com UM rolador dentro (o conteúdo da aba), e a barra é IRMÃ desse
+rolador. Como a coluna vai até o fim do `100dvh` do `.zn-shell`, o rodapé do painel é o
+rodapé da tela. Abaixo de 1100px, onde o `.zn-split` empilha as colunas e passa a ser o
+rolador da página, as colunas perderam a rolagem própria (`overflow: visible`) — coluna com
+rolagem própria PRENDE o `sticky` da barra nela, e a barra ficaria colada no fim de uma
+caixa que não rola em vez de no fim da tela.
+
+## 43. O arquivo de partidas, e rever é reexecutar (2026-08-20)
+
+O console tinha por onde jogar e por onde montar, e não tinha por onde OLHAR PARA TRÁS: a
+partida acabava, o botão voltava ao hub e o que aconteceu ali morria com a aba. Entrou a
+sexta tela da trilha, **Histórico**, e com ela o **replay** — pedido como experiência ("faz
+com replay para vermos se fica legal"), então ele é uma peça avulsa de propósito: sai
+inteiro tirando a rota `/replay`, a `ReplayControls` e o `mode: 'replay'`.
+
+**O replay não guarda tabuleiro; guarda a receita.** A linha do arquivo tem a seed, os dois
+baralhos e o registro de comandos ACEITOS, e rever é chamar `replayMatch` — o mesmo motor,
+de novo, do começo. É o invariante 1 deixando de ser promessa de teste e virando
+funcionalidade: se "mesma seed + mesmos comandos = mesmo estado" falhar um dia, o arquivo
+inteiro passa a mentir, e um teste em `src/engine/__tests__/replay.test.ts` cobra estado
+final E lista de eventos, evento a evento. Guardar um filme de estados custaria centenas de
+KB por partida e envelheceria: a receita cabe em alguns KB e é o próprio motor que a lê.
+
+O preço é honesto e está declarado: partida gravada por um motor de ontem pode ser recusada
+por uma regra de hoje. Quando isso acontece, `replayMatch` PARA no comando recusado e
+devolve `truncated` — a barra avisa, em vez de fingir que a partida terminou ali.
+
+**Os quadros são montados no servidor, não no cliente.** A tentação era mandar seed, decks e
+comandos para o cliente reexecutar — seriam 3 KB em vez de 100. Mas o deck do oponente é
+informação oculta (invariante 4), e mandá-lo para "rever a própria partida" entregaria a mão
+inteira do outro lado. Então o servidor reexecuta e devolve um quadro por comando, cada um
+com a visão passada pelo MESMO `viewFor` + `redactEvent` da partida ao vivo. Custa de 60 a
+300 KB por replay (medido: 9 a 26 turnos), pago uma vez ao abrir.
+
+**Rever usa o tabuleiro de jogar.** Não há tela de replay: o quadro entra pelo `view` da
+`matchStore` e quem desenha é o `Board` de sempre, com `mode: 'replay'`. Uma trava só
+(`myTurn` nasce falso) apaga ataque, invocação, botão de turno, mulligan e desistência de
+uma vez — e o fusível do turno, que no replay não conta nada, vira a fita de avanço: clicar
+nela busca o passo. Andar um passo para a FRENTE anima o lance (é o que se quer ver
+acontecer); qualquer outro salto assenta o tabuleiro sem animação e reescreve o registro,
+porque pular trinta passos animado é um borrão, não uma leitura.
+
+**A velocidade só virou verdade depois de medida.** A primeira versão escalava a PAUSA entre
+os passos, e o navegador desmentiu: 1× dava 0,70 passo por segundo e 4× dava 0,90 — porque
+quem dominava o passo era a animação (~1s), não a pausa. Acima de ~1,4× não existe passo
+animado. Então acima de 1× o replay SALTA: assenta o quadro sem animar, que é o que avanço
+rápido quer dizer em qualquer tocador, e o número no botão volta a ser verdade. As três
+velocidades são `1×` (animado), `5×` e `20×` (salto), e o passo a passo manual para a frente
+anima sempre — é o lance que se quer ver acontecer. Os números nos botões são os MEDIDOS
+depois da mudança, não os pretendidos: 0,53 passo/s, 2,8 e 10,9 — um replay de 173 quadros
+leva cinco minutos no primeiro e dezesseis segundos no último.
+
+**O treino também entra no arquivo, e o servidor é quem apura.** O treino roda no cliente
+(é ele que tem o bot), então a partida sobe como seed + decks + comandos e o servidor a
+REEXECUTA para descobrir quem ganhou, em quantos turnos e de onde vieram os pontos. O placar
+que o cliente relata não é lido em lugar nenhum — sem isso o histórico seria um campo de
+texto que qualquer um preenche.
+
+**A origem dos pontos sai da ordem dos eventos.** O motor emite `DIRECT_DAMAGE` e só então
+`addPoints`, enquanto a destruição pontua ANTES de anunciar a criatura morta. Então o
+`SCORED` colado num `DIRECT_DAMAGE` é dano direto, e o resto é abate — 2 de uma vez é
+lendária, 1 é rara. Um teste cobra a soma: `lendárias × 2 + raras + direto` tem de bater
+exatamente com o placar do dono da linha.
+
+**Uma linha por CONTA, não por partida.** A online rende duas (uma de cada lado, cada uma
+com o "você marca" / "Ravena marca" do seu ponto de vista), o treino rende uma. Assim a
+consulta é `WHERE account_id = ?` e a tela nunca precisa saber se a conta era `a` ou `b`. O
+nome do baralho é COPIADO para a linha: renomear ou apagar o deck não pode reescrever o que
+se jogou em agosto.
+
+## 44. O replay vira fita: a partida gravada para de depender do motor (2026-08-20)
+
+A decisão nº 43 guardou a RECEITA — seed, decks e a lista de comandos — e fez de "rever"
+uma reexecução: o motor de hoje rodando de novo a partida de ontem. Era elegante, cabia em
+3 KB e tinha um defeito que a própria nº 43 declarou como preço aceitável: **motor muda**.
+Uma regra nova reescrevia partidas antigas em silêncio, e um comando que deixou de ser legal
+interrompia o replay no meio (`truncated`). Um arquivo que a próxima versão do jogo reescreve
+não é arquivo — é uma simulação com data de validade.
+
+**Rever deixa de ser reexecutar e passa a ser tocar uma fita.** A partida agora é gravada
+enquanto acontece, quadro a quadro: cada passo guarda o tabuleiro dos dois lados, o comando
+que o causou e os eventos que ele emitiu (`src/shared/tape.ts`). Tocar é PERCORRER esses
+quadros. Nenhuma regra é consultada, nenhum comando é validado, nada é recalculado — o que
+está gravado é o que aconteceu, e um motor de daqui a dois anos toca a mesma partida sem
+opinar sobre ela. O teste que dá nome à decisão destrói a receita no banco (`seed = 0`,
+`decks_json = ''`, `commands_json = '[]'`) e exige que o replay saia byte a byte igual.
+
+**O custo era o argumento contra, e o gzip o derrubou.** A nº 43 rejeitou guardar o filme
+por causa do tamanho, e estava certa sobre o número cru: medido em 5 partidas de bot, a fita
+dá 114 KB de média. Comprimida, dá **3 KB** — menos do que custavam os quadros que a nº 43
+montava sob demanda a cada abertura de replay (60 a 300 KB, pagos toda vez). O filme completo
+saiu mais barato que a simulação dele. `node:zlib` entra no servidor por isso; é builtin do
+Node, então o invariante 6 (zero dependências) continua de pé.
+
+**A fita guarda a verdade inteira; quem esconde é a saída.** Um quadro tem as duas mãos, os
+dois decks e os eventos sem redação — ela é a única testemunha da partida, e um arquivo que
+já nasce censurado não serve para depurar nada. A redação acontece na LEITURA, no servidor,
+com a mesma política da partida ao vivo: a mão do oponente vira contagem e a compra dele
+chega sem carta (invariante 4). A fita crua não tem rota; ninguém a baixa.
+
+**Uma fita por partida, não por jogador.** O histórico continua com uma linha por conta (nº
+43), mas as duas linhas de uma partida online apontam para a MESMA fita: rever de qualquer
+lado é rever o mesmo filme, com redação diferente. E o resumo do relatório — placar, origem
+dos pontos, momentos — passou a ser lido da fita também, pelo mesmo motivo: o relatório de
+uma partida de agosto tem de continuar dizendo o que ela dizia em agosto.
+
+**A partida online é gravada AO VIVO; o treino, no ato de arquivar.** No online o servidor já
+é quem roda o motor, então cada comando aceito deixa seu quadro em `match_frames` na hora — é
+o log oculto da partida, e é ele que faz o filme sobreviver a um restart do servidor no meio
+do jogo (reconstruir depois seria reexecutar, que é o que esta decisão tirou do caminho).
+O treino roda no cliente, e subir a fita pronta seriam 114 KB contra 3 KB de receita: ele
+sobe a receita, e o servidor a reexecuta UMA vez — no dia da partida, com o motor que a
+jogou, que é o mesmo build do cliente — para conferir o desfecho e gravar a fita. Depois
+disso, ninguém mais reexecuta nada.
+
+**A versão fica carimbada no canto.** É o que torna a fita útil para a equipe: quando alguém
+traz "esse combate resolveu errado", a primeira pergunta é de que época é a partida. Uma fita
+de agosto mostra as regras de agosto, e sem o carimbo não dá para distinguir um bug do motor
+de hoje do comportamento correto da versão que jogou. Em ouro quando é fita gravada; em
+vermelho quando é **reconstituição** — partida anterior a esta decisão, que não tem fita e
+cai na reexecução de antes. A tela diz que é reconstituição em vez de fingir que é o que se
+viu na hora.
+
+**`replayMatch` não morre; muda de emprego.** Ele era a leitura e virou a gravação: confere o
+treino, reconstitui o arquivo velho e continua sendo o teste do invariante 1. `truncated`
+continua existindo pelo mesmo motivo de sempre — a receita envelhece. A fita, não.
+
+## 45. O que o cliente diz não vira regra: as bordas que faltavam (2026-08-20)
+
+Uma varredura de segurança nas rotas do servidor — tentando burlar partida, replay e
+histórico de fora, com `fetch` na mão — achou o núcleo firme e as bordas moles. Vale
+registrar as duas coisas, porque a parte firme é o que NÃO precisa mudar.
+
+**O que já estava de pé.** O lado do comando é imposto pelo servidor (`{ ...command, side }`),
+então forjar `side` só faz o trapaceiro jogar contra si mesmo; invocar carta que não está na
+mão, jogar fora do turno, repetir a ação principal e mandar `TIME_OUT` são todos recusados
+pelo motor; a mão do oponente não vaza em nenhum dos quatro caminhos que a poderiam vazar
+(visão ao vivo, SSE ao vivo, reentrega do SSE pelo banco e replay da fita); e o servidor
+estático recusa toda forma de `..`. O invariante 4 e a autoridade do servidor **passaram no
+teste de fogo** — nada aqui mexe neles.
+
+**Regra de baralho é do servidor, inclusive no treino.** O PvP carrega os baralhos do banco,
+já validados na gravação, mas o registro de treino chega inteiro pelo corpo do pedido — e ele
+só conferia a FORMA (ids inteiros, lista não vazia). Um registro com 120 cópias da mesma
+carta era aceito e virava fita: partida impossível arquivada como se tivesse acontecido. A
+conta agora é a MESMA do construtor de decks, e por isso `validateDeck` se partiu em duas —
+`validateDeckContents` tem as regras de herói, carta e cópias, e o nome ficou de fora porque
+nem o baralho do bot nem o de demonstração têm um. Nome é etiqueta da linha de histórico; o
+que faz um baralho ser legal é a outra metade.
+
+**Fusível não é senha.** O `loginAttempts` cuida de quem erra a senha; faltava o oposto —
+quem acerta tudo e só repete rápido demais. Uma linha de `fetch` criava 50 contas convidadas
+em 125 ms. O `rateLimit.ts` mora na memória de propósito: gravar uma linha por pedido para
+decidir se o pedido pode gravar uma linha é o próprio abuso. Os tetos por ORIGEM são folgados
+porque atrás de proxy a origem é a do proxy e o teto vale para a plateia inteira — são
+fusíveis de enxurrada, não cota por jogador. Onde há conta na frente (arquivar treino, palpitar
+código de sala) a chave é a CONTA, que não sofre disso. No palpite de sala só o ERRO conta:
+quem digitou o código certo entra mesmo com o fusível queimado.
+
+**Partida alheia responde o mesmo que partida inexistente.** O 403 "essa não é sua" contra o
+404 "não existe" é, com id sequencial, um contador de quantas partidas o servidor já teve
+entregue a quem sabe somar 1. Os dois viraram 404. Cliente legítimo nunca viu a diferença —
+ele só pede a partida que o próprio servidor acabou de lhe dar.
+
+**Sessão que envelhece, mas devagar.** O token valia para sempre: copiado uma vez de um log ou
+de um navegador emprestado, entrava pelo resto da vida do banco. Agora o prazo é de
+OCIOSIDADE (90 dias) e não de idade, e cada dia de uso o empurra — quem joga não é deslogado
+nunca. A folga é grande por um motivo que não é conforto: **numa conta convidada o token é a
+única credencial que existe**. Não há e-mail nem senha para voltar, então expirar cedo demais
+não trancaria a porta de ninguém, apagaria o baralho de quem passou um mês sem jogar.
+
+## 46. O registro volta a ser coluna: aberto, ele ESPREME o campo (2026-08-20)
+
+Pedido do DevLukkas, em uma linha: "o log fica sobreposto ao tabuleiro e aos botões, eu
+quero que ele fique ao lado, espremendo o tabuleiro". Isto **revoga a gaveta da decisão
+nº 31** e restabelece a coluna da nº 24 — com a peça que faltava da primeira vez.
+
+**O defeito da gaveta.** Ela tinha um bom motivo (fechada, o campo fica com a janela
+inteira) e um defeito que só aparece para quem joga: aberta, ela tapava exatamente o que se
+confere ENQUANTO se lê o registro. Quem abre o registro está conferindo uma jogada, e
+conferir é comparar com o tabuleiro — a última coluna do campo, as zonas de deck e
+descarte, a barra do turno e os botões de fase, de registro e de desistir ficavam atrás de
+340px de painel opaco. O registro respondia "o que aconteceu?" cobrindo "com o quê?".
+
+**O que faltava na nº 24.** Reservar coluna para o registro já tinha sido tentado, e o que
+derrubou a ideia não foi o desenho: foi a régua. A carta era medida em `vw` — 1% da
+JANELA —, então tirar 340px de largura do campo não tirava um pixel da carta. O campo
+continuava do tamanho de antes dentro de um espaço menor, e transbordava em 1366 e em
+1280. Virou gaveta por isso.
+
+Agora a régua é a coluna, e não a janela: a coluna do campo se declara contêiner
+(`container-type: inline-size`) e a geometria toda passa a `cqw` — largura do slot, da
+carta na mão, da zona, o vão entre colunas e as duas etiquetas da doca. Abrir o registro
+encolhe a coluna, e a carta encolhe junto, sozinha, sem `ResizeObserver` e sem estado: em
+1280 o slot vai de 108px para 81px e o campo termina em 782, com o registro começando em
+973. Fechado, a coluna É a janela e a conta dá exatamente o que dava — a decisão nº 31
+continua valendo inteira para a tela sem registro aberto.
+
+O registro tem largura própria em `clamp(288px, 24vw, 380px)`: fração da janela, com teto
+para não virar um painel largo e vazio em monitor grande, e piso para a linha do registro
+continuar cabendo sem quebrar em três. E o carimbo da versão (decisão nº 44) mudou de
+lugar no DOM: ele é do CAMPO, não da tela, e no canto da tela o registro aberto passaria
+por cima dele.
+
+O que NÃO mudou: a janela de pergunta, a de reação e a faixa de virada de fase seguem
+sendo de tela cheia, por cima de tudo — inclusive do registro. Elas param a partida; o
+registro não.
+
+Verificado no navegador (Chrome headless por CDP) em 1920x1080, 1600x1000 e 1280x720, com
+o registro aberto e fechado, em treino vs bot: mulligan, carta escolhida na mão com os
+botões, invocação do bot, janela de reação e criatura em campo. Sem rolagem horizontal em
+nenhuma das três larguras e sem erro de console. 471 testes e `typecheck` verdes.

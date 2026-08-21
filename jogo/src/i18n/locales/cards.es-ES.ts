@@ -322,4 +322,8 @@ export const cards: CardTexts = {
     name: 'Llamado de los Muertos',
     text: 'Recluta del descarte enemigo una criatura que haya sido abatida este turno.\nEsa criatura pasa a ser de tipo Zombi mientras esté en el campo.',
   },
+  79: {
+    name: 'asf',
+    text: 'asf',
+  },
 };

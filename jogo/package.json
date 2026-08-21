@@ -1,7 +1,7 @@
 {
   "name": "ezone-tcg",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Ezone TCG online - engine deterministico, servidor autoritativo e cliente React",
   "engines": {

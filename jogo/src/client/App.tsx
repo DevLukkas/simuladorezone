@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { ALL_CARDS } from '../data/cards.ts';
+import { PLAYABLE_CARDS } from '../data/cards.ts';
 import { MAX_COPIES, MAX_DECK_CARDS } from '../data/deckRules.ts';
 import { useMatchStore } from './stores/matchStore.ts';
 import { useSessionStore } from './stores/sessionStore.ts';
 import { useDecksStore, activeDeckOf } from './stores/decksStore.ts';
+import { useHistoryStore } from './stores/historyStore.ts';
 import { AppShell, type Screen } from './components/AppShell.tsx';
 import { CardZoom } from './components/CardZoom.tsx';
 import { Board } from './components/Board.tsx';
@@ -12,6 +13,7 @@ import { Hub } from './screens/Hub.tsx';
 import { Collection } from './screens/Collection.tsx';
 import { DeckBuilder } from './screens/DeckBuilder.tsx';
 import { Lobby } from './screens/Lobby.tsx';
+import { History } from './screens/History.tsx';
 import { Studio } from './screens/Studio.tsx';
 import { useAdminStore } from './stores/adminStore.ts';
 import { api } from './services/api.ts';
@@ -22,16 +24,19 @@ import { useTranslation } from './useTranslation.ts';
  * em andamento é o tabuleiro; o resto é o console (decisão nº 29), que embrulha
  * hub, construtor, coleção, online e estúdio numa moldura só.
  *
- * Login e tabuleiro seguem no tema anterior — ficaram de fora desta leva de
- * redesign de propósito, e por isso não moram dentro do `AppShell`.
+ * Login e tabuleiro não moram dentro do `AppShell` porque não têm a trilha do
+ * console: são tela cheia, no mesmo tema (decisão nº 31).
  */
 export function App() {
   const { session } = useSessionStore();
   const { view, startTraining, startOnline } = useMatchStore();
   const [screen, setScreen] = useState<Screen>('hub');
-  const { enabled: studioEnabled, checkEnabled } = useAdminStore();
+  const { enabled: studioEnabled, checkEnabled, leave: leaveStudio } = useAdminStore();
   const { load } = useDecksStore();
   const deck = useDecksStore(activeDeckOf);
+  // a contagem do arquivo é o subtítulo da barra do topo; reativa, para aparecer
+  // quando a lista terminar de carregar
+  const historyCount = useHistoryStore((state) => state.entries?.length ?? 0);
   const { t } = useTranslation();
 
   // o estúdio de cartas só existe quando o servidor sobe com --admin
@@ -75,14 +80,15 @@ export function App() {
     for (const [cardId, amount] of Object.entries(deck.cards)) {
       for (let copy = 0; copy < amount; copy++) cards.push(Number(cardId));
     }
-    startTraining({ hero: deck.hero, cards, format: deck.format ?? 'classic' });
+    startTraining({ hero: deck.hero, cards, name: deck.name });
   }
 
   const heading = {
     hub: [t('hub.title'), t('hub.subtitle')],
     builder: [t('decks.title'), t('decks.subtitle', { max: MAX_DECK_CARDS, copies: MAX_COPIES })],
-    collection: [t('collection.title'), t('collection.subtitle', { count: ALL_CARDS.length })],
+    collection: [t('collection.title'), t('collection.subtitle', { count: PLAYABLE_CARDS.length })],
     online: [t('lobby.title'), t('lobby.subtitle')],
+    history: [t('history.title'), t('history.subtitle', { count: historyCount })],
     studio: [t('admin.title'), t('admin.subtitle')],
   }[screen];
 
@@ -90,7 +96,11 @@ export function App() {
     <>
       <AppShell
         screen={screen}
-        onNavigate={setScreen}
+        onNavigate={(next) => {
+          // sair do estúdio pela trilha passa pela mesma guarda do rascunho não gravado
+          if (screen === 'studio' && next !== 'studio') leaveStudio(() => setScreen(next));
+          else setScreen(next);
+        }}
         title={heading[0]!}
         subtitle={heading[1]!}
         studioEnabled={studioEnabled === true}
@@ -98,21 +108,15 @@ export function App() {
         {screen === 'hub' && <Hub onNavigate={setScreen} onTrain={train} />}
         {screen === 'builder' && <DeckBuilder />}
         {screen === 'collection' && <Collection />}
+        {screen === 'history' && <History />}
         {screen === 'online' && (
           <Lobby
             onEnterMatch={(matchId) => void startOnline(matchId)}
             onOpenBuilder={() => setScreen('builder')}
           />
         )}
-        {/*
-          O estúdio é ferramenta de bastidor e segue no tema anterior por dentro
-          (decisão nº 26): entra na moldura como está, dentro da própria rolagem.
-        */}
-        {screen === 'studio' && (
-          <div className="min-h-0 flex-1 overflow-auto">
-            <Studio onBack={() => setScreen('hub')} />
-          </div>
-        )}
+        {/* o estúdio cuida da própria rolagem: cada uma das três abas rola sozinha */}
+        {screen === 'studio' && <Studio onBack={() => setScreen('hub')} />}
       </AppShell>
       <CardZoom />
     </>

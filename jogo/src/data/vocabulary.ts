@@ -26,6 +26,7 @@ import {
 } from './types.ts';
 import type {
   ActionKind,
+  ActionTarget,
   ActivatedAbility,
   ActivationCondition,
   ActivationCost,
@@ -37,7 +38,10 @@ import type {
   PerCardCount,
   ScenarioEffect,
   TriggeredAbility,
+  TriggerType,
 } from './types.ts';
+/** só o tipo: `src/data` não depende do i18n em tempo de execução */
+import type { TextKey } from '../i18n/keys.ts';
 
 // ---------------------------------------------------------------------------
 // A gramática do descritor
@@ -360,6 +364,36 @@ export const CARD_BLOCKS: Record<CardType, Partial<Record<BlockName, BlockKind>>
   command: { effects: 'action' },
   scenario: { effects: 'scenario' },
 };
+
+// ---------------------------------------------------------------------------
+// Cobertura das descrições
+// ---------------------------------------------------------------------------
+
+/**
+ * O estúdio mostra o identificador CRU (`add_marker`, `until_end_of_turn`) e a
+ * descrição do que ele faz ao lado, que sai do dicionário em `vocab.*`.
+ *
+ * Estas asserções são o que impede a descrição de ficar para trás do motor: ação,
+ * gatilho, efeito contínuo, custo ou alvo novo sem a chave correspondente em
+ * `pt-BR.ts` e o projeto NÃO COMPILA — o mesmo acordo que o `SpecFor` faz com os
+ * campos, um degrau acima.
+ *
+ * Vale só para as listas fechadas. Nome de campo é string livre (o descritor pode
+ * inventar um), então `vocab.field.*` fica sem rede: campo sem descrição só deixa
+ * de ganhar a dica.
+ */
+type Described<T extends true> = T;
+type Covers<Prefix extends string, Members extends string> =
+  `${Prefix}${Members}` extends TextKey ? true : false;
+
+export type ActionsDescribed = Described<Covers<'vocab.action.', ActionKind['type']>>;
+export type TriggersDescribed = Described<Covers<'vocab.trigger.', TriggerType>>;
+export type ContinuousDescribed = Described<Covers<'vocab.continuous.', ContinuousEffect['type']>>;
+export type ScenarioDescribed = Described<Covers<'vocab.scenario.', ScenarioEffect['type']>>;
+export type CostsDescribed = Described<Covers<'vocab.cost.', ActivationCost['type']>>;
+export type TargetsDescribed = Described<Covers<'vocab.target.', ActionTarget>>;
+export type BlocksDescribed = Described<Covers<'vocab.block.', BlockName>>;
+export type KindsDescribed = Described<Covers<'vocab.kind.', BlockKind>>;
 
 /** campos de identidade que só existem em criatura */
 export const CREATURE_ONLY: readonly string[] = [

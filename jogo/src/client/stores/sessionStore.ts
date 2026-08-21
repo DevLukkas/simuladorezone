@@ -13,7 +13,8 @@ interface SessionState {
   session: Session | null;
   error: TextRef | null;
   busy: boolean;
-  signInAsGuest: (nickname: string) => Promise<void>;
+  /** o apelido é sorteado pelo servidor (`Summoner-XXXXXX`): a tela não escolhe nome */
+  signInAsGuest: () => Promise<void>;
   signUp: (email: string, password: string, nickname: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => void;
@@ -44,8 +45,7 @@ export const useSessionStore = create<SessionState>((set) => {
     error: null,
     busy: false,
 
-    signInAsGuest: (nickname) =>
-      authenticate(() => api<SessionReply>('POST', '/api/guest', { nickname })),
+    signInAsGuest: () => authenticate(() => api<SessionReply>('POST', '/api/guest', {})),
 
     signUp: (email, password, nickname) =>
       authenticate(() => api<SessionReply>('POST', '/api/accounts', { email, password, nickname })),

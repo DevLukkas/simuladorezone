@@ -3,8 +3,8 @@ import { asInt, text } from './db.ts';
 import { withAccount } from './accounts.ts';
 import { deckForMatch } from './decks.ts';
 import { created, ok, rejected } from './http.ts';
+import { fuse } from './rateLimit.ts';
 import { createOnlineMatch, currentMatchOfAccount } from './matches.ts';
-import type { Format } from '../src/data/types.ts';
 import type { Db } from './db.ts';
 import type { Route } from './http.ts';
 
@@ -18,11 +18,22 @@ interface QueueEntry {
   deckId: number;
 }
 
-// uma fila POR formato: parear decks de formatos diferentes daria uma partida
-// impossível, então quem entra com deck novo só encontra quem também está no novo
-const queues = new Map<Format, QueueEntry>();
+// uma fila só: com formato único (decisão nº 37) qualquer deck pareia com qualquer
+// outro, então quem chega encontra quem já estava esperando
+let waiting: QueueEntry | null = null;
 
 const ROOM_TTL_HOURS = 2;
+
+/**
+ * Fusível de PALPITE de código de sala, por conta.
+ *
+ * `EZ-XXXX` num alfabeto de 32 letras dá ~1 milhão de combinações, e uma sala
+ * aberta vive 2 horas: sem teto, um laço de `fetch` varre o espaço inteiro e
+ * entra na sala de quem estava esperando um amigo. Só o palpite ERRADO conta —
+ * quem digitou o código certo passa direto, e errar o código algumas vezes
+ * continua sendo uma tarde ruim e não um ataque.
+ */
+const joinFuse = fuse(20, 10 * 60);
 
 // alfabeto sem 0/O/1/I para código ditável por voz
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -39,7 +50,7 @@ function validDeckFromBody(
   db: Db,
   accountId: number,
   body: unknown,
-): { deckId: number; hero: string; cards: number[]; format: Format } | null {
+): { deckId: number; deckName: string; hero: string; cards: number[] } | null {
   if (typeof body !== 'object' || body === null) return null;
   const deckId = Number((body as Record<string, unknown>).deckId);
   if (!Number.isInteger(deckId)) return null;
@@ -60,41 +71,39 @@ export const roomRoutes = (db: Db): Route[] => [
       const deck = validDeckFromBody(db, account.id, request.body);
       if (!deck) return rejected(400, 'choose_a_deck');
 
-      const wait = queues.get(deck.format);
+      const wait = waiting;
       if (wait && wait.accountId !== account.id) {
-        queues.delete(deck.format);
+        waiting = null;
         const waitingDeck = deckForMatch(db, wait.accountId, wait.deckId);
-        if (waitingDeck && waitingDeck.format === deck.format) {
+        if (waitingDeck) {
           const matchId = createOnlineMatch(
             db,
             { accountId: wait.accountId, nickname: wait.nickname, ...waitingDeck },
             {
               accountId: account.id,
               nickname: account.nickname,
+              deckName: deck.deckName,
               hero: deck.hero,
               cards: deck.cards,
-              format: deck.format,
             },
           );
           return created({ matchId });
         }
       }
 
-      queues.set(deck.format, {
+      waiting = {
         accountId: account.id,
         nickname: account.nickname,
         deckId: deck.deckId,
-      });
-      return ok({ waiting: true, format: deck.format });
+      };
+      return ok({ waiting: true });
     }),
   },
   {
     method: 'DELETE',
     pattern: '/api/queue',
     handle: withAccount(db, (_pedido, account) => {
-      for (const [format, wait] of queues) {
-        if (wait.accountId === account.id) queues.delete(format);
-      }
+      if (waiting?.accountId === account.id) waiting = null;
       return ok({ saiu: true });
     }),
   },
@@ -137,15 +146,17 @@ export const roomRoutes = (db: Db): Route[] => [
         code,
         expiresAt,
       );
-      if (!room) return rejected(404, 'room_not_found');
+      if (!room) {
+        const wait = joinFuse(String(account.id));
+        return wait > 0
+          ? rejected(429, 'too_many_attempts', { seconds: wait })
+          : rejected(404, 'room_not_found');
+      }
 
       const hostId = asInt(room.host_account);
       if (hostId === account.id) return rejected(409, 'own_room');
       const hostDeck = deckForMatch(db, hostId, asInt(room.host_deck));
       if (!hostDeck) return rejected(409, 'host_deck_gone');
-      if (hostDeck.format !== deck.format) {
-        return rejected(409, 'format_mismatch');
-      }
       const hostNickname =
         text(db.one('SELECT nickname FROM accounts WHERE id = ?', hostId)?.nickname) || 'Jogador';
 
@@ -155,9 +166,9 @@ export const roomRoutes = (db: Db): Route[] => [
         {
           accountId: account.id,
           nickname: account.nickname,
+          deckName: deck.deckName,
           hero: deck.hero,
           cards: deck.cards,
-          format: deck.format,
         },
       );
       db.run('UPDATE rooms SET match_id = ? WHERE id = ?', matchId, asInt(room.id));

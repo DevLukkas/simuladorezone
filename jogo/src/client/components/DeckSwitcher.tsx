@@ -52,8 +52,7 @@ export function DeckSwitcher({
                 <span className="flex min-w-0 flex-1 flex-col gap-1">
                   <span className="zn-head truncate text-[20px] tracking-[0.07em]">{deck.name}</span>
                   <span className="zn-num truncate text-[9.5px] uppercase tracking-[0.14em] text-zn-muted">
-                    {t(`hero.${deck.hero}.name` as TextKey)} · {total}/{MAX_DECK_CARDS} ·{' '}
-                    {t(`format.${deck.format ?? 'classic'}`)}
+                    {t(`hero.${deck.hero}.name` as TextKey)} · {total}/{MAX_DECK_CARDS}
                   </span>
                 </span>
               </button>

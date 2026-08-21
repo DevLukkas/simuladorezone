@@ -203,17 +203,27 @@ function topLevelBlocks(source: string, open: number): { blocks: SourceBlock[]; 
  */
 const ID_IN_BLOCK = /\bid:\s*(\d+)/;
 
-/** o `name:` da carta vem antes de qualquer bloco, então o primeiro é sempre o dela */
-const NAME_IN_BLOCK = /\bname:\s*'((?:[^'\\]|\\.)*)'/;
-
 const ESCAPES: Record<string, string> = { n: '\n', r: '\r', t: '\t' };
 
-/** Lê o nome direto do literal, sem avaliar código — só para conferir repetição. */
-export function nameInBlock(literal: string): string | null {
-  const found = NAME_IN_BLOCK.exec(literal);
+/**
+ * Lê um campo de TEXTO do literal, sem avaliar código.
+ *
+ * Serve para o servidor perguntar UMA coisa da carta que está no arquivo — o nome
+ * (conferir repetição), a situação na esteira (só arquivada se apaga), o arquivo
+ * de arte (só some da biblioteca a arte que ninguém usa) — sem depender do
+ * catálogo importado, que no servidor é o de quando ele subiu.
+ *
+ * Os campos de identidade vêm ANTES de qualquer bloco aninhado, então a primeira
+ * ocorrência no literal é sempre a da carta, e não a de uma habilidade dentro dela.
+ */
+export function textFieldInBlock(literal: string, field: string): string | null {
+  const found = new RegExp(`\\b${field}:\\s*'((?:[^'\\\\]|\\\\.)*)'`).exec(literal);
   if (!found) return null;
   return found[1]!.replace(/\\(.)/g, (_, char: string) => ESCAPES[char] ?? char);
 }
+
+/** o nome da carta: o campo por onde se confere repetição antes de gravar */
+export const nameInBlock = (literal: string): string | null => textFieldInBlock(literal, 'name');
 
 export interface CatalogArray {
   blocks: Map<number, SourceBlock>;

@@ -46,30 +46,36 @@ export const EDITIONS = listOf({
 } satisfies Record<Edition, true>);
 
 /**
- * Formato de jogo: que cartas são legais e que regras valem numa partida.
+ * Em que ponto da esteira a carta está (decisão nº 41).
  *
- * `classico` é o conjunto que já existia; `quatro-elementos` é o desenho novo, adotado
- * como direção sem derrubar o anterior (decisão nº 11). Os dois convivem para poderem
- * ser jogados em paralelo; quando um for descartado, apagar o membro desta união faz o
- * compilador apontar cada ponto que precisa sair junto.
+ * - `draft` — sendo escrita no estúdio; existe no catálogo, não existe no jogo;
+ * - `review` — pronta para alguém conferir regra, texto e arte;
+ * - `published` — vale em jogo: é a ÚNICA situação que entra em `PLAYABLE_CARDS`;
+ * - `archived` — tirada de circulação sem ser apagada. É a antessala do apagar:
+ *   o estúdio só oferece excluir do arquivo, nunca direto do catálogo vivo.
  *
- * Vive no `EstadoDoJogo`, não em variável de build: servidor e cliente precisam
- * concordar por partida, e o replay determinístico depende disso.
+ * O campo é opcional e ausente quer dizer `published`: as 78 cartas que já
+ * estavam no jogo antes desta decisão não passaram por esteira nenhuma, e
+ * carimbá-las uma a uma seria escrever no arquivo uma revisão que não houve.
+ * Quem responde "em que situação esta carta está" é `cardStatus`, nunca o campo
+ * cru — ver `src/data/cards.ts`.
  */
-export type Format = 'classic' | 'four-elements';
+export type CardStatus = 'draft' | 'review' | 'published' | 'archived';
 
-export const FORMAT_BY_EDITION: Record<Edition, Format> = {
-  'Abismos & Profundezas': 'classic',
-  'Matilhas & Predadores': 'classic',
-  'Quatro Elementos': 'four-elements',
-};
+export const CARD_STATUSES = listOf({
+  draft: true,
+  review: true,
+  published: true,
+  archived: true,
+} satisfies Record<CardStatus, true>);
 
-export const FORMATS: readonly Format[] = ['classic', 'four-elements'];
-
-export const FORMAT_NAME: Record<Format, string> = {
-  classic: 'Clássico',
-  'four-elements': 'Quatro Elementos',
-};
+/*
+ * FORMATO ÚNICO (decisão nº 37). O Quatro Elementos nasceu como um segundo
+ * formato, com pool e fila próprios (decisão nº 11) — e o efeito prático era
+ * carta que "sumia" do construtor por estar do outro lado da divisa. Não há
+ * mais formato: `Edition` continua sendo a procedência da carta (ela vale para
+ * arte, texto e catálogo do estúdio), mas TODA carta é legal em TODO deck.
+ */
 export type Race =
   | 'Aquarium'
   | 'Amphibian'
@@ -495,6 +501,12 @@ interface BaseCard {
    * já batem com a palavra e seguem devendo o parágrafo).
    */
   behaviorPending?: true;
+  /**
+   * A situação da carta na esteira do estúdio (decisão nº 41). Ausente = `published`,
+   * que é o que as 78 cartas anteriores à esteira são. Só `published` chega ao jogo:
+   * a coleção, o construtor e a validação de deck leem `PLAYABLE_CARDS`.
+   */
+  status?: CardStatus;
 }
 
 export interface CreatureCard extends BaseCard {
@@ -556,14 +568,18 @@ export type AttachableCard = AbilityCard | ItemCard;
 // Heróis
 // ---------------------------------------------------------------------------
 
+/**
+ * O herói: o que o MOTOR e a tela precisam saber dele.
+ *
+ * Nome, raça de sabor e o texto do efeito NÃO estão aqui — são conteúdo para o
+ * jogador ler, e vivem no dicionário em `hero.<key>.*`, como qualquer outra frase
+ * (invariante 8). Ficaram duplicados neste arquivo até 2026-08-19, em português e
+ * sem ninguém ler: a interface já resolvia tudo por `t()`.
+ */
 export interface Hero {
   key: 'tennor' | 'ispisher' | 'gimlou' | 'badur' | 'morgon';
-  name: string;
-  /** raça de sabor (não participa dos filtros de criatura) */
-  race: string;
+  /** entra na regra: o baralho inicial sugerido casa herói e elemento */
   element: Element | null;
-  effectName: string;
-  effectText: string;
   /** retrato em /assets/heroes/ */
   img: string;
 }

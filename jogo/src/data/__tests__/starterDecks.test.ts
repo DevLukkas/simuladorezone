@@ -16,7 +16,6 @@ describe('decks prontos', () => {
         name: deck.name,
         hero: deck.hero,
         cards: deck.cards,
-        format: deck.format,
       });
       expect(problems, `${deck.key}: ${problems.join(' ')}`).toEqual([]);
     }

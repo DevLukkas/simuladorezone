@@ -92,7 +92,8 @@ describe('janela de reação com comandos', () => {
     expect(state.pending).toBeNull();
   });
 
-  test('ataque abre a janela depois de o combate resolver', () => {
+  /* decisão nº 38: a janela do ataque vem ANTES do combate, não depois dele */
+  test('ataque abre a janela com o combate ainda por resolver', () => {
     let state = readyMatch();
     const active = state.activeSide;
     const reactingSide = oppositeSide(active);
@@ -102,9 +103,57 @@ describe('janela de reação com comandos', () => {
 
     const result = reduce(state, { type: 'ATTACK', side: active, slot: 0 });
     expect(result.error).toBeUndefined();
-    expect(result.events.some((event) => event.type === 'DIRECT_DAMAGE')).toBe(true);
+    expect(result.events.some((event) => event.type === 'ATTACK_DECLARED')).toBe(true);
+    expect(result.events.some((event) => event.type === 'DIRECT_DAMAGE')).toBe(false);
     expect(result.state.pending?.reaction).toBe(true);
     expect(result.state.pending?.side).toBe(reactingSide);
+
+    // recusada a janela, o combate declarado resolve na sequência
+    const resolved = reduce(result.state, {
+      type: 'ANSWER',
+      side: reactingSide,
+      pendingId: result.state.pending!.id,
+      optionId: 'decline',
+    });
+    expect(resolved.events.some((event) => event.type === 'DIRECT_DAMAGE')).toBe(true);
+  });
+
+  /* o motivo de a janela ter mudado de lugar: o comando ainda muda o ataque */
+  test('comando jogado em reação ao ataque impede o ataque declarado', () => {
+    let state = readyMatch();
+    const active = state.activeSide;
+    const reactingSide = oppositeSide(active);
+    placeCreature(state, active, 0, 1);
+    const commandUid = putInHand(state, reactingSide, 21); // Riso Histérico
+    state = goToBattle(state, active);
+
+    const declared = reduce(state, { type: 'ATTACK', side: active, slot: 0 });
+    expect(declared.error).toBeUndefined();
+    state = answerOk(declared.state, commandUid);
+    const resolved = reduce(state, {
+      type: 'ANSWER',
+      side: reactingSide,
+      pendingId: state.pending!.id,
+      optionId: `${active}:0`,
+    });
+    expect(resolved.error).toBeUndefined();
+    expect(resolved.state.sides[active].field[0]?.cannotAttackUntilTurn).toBe(resolved.state.turn);
+    // o ataque declarado não chega a machucar ninguém
+    expect(resolved.events.some((event) => event.type === 'DIRECT_DAMAGE')).toBe(false);
+  });
+
+  /* decisão nº 39: o aviso sai mesmo sem nada para oferecer — é o que esconde a mão */
+  test('a janela avisa mesmo quando o oponente não tem resposta', () => {
+    let state = readyMatch();
+    const active = state.activeSide;
+    placeCreature(state, active, 0, 1);
+    state = goToBattle(state, active);
+
+    const result = reduce(state, { type: 'ATTACK', side: active, slot: 0 });
+    expect(result.state.pending).toBeNull();
+    const window = result.events.find((event) => event.type === 'REACTION_WINDOW');
+    expect(window).toBeDefined();
+    expect(window && 'side' in window && window.side).toBe(oppositeSide(active));
   });
 
   test('com a janela aberta, o dono do turno fica travado até a resposta', () => {

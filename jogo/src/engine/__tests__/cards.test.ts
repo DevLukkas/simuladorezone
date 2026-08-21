@@ -422,7 +422,9 @@ describe('habilidades ativadas', () => {
     });
     const after = state.sides[side].field[0]!;
     expect(after.attachments.length).toBe(1);
-    expect(after.cannotAttackUntilTurn).toBe(state.turn + 1);
+    // "não pode atacar durante o SEU próximo turno": o dono é o lado ativo, e o
+    // próximo turno dele é dois à frente (decisão nº 33)
+    expect(after.cannotAttackUntilTurn).toBe(state.turn + 2);
 
     const again = reduce(state, {
       type: 'ACTIVATE_ABILITY',

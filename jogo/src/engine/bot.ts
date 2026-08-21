@@ -3,7 +3,12 @@ import { isAttachable } from './cardsInPlay.ts';
 import type { Command } from './commands.ts';
 import { canBeAttackTarget } from './combat.ts';
 import { oppositeSide, type GameState, type SideId } from './state.ts';
-import { canAttachTo, canAttack, canBeSummonedNormally } from './targeting.ts';
+import {
+  canAttachTo,
+  canAttack,
+  canBeSummonedNormally,
+  forcedAttackerSlot,
+} from './targeting.ts';
 
 /**
  * Bot heurístico mínimo (paridade com o soloAi do legado): invoca a primeira
@@ -68,6 +73,11 @@ export function decideCommand(state: GameState, side: SideId): Command | null {
 
     return { type: 'ADVANCE_PHASE', side };
   }
+
+  // criatura obrigada a atacar (Marionete de Guerra) vai primeiro: é o ataque
+  // que o motor não deixa o turno terminar sem
+  const forced = forcedAttackerSlot(state, side);
+  if (forced !== null) return { type: 'ATTACK', side, slot: forced };
 
   const attackerSlot = owner.field.findIndex((creature, slot) => {
     if (creature === null || !canAttack(state, side, creature)) return false;

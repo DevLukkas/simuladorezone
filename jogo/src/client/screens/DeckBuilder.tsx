@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { cardById, cardExists, cardsOfFormat, formatOfCard } from '../../data/cards.ts';
+import { PLAYABLE_CARDS, cardById, cardExists } from '../../data/cards.ts';
 import { starterDecks } from '../../data/starterDecks.ts';
 import { heroByKey } from '../../data/heroes.ts';
 import { MAX_COPIES, MAX_DECK_CARDS, validateDeck } from '../../data/deckRules.ts';
-import { CARD_TYPES, FORMATS, type Card, type Format } from '../../data/types.ts';
+import { CARD_TYPES, type Card } from '../../data/types.ts';
 import type { TextKey } from '../../i18n/keys.ts';
 import { CardImage } from '../components/Card.tsx';
 import { FilterBar, INITIAL_FILTER, filterCards } from '../components/CardFilters.tsx';
@@ -18,6 +18,9 @@ import { countByElement, expandDeck } from '../deckStats.ts';
 
 type Draft = Omit<SavedDeck, 'id'> & { id?: number };
 
+/** as duas leituras do painel: o que o baralho É e o que o baralho TEM */
+type Tab = 'overview' | 'list';
+
 /**
  * O construtor: catálogo à esquerda, baralho à direita.
  *
@@ -25,10 +28,20 @@ type Draft = Omit<SavedDeck, 'id'> & { id?: number };
  * baralho pela trilha recarrega o rascunho, e é o botão de gravar que fecha o
  * ciclo. Sem ativo (recém-criado pela gaveta), abre um rascunho vazio.
  *
- * O painel da direita é o mesmo do desenho, na mesma ordem: herói, nome, mosaico
- * de 40 slots, curva de ataque, pendências e a lista do que já entrou. A ordem é
- * do mais decisivo ao mais miúdo, e a lista fica por último de propósito — é a
- * única parte que rola.
+ * O painel da direita é DE ABAS (decisão nº 42). Antes era uma pilha só, e a
+ * lista de cartas herdava o vão que sobrasse dos blocos fixos — que em 40 cartas
+ * é quase nada, e foi o "está bem espremida" do relato. Agora:
+ *
+ * - RESUMO é a leitura de montagem, na ordem em que se monta: carregar pronto,
+ *   nome, herói, curva, mosaico e pendências — os NÚMEROS do baralho;
+ * - CARTAS é a lista, com o painel inteiro para ela.
+ *
+ * A lista aparece numa aba só: repeti-la no fim do resumo devolvia o problema
+ * que a divisão veio resolver — a aba do resumo voltava a ser uma pilha alta com
+ * a lista espremida no fim dela.
+ *
+ * A barra de gravar fica FORA das abas, no rodapé do painel, que é o rodapé da
+ * tela: ela não rola com o conteúdo nem depende de qual aba está aberta.
  */
 export function DeckBuilder() {
   const { t } = useTranslation();
@@ -39,6 +52,7 @@ export function DeckBuilder() {
   const [filter, setFilter] = useState(INITIAL_FILTER);
   const [pickingHero, setPickingHero] = useState(false);
   const [testingHand, setTestingHand] = useState(false);
+  const [tab, setTab] = useState<Tab>('overview');
 
   // trocar de baralho ativo (ou criar um novo pela gaveta) recarrega o rascunho
   useEffect(() => {
@@ -48,8 +62,7 @@ export function DeckBuilder() {
 
   const inDeck = useMemo(() => expandDeck(draft.cards), [draft.cards]);
   const total = inDeck.length;
-  const format = draft.format ?? 'classic';
-  const pool = cardsOfFormat(format);
+  const pool = PLAYABLE_CARDS;
   const visible = filterCards(pool, filter);
   const problems = validateDeck(draft);
 
@@ -75,25 +88,6 @@ export function DeckBuilder() {
     });
   }
 
-  /** trocar de formato tira o que o formato novo não conhece — com aviso, que é trabalho perdido */
-  function changeFormat(next: Format) {
-    if (next === format) return;
-    const illegal = Object.keys(draft.cards)
-      .map(Number)
-      .filter((id) => !cardExists(id) || formatOfCard(cardById(id)) !== next);
-    if (illegal.length > 0) {
-      const wanted = window.confirm(
-        t('decks.switchFormat', { format: t(`format.${next}`), count: illegal.length }),
-      );
-      if (!wanted) return;
-    }
-    setDraft((current) => {
-      const cards = { ...current.cards };
-      for (const id of illegal) delete cards[id];
-      return { ...current, cards, format: next };
-    });
-  }
-
   function loadStarter(key: string) {
     const starter = starterDecks.find((deck) => deck.key === key);
     if (!starter) return;
@@ -103,7 +97,6 @@ export function DeckBuilder() {
       ...current,
       name,
       hero: starter.hero,
-      format: starter.format,
       cards: { ...starter.cards },
     }));
   }
@@ -143,92 +136,115 @@ export function DeckBuilder() {
       </div>
 
       {/*
-        O painel do deck é uma pilha de blocos fixos com a lista crescendo no vão
-        que sobrar. Em janela baixa (720px de altura) os blocos fixos sozinhos já
-        passam da altura: aí o painel INTEIRO rola, a lista para de encolher no
-        mínimo e a barra de gravar fica grudada no rodapé — antes disso ela saía
-        pela borda de baixo e não havia como salvar o baralho.
+        O painel do deck: abas em cima, conteúdo rolando no meio, barra de ação
+        embaixo. É uma coluna de altura fixa (`overflow-hidden`) com UM só
+        rolador dentro — o do conteúdo da aba. Foi assim que a barra de gravar
+        parou de acompanhar o painel: ela é irmã do rolador, não filha, e por
+        isso fica no rodapé da TELA, sem depender de onde a rolagem parou nem de
+        qual aba está aberta.
+
+        Abaixo de 1100px o `.zn-split` empilha as duas colunas e passa a ser o
+        rolador da página; ali a barra continua colada embaixo pelo `sticky`
+        (ver a regra do media query em styles.css).
       */}
-      <aside className="flex w-99 flex-none flex-col overflow-y-auto border-l border-zn-line bg-zn-bar">
-        <div className="flex flex-none flex-col gap-3.5 border-b border-zn-line px-4.5 py-4">
+      <aside className="flex w-110 flex-none flex-col overflow-hidden border-l border-zn-line bg-zn-bar">
+        <div className="zn-hair flex-none grid-cols-2 border-b border-zn-line">
           <button
             type="button"
-            onClick={() => setPickingHero(true)}
-            className="flex cursor-pointer items-center gap-3 border-0 bg-transparent p-0 text-left"
+            className={`zn-tab h-9 uppercase ${tab === 'overview' ? 'zn-tab-on' : ''}`}
+            onClick={() => setTab('overview')}
           >
-            <HeroBadge hero={draft.hero} size={56} />
-            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className="zn-label tracking-[0.24em] uppercase">{t('decks.hero')}</span>
-              <span className="zn-head text-[22px] tracking-[0.08em]">
-                {t(`hero.${draft.hero}.name` as TextKey)}
-              </span>
-              <span
-                className="zn-num text-[10px] uppercase tracking-[0.16em]"
-                style={{ color: heroColor(heroByKey(draft.hero)?.element ?? null) }}
-              >
-                {t(`hero.${draft.hero}.race` as TextKey)}
-              </span>
-            </span>
-            <span
-              className="zn-num shrink-0 px-2.5 py-1.5 text-[9px] uppercase tracking-[0.18em] text-zn-gold"
-              style={{ border: `1px solid ${ZN.gold}44` }}
-            >
-              {t('decks.swapHero')}
-            </span>
+            {t('decks.tab.overview')}
           </button>
-
-          <HeroEffect
-            hero={draft.hero}
-            color={heroColor(heroByKey(draft.hero)?.element ?? null)}
-          />
-
-          {/*
-            O formato manda em que cartas a grade oferece (decisão nº 27) e a fila
-            online pareia por ele, então ele fica ao lado do nome — não escondido
-            numa gaveta, como estava antes de o desenho novo entrar.
-          */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="zn-label mr-1 uppercase">{t('decks.format')}</span>
-            {FORMATS.map((option) => (
-              <button
-                key={option}
-                type="button"
-                className={`zn-tab ${format === option ? 'zn-tab-on' : ''}`}
-                onClick={() => changeFormat(option)}
-              >
-                {t(`format.${option}`)}
-              </button>
-            ))}
-            <select
-              className="zn-select ml-auto"
-              value=""
-              onChange={(event) => loadStarter(event.target.value)}
-            >
-              <option value="" disabled>
-                {t('decks.loadStarter')}
-              </option>
-              {starterDecks
-                .filter((starter) => starter.format === format)
-                .map((starter) => (
-                  <option key={starter.key} value={starter.key}>
-                    {t(`starterDeck.${starter.key}` as TextKey)}
-                  </option>
-                ))}
-            </select>
-          </div>
-
-          <input
-            className="zn-input h-11 w-full font-head text-[19px] font-semibold uppercase tracking-[0.07em]"
-            style={{ borderBottom: `2px solid ${ZN.gold}` }}
-            placeholder={t('decks.namePlaceholder')}
-            value={draft.name}
-            onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
-          />
+          <button
+            type="button"
+            className={`zn-tab h-9 uppercase ${tab === 'list' ? 'zn-tab-on' : ''}`}
+            onClick={() => setTab('list')}
+          >
+            {t('decks.tab.list')} · {total}
+          </button>
         </div>
 
-        <Mosaic cards={inDeck} total={total} />
-        <Diagnostics draft={draft} cards={inDeck} total={total} />
-        <DeckList draft={draft} onAdjust={adjust} />
+        {/*
+          A chave do rolador troca com a aba de propósito: voltar para o resumo
+          deve mostrar o topo do resumo, e não a altura em que a lista tinha
+          parado na outra aba.
+        */}
+        <div key={tab} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {tab === 'overview' && (
+            <>
+              {/*
+                A ordem é a de quem MONTA: primeiro a partida pronta (carregar um
+                deck inteiro), depois a identidade (nome e herói) e só então os
+                números do que foi montado.
+              */}
+              <div className="flex flex-none flex-col gap-3.5 border-b border-zn-line px-4.5 py-4">
+                {/* formato único (decisão nº 37): o catálogo inteiro cabe em qualquer deck */}
+                <select
+                  className="zn-select w-full"
+                  value=""
+                  onChange={(event) => loadStarter(event.target.value)}
+                >
+                  <option value="" disabled>
+                    {t('decks.loadStarter')}
+                  </option>
+                  {starterDecks.map((starter) => (
+                    <option key={starter.key} value={starter.key}>
+                      {t(`starterDeck.${starter.key}` as TextKey)}
+                    </option>
+                  ))}
+                </select>
+
+                <input
+                  className="zn-input h-11 w-full font-head text-[19px] font-semibold tracking-[0.07em] uppercase"
+                  style={{ borderBottom: `2px solid ${ZN.gold}` }}
+                  placeholder={t('decks.namePlaceholder')}
+                  value={draft.name}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, name: event.target.value }))
+                  }
+                />
+
+                <button
+                  type="button"
+                  onClick={() => setPickingHero(true)}
+                  className="flex cursor-pointer items-center gap-3 border-0 bg-transparent p-0 text-left"
+                >
+                  <HeroBadge hero={draft.hero} size={56} />
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="zn-label tracking-[0.24em] uppercase">{t('decks.hero')}</span>
+                    <span className="zn-head text-[22px] tracking-[0.08em]">
+                      {t(`hero.${draft.hero}.name` as TextKey)}
+                    </span>
+                    <span
+                      className="zn-num text-[10px] tracking-[0.16em] uppercase"
+                      style={{ color: heroColor(heroByKey(draft.hero)?.element ?? null) }}
+                    >
+                      {t(`hero.${draft.hero}.race` as TextKey)}
+                    </span>
+                  </span>
+                  <span
+                    className="zn-num shrink-0 px-2.5 py-1.5 text-[9px] tracking-[0.18em] text-zn-gold uppercase"
+                    style={{ border: `1px solid ${ZN.gold}44` }}
+                  >
+                    {t('decks.swapHero')}
+                  </span>
+                </button>
+
+                <HeroEffect
+                  hero={draft.hero}
+                  color={heroColor(heroByKey(draft.hero)?.element ?? null)}
+                />
+              </div>
+
+              <AttackCurve cards={inDeck} />
+              <Mosaic cards={inDeck} total={total} />
+              <Checks draft={draft} total={total} />
+            </>
+          )}
+
+          {tab === 'list' && <DeckList draft={draft} onAdjust={adjust} />}
+        </div>
 
         <div className="zn-hair sticky bottom-0 z-10 flex-none grid-cols-2 border-t border-zn-line">
           <button
@@ -414,14 +430,47 @@ function Mosaic({ cards, total }: { cards: Card[]; total: number }) {
   );
 }
 
-/** curva de ataque das criaturas + as pendências que impedem gravar */
-function Diagnostics({ draft, cards, total }: { draft: Draft; cards: Card[]; total: number }) {
+/**
+ * A curva de ataque das criaturas do baralho.
+ *
+ * Sem altura fixa: a coluna mais alta manda, e `items-end` alinha as outras pelo
+ * rodapé. Travar a fileira em 52px (como o protótipo fazia) empurrava a contagem
+ * do topo da barra mais alta para FORA da caixa, em cima da etiqueta.
+ */
+function AttackCurve({ cards }: { cards: Card[] }) {
   const { t } = useTranslation();
   const histogram = [0, 0, 0, 0, 0, 0];
   for (const card of cards) {
     if (card.type === 'creature') histogram[Math.min(card.attack, 5)]! += 1;
   }
   const tallest = Math.max(1, ...histogram);
+
+  return (
+    <div className="flex flex-none flex-col gap-2.5 border-b border-zn-line px-4.5 py-4">
+      <span className="zn-label tracking-[0.26em] uppercase">{t('decks.curve')}</span>
+      {/* uma coluna por valor de ataque, dividindo a largura do painel em partes iguais */}
+      <div className="grid min-h-19 grid-cols-6 items-end gap-1.5">
+        {histogram.map((amount, attack) => (
+          <div key={attack} className="flex flex-col items-center gap-1.5">
+            <span className="zn-num text-[9px] text-zn-faint">{amount || ''}</span>
+            <span
+              className="w-full"
+              style={{
+                height: Math.max(2, Math.round((amount / tallest) * 46)),
+                background: amount ? ZN.gold : ZN.line,
+              }}
+            />
+            <span className="zn-num text-[9px] text-zn-muted">{attack === 5 ? '5+' : attack}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** as pendências que impedem gravar — a resposta para "por que o botão não salva?" */
+function Checks({ draft, total }: { draft: Draft; total: number }) {
+  const { t } = useTranslation();
   const overCopies = Object.values(draft.cards).some((amount) => amount > MAX_COPIES);
 
   const checks = [
@@ -435,53 +484,30 @@ function Diagnostics({ draft, cards, total }: { draft: Draft; cards: Card[]; tot
   ];
 
   return (
-    <div className="flex flex-none items-end gap-5 border-b border-zn-line px-4.5 py-4">
-      <div className="flex flex-col gap-2.5">
-        <span className="zn-label tracking-[0.26em] uppercase">{t('decks.curve')}</span>
-        {/*
-          Sem altura fixa: a coluna mais alta manda, e `items-end` alinha as
-          outras pelo rodapé. Travar a fileira em 52px (como o protótipo fazia)
-          empurrava a contagem do topo da barra mais alta para FORA da caixa, em
-          cima da etiqueta "curva de ataque".
-        */}
-        <div className="flex min-h-19 items-end gap-1.5">
-          {histogram.map((amount, attack) => (
-            <div key={attack} className="flex w-5.5 flex-col items-center gap-1.5">
-              <span className="zn-num text-[9px] text-zn-faint">{amount || ''}</span>
-              <span
-                className="w-full"
-                style={{
-                  height: Math.max(2, Math.round((amount / tallest) * 46)),
-                  background: amount ? ZN.gold : ZN.line,
-                }}
-              />
-              <span className="zn-num text-[9px] text-zn-muted">
-                {attack === 5 ? '5+' : attack}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <ul className="flex flex-1 flex-col gap-1.5">
-        {checks.map((check) => (
-          <li
-            key={check.label}
-            className="zn-num flex items-center gap-2 text-[10px] uppercase tracking-[0.06em]"
-            style={{ color: check.ok ? ZN.green : ZN.red }}
-          >
-            <span aria-hidden className="w-3 text-center">
-              {check.ok ? '✓' : '×'}
-            </span>
-            {check.label}
-          </li>
-        ))}
-      </ul>
-    </div>
+    <ul className="flex flex-none flex-col gap-1.5 border-b border-zn-line px-4.5 py-4">
+      {checks.map((check) => (
+        <li
+          key={check.label}
+          className="zn-num flex items-center gap-2 text-[10px] tracking-[0.06em] uppercase"
+          style={{ color: check.ok ? ZN.green : ZN.red }}
+        >
+          <span aria-hidden className="w-3 text-center">
+            {check.ok ? '✓' : '×'}
+          </span>
+          {check.label}
+        </li>
+      ))}
+    </ul>
   );
 }
 
-/** o que já entrou no baralho, agrupado por tipo — a única parte que rola */
+/**
+ * O que já entrou no baralho, agrupado por tipo — a aba CARTAS inteira.
+ *
+ * NÃO rola sozinha: quem rola é o conteúdo da aba, e nesta aba ela é o único
+ * conteúdo. É por isso que a aba existe (decisão nº 42): a lista não divide mais
+ * altura com bloco nenhum.
+ */
 function DeckList({
   draft,
   onAdjust,
@@ -501,7 +527,7 @@ function DeckList({
 
   if (groups.length === 0) {
     return (
-      <div className="zn-num min-h-45 flex-1 overflow-auto px-4.5 py-6.5 text-[11px] uppercase leading-relaxed tracking-[0.1em] text-zn-ghost">
+      <div className="zn-num flex-none px-4.5 py-6.5 text-[11px] leading-relaxed tracking-[0.1em] text-zn-ghost uppercase">
         {t('decks.emptyDeck')}
         <br />
         {t('decks.emptyDeckHint')}
@@ -509,52 +535,79 @@ function DeckList({
     );
   }
 
+  /*
+    A lista estava espremida: linha de 22px de altura, nome truncado no meio e os
+    dois botões colados nele (relato do DevLukkas sobre o print). O que ela ganhou:
+
+    - MINIATURA da carta em cada linha — é por ela que se reconhece o que está no
+      deck, muito antes de ler o nome;
+    - ar de verdade (linha de 44px), com nome e estatística em duas linhas em vez
+      de brigarem pela mesma;
+    - cabeçalho de seção GRUDADO no topo da rolagem, para não se perder de qual
+      tipo é a linha que está sendo lida.
+
+    O relato voltou no print seguinte: com tudo isso, a lista continuava espremida
+    porque a ALTURA que sobrava para ela era o resto de uma pilha de cinco blocos.
+    Foi o que a aba de cartas resolveu (decisão nº 42) — lá o painel é dela.
+  */
   return (
-    <div className="min-h-45 flex-1 overflow-auto px-4.5 pb-4 pt-1.5">
+    <div className="flex-none px-4 pt-1.5 pb-4">
       {groups.map((group) => (
-        <section key={group.type} className="pt-3.5">
-          <h3 className="flex items-center gap-2.5 pb-2">
+        <section key={group.type} className="pt-3">
+          <h3 className="sticky top-0 z-1 flex items-center gap-2.5 bg-zn-bar pb-2 pt-1">
             <span className="zn-num text-[9px] uppercase tracking-[0.24em] text-zn-muted">
               {t(`cardType.${group.type}`)}
             </span>
             <span aria-hidden className="h-px flex-1 bg-zn-line" />
             <span className="zn-num text-[10px] text-zn-fainter">{group.total}</span>
           </h3>
-          {group.rows.map(({ card, amount }) => (
-            <div
-              key={card.id}
-              className="mb-0.75 grid items-center gap-2 bg-zn-panel px-2 py-1.5 [grid-template-columns:30px_1fr_auto_auto] hover:bg-zn-raise-hi"
-              style={{ borderLeft: `2px solid ${ELEMENT_COLOR[card.element]}` }}
-            >
-              <span className="zn-num text-[12px] font-bold text-zn-gold">×{amount}</span>
-              <span className="zn-name truncate text-[15px] tracking-[0.04em]">
-                {cardName(card.id)}
-              </span>
-              <span className="zn-num text-[10px] text-zn-faint">
-                {card.type === 'creature'
-                  ? `${card.attack}/${card.health}`
-                  : t(`element.${card.element}`)}
-              </span>
-              <span className="flex gap-0.75">
-                <button
-                  type="button"
-                  title={t('decks.removeOne')}
-                  onClick={() => onAdjust(card.id, -1)}
-                  className="zn-btn zn-btn-quiet zn-btn-undo h-5.5 w-5.5 text-[12px]"
+          <div className="flex flex-col gap-1">
+            {group.rows.map(({ card, amount }) => (
+              <div
+                key={card.id}
+                className="flex items-center gap-2.5 bg-zn-panel py-1.5 pl-2 pr-1.5 hover:bg-zn-raise-hi"
+                style={{ borderLeft: `2px solid ${ELEMENT_COLOR[card.element]}` }}
+              >
+                <span className="w-8 shrink-0 border border-zn-edge bg-zn-ink">
+                  <CardImage cardId={card.id} className="block w-full" />
+                </span>
+                <span
+                  className="zn-num w-6 shrink-0 text-[13px] font-bold"
+                  style={{ color: amount >= MAX_COPIES ? ZN.gold : ZN.goldLight }}
                 >
-                  −
-                </button>
-                <button
-                  type="button"
-                  title={t('decks.addOne')}
-                  onClick={() => onAdjust(card.id, 1)}
-                  className="zn-btn zn-btn-quiet h-5.5 w-5.5 text-[12px]"
-                >
-                  +
-                </button>
-              </span>
-            </div>
-          ))}
+                  ×{amount}
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="zn-name truncate text-[15px] leading-tight tracking-[0.04em]">
+                    {cardName(card.id)}
+                  </span>
+                  <span className="zn-num text-[9px] uppercase tracking-[0.12em] text-zn-faint">
+                    {card.type === 'creature'
+                      ? `${card.attack}/${card.health} · ${t(`element.${card.element}`)}`
+                      : t(`element.${card.element}`)}
+                  </span>
+                </span>
+                <span className="flex shrink-0 gap-0.75">
+                  <button
+                    type="button"
+                    title={t('decks.removeOne')}
+                    onClick={() => onAdjust(card.id, -1)}
+                    className="zn-btn zn-btn-quiet zn-btn-undo h-6.5 w-6.5 text-[13px]"
+                  >
+                    −
+                  </button>
+                  <button
+                    type="button"
+                    title={t('decks.addOne')}
+                    onClick={() => onAdjust(card.id, 1)}
+                    className="zn-btn zn-btn-quiet h-6.5 w-6.5 text-[13px]"
+                  >
+                    +
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
         </section>
       ))}
     </div>
@@ -562,5 +615,5 @@ function DeckList({
 }
 
 function blank(name: string): Draft {
-  return { name, hero: 'badur', cards: {}, format: 'classic' };
+  return { name, hero: 'badur', cards: {} };
 }

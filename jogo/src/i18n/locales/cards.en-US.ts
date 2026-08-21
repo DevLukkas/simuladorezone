@@ -326,4 +326,8 @@ export const cards: CardTexts = {
     name: 'Call of the Dead',
     text: 'Recruit from the enemy discard pile a creature that was defeated this turn.\nThat creature becomes a Zombie while it is on the field.',
   },
+  79: {
+    name: 'asf',
+    text: 'asf',
+  },
 };

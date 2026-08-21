@@ -3,12 +3,15 @@ import {
   cardName,
   cardRulesText,
   getLocale,
+  hasText,
   resolve,
+  resolveParts,
   setLocale,
   subscribeToLocale,
   t,
   tokenName,
   type Locale,
+  type TextPart,
 } from '../i18n/index.ts';
 import type { TextRef } from '../shared/text.ts';
 
@@ -19,7 +22,11 @@ import type { TextRef } from '../shared/text.ts';
  */
 export function useTranslation(): {
   t: typeof t;
+  /** existe texto para esta chave? (chave montada em runtime, ver `hasText`) */
+  hasText: (key: string) => boolean;
   resolve: (ref: TextRef) => string;
+  /** a mesma frase do `resolve`, em pedaços etiquetados — ver `resolveParts` */
+  resolveParts: (ref: TextRef) => TextPart[];
   cardName: (cardId: number) => string;
   cardRulesText: (cardId: number) => string | null;
   tokenName: (tokenId: string) => string;
@@ -27,5 +34,15 @@ export function useTranslation(): {
   setLocale: (locale: Locale) => void;
 } {
   const locale = useSyncExternalStore(subscribeToLocale, getLocale, getLocale);
-  return { t, resolve, cardName, cardRulesText, tokenName, locale, setLocale };
+  return {
+    t,
+    hasText,
+    resolve,
+    resolveParts,
+    cardName,
+    cardRulesText,
+    tokenName,
+    locale,
+    setLocale,
+  };
 }

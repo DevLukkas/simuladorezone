@@ -61,6 +61,9 @@ export function viewFor(state: GameState, side: SideId): GameView {
             title: pending.title,
             options: pending.options,
             canDecline: pending.canDecline,
+            ...(pending.sourceCardId === undefined
+              ? {}
+              : { sourceCardId: pending.sourceCardId }),
             ...(pending.reaction ? { reaction: true as const } : {}),
           }
         : null,

@@ -28,8 +28,16 @@ import {
   readCatalogArray,
   readTranslationMap,
   removeBlock,
+  textFieldInBlock,
   upsertBlock,
 } from './cardSource.ts';
+import {
+  ART_EXTENSIONS,
+  LIBRARY_FILE,
+  listArt,
+  readMarks,
+  writeMarks,
+} from './artLibrary.ts';
 import type { Card, CardType } from '../src/data/types.ts';
 import type { Db } from './db.ts';
 import type { TextKey } from '../src/i18n/keys.ts';
@@ -176,16 +184,48 @@ async function dropTranslations(root: string, id: number): Promise<void> {
 // Ilustração
 // ---------------------------------------------------------------------------
 
-const ART_EXTENSIONS = ['.png', '.webp', '.jpg'];
-
 /** nome de arquivo cru: sem pasta, sem `..`, com extensão de imagem conhecida */
 function safeArtName(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const name = value.trim();
   if (!name || name !== path.basename(name)) return null;
+  if (name === LIBRARY_FILE) return null;
   if (!ART_EXTENSIONS.includes(path.extname(name).toLowerCase())) return null;
   return name;
 }
+
+/**
+ * Arquivo de arte → a carta que o usa, lido dos ARQUIVOS do catálogo.
+ *
+ * Duas fontes, porque a carta aponta a ilustração de dois jeitos: `art` é o campo
+ * declarado (Quatro Elementos e tudo que nasce no estúdio) e `img` é a carta
+ * impressa do clássico, de onde a ilustração foi recortada com o mesmo nome e
+ * extensão `.webp` (ver `caminhoDaArte` no cliente). Sem a segunda, as 45 artes
+ * clássicas apareceriam na biblioteca como "sem carta" e seriam apagáveis.
+ */
+async function artOwners(root: string): Promise<Map<string, number>> {
+  const owners = new Map<string, number>();
+
+  const claim = (file: string | null, id: number) => {
+    if (file && !owners.has(file)) owners.set(file, id);
+  };
+
+  for (const where of Object.values(CATALOG_FILES)) {
+    const source = await fs.readFile(path.join(places(root).data, where.file), 'utf8');
+    const found = readCatalogArray(source, where.exportName);
+    for (const [id, block] of found.blocks) {
+      const literal = source.slice(block.start, block.end);
+      claim(textFieldInBlock(literal, 'art'), id);
+      const printed = textFieldInBlock(literal, 'img');
+      claim(printed === null ? null : printed.replace(/\.png$/, '.webp'), id);
+    }
+  }
+
+  return owners;
+}
+
+/** a biblioteca inteira: disco + marcas + dono de cada arquivo */
+const artFiles = async (root: string) => listArt(places(root).art, await artOwners(root));
 
 // ---------------------------------------------------------------------------
 // As rotas
@@ -213,6 +253,22 @@ export const adminRoutes = (db: Db, options: AdminOptions | null): Route[] => {
 
   return [
     status,
+    {
+      /**
+       * "A chave que eu guardei ainda vale?" — a portaria do cliente pergunta isto ao
+       * ABRIR a tela. Sem `EZONE_ADMIN_KEY` a chave é sorteada a cada `--admin`, então
+       * reiniciar o servidor mata a que está no navegador; sem esta pergunta o autor só
+       * descobria isso ao tentar GRAVAR, com a carta já editada.
+       *
+       * Passa pela MESMA guarda das rotas de escrita (conta E chave): responder 200 aqui
+       * é a promessa de que gravar vai ser aceito. É também por isso que ela não é uma
+       * bandeira no `/api/admin/status`, que atende sem conta nenhuma — quem quiser
+       * adivinhar a chave continua tendo de estar logado para ouvir "não".
+       */
+      method: 'GET',
+      pattern: '/api/admin/access',
+      handle: guarded(() => ok({ allowed: true })),
+    },
     {
       method: 'PUT',
       pattern: '/api/admin/cards/:id',
@@ -250,6 +306,12 @@ export const adminRoutes = (db: Db, options: AdminOptions | null): Route[] => {
       }),
     },
     {
+      /**
+       * Apagar é o fim de uma esteira, não um atalho (decisão nº 41): só sai do
+       * catálogo a carta que já está ARQUIVADA. Quem confere é o servidor, lendo a
+       * situação do literal que está no arquivo — o cliente manda o pedido, mas
+       * quem sabe o que está gravado é quem grava.
+       */
       method: 'DELETE',
       pattern: '/api/admin/cards/:id',
       handle: guarded(async (request) => {
@@ -259,10 +321,91 @@ export const adminRoutes = (db: Db, options: AdminOptions | null): Route[] => {
 
         const where = CATALOG_FILES[previous.type];
         const found = readCatalogArray(previous.source, where.exportName);
+        const block = found.blocks.get(id)!;
+        const literal = previous.source.slice(block.start, block.end);
+        // campo ausente é `published`: as cartas anteriores à esteira também passam por aqui
+        if (textFieldInBlock(literal, 'status') !== 'archived') {
+          return rejected(409, 'card_not_archived');
+        }
+
         await fs.writeFile(previous.file, removeBlock(previous.source, found, id), 'utf8');
         await dropTranslations(root, id);
 
         return ok({ id, removed: true });
+      }),
+    },
+    {
+      method: 'GET',
+      pattern: '/api/admin/art',
+      handle: guarded(async () => ok({ files: await artFiles(root) })),
+    },
+    {
+      /**
+       * As marcas da ilustração: arte final e arquivada (decisão nº 41). Vêm juntas
+       * numa rota só porque são o mesmo gesto — dizer o que este arquivo é —, e
+       * porque desarquivar tem de ser tão fácil quanto arquivar.
+       */
+      method: 'PATCH',
+      pattern: '/api/admin/art/:file',
+      handle: guarded(async (request) => {
+        const name = safeArtName(request.params.file);
+        if (!name || !isObject(request.body)) return rejected(400, 'art_malformed');
+
+        const folder = places(root).art;
+        const exists = await fs
+          .stat(path.join(folder, name))
+          .then(() => true)
+          .catch(() => false);
+        if (!exists) return rejected(404, 'art_not_found');
+
+        const marks = await readMarks(folder);
+        for (const [key, set] of [
+          ['final', marks.final],
+          ['archived', marks.archived],
+        ] as const) {
+          const wanted = request.body[key];
+          if (wanted === undefined) continue;
+          if (typeof wanted !== 'boolean') return rejected(400, 'art_malformed');
+          if (wanted) set.add(name);
+          else set.delete(name);
+        }
+        await writeMarks(folder, marks);
+
+        const files = await artFiles(root);
+        return ok({ file: files.find((art) => art.file === name) ?? null });
+      }),
+    },
+    {
+      /**
+       * Apagar a imagem do disco. Duas travas, e as duas são do servidor:
+       *
+       * - só o que está ARQUIVADO some, pelo mesmo motivo da carta;
+       * - arte que uma carta usa não some nem arquivada, senão a carta publicada
+       *   fica apontando para um endereço que não responde mais.
+       */
+      method: 'DELETE',
+      pattern: '/api/admin/art/:file',
+      handle: guarded(async (request) => {
+        const name = safeArtName(request.params.file);
+        if (!name) return rejected(400, 'art_malformed');
+
+        const files = await artFiles(root);
+        const art = files.find((entry) => entry.file === name);
+        if (!art) return rejected(404, 'art_not_found');
+        if (!art.archived) return rejected(409, 'art_not_archived');
+        if (art.usedBy !== null) return rejected(409, 'art_in_use', { id: art.usedBy });
+
+        const folder = places(root).art;
+        await fs.rm(path.join(folder, name), { force: true });
+
+        // a marca some junto: arquivo apagado que continuasse listado como arquivado
+        // faria a biblioteca crescer de fantasmas a cada exclusão
+        const marks = await readMarks(folder);
+        marks.final.delete(name);
+        marks.archived.delete(name);
+        await writeMarks(folder, marks);
+
+        return ok({ file: name, removed: true });
       }),
     },
     {

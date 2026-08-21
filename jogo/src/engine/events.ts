@@ -64,7 +64,17 @@ export type GameEvent =
   | { type: 'ATTACK_BLOCKED'; side: SideId; slot: number }
   | { type: 'PREVENTED_FROM_ATTACKING'; side: SideId; creatureUid: string; untilTurn: number }
   | { type: 'PROTECTED_FROM_ATTACKS'; side: SideId; creatureUid: string; untilTurn: number }
+  /** Marionete de Guerra: a criatura passa a ser obrigada a atacar */
+  | { type: 'FORCED_TO_ATTACK'; side: SideId; creatureUid: string; untilTurn: number }
   | { type: 'COMMAND_PLAYED'; side: SideId; card: CardInZone }
+  /**
+   * Uma janela de reação foi AVALIADA para `side` — tenha ela resposta possível
+   * ou não. É o que dá ao cliente a pausa de "o oponente está avaliando"
+   * (decisão nº 39): sem ela, a jogada que resolve na hora anuncia que o outro
+   * não tinha comando na mão. Por isso o evento sai SEMPRE, e não só quando não
+   * há o que oferecer — um aviso condicional entregaria a mesma informação.
+   */
+  | { type: 'REACTION_WINDOW'; side: SideId; category: 'command' | 'ability' }
   /** o lado recusou (ou deixou expirar) uma janela de reação */
   | { type: 'REACTION_DECLINED'; side: SideId }
   | { type: 'ABILITY_ACTIVATED'; side: SideId; sourceUid: string; abilityId: string }

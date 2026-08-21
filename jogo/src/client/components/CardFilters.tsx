@@ -1,4 +1,4 @@
-import { ALL_CARDS } from '../../data/cards.ts';
+import { PLAYABLE_CARDS } from '../../data/cards.ts';
 import type { Card, Element } from '../../data/types.ts';
 import { cardName, cardRulesText } from '../../i18n/index.ts';
 import { ELEMENT_COLOR, ZN } from '../theme.ts';
@@ -63,13 +63,13 @@ export function filterCards(cards: readonly Card[], filter: CardFilterState): Ca
 export function FilterBar({
   value,
   onChange,
-  pool = ALL_CARDS,
+  pool = PLAYABLE_CARDS,
   elements = true,
   children,
 }: {
   value: CardFilterState;
   onChange: (filter: CardFilterState) => void;
-  /** o lote de onde saem as pastilhas de elemento; padrão: o catálogo inteiro */
+  /** o lote de onde saem as pastilhas de elemento; padrão: o que está publicado */
   pool?: readonly Card[];
   /**
    * As pastilhas de elemento. A coleção as dispensa (o desenho deixa o canto

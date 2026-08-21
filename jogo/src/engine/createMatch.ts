@@ -1,6 +1,4 @@
-import { cardById, formatOfCard } from '../data/cards.ts';
-import type { Format } from '../data/types.ts';
-import { FORMAT_NAME } from '../data/types.ts';
+import { cardById } from '../data/cards.ts';
 import type { GameEvent } from './events.ts';
 import {
   STARTING_HAND,
@@ -21,8 +19,6 @@ export interface SideDeck {
 export interface MatchConfig {
   seed: number;
   decks: Record<SideId, SideDeck>;
-  /** ausente = clássico, o formato que já existia */
-  format?: Format;
 }
 
 export interface CreatedMatch {
@@ -37,7 +33,6 @@ export interface CreatedMatch {
  */
 export function createMatch(config: MatchConfig): CreatedMatch {
   let rng = normalizeSeed(config.seed);
-  const format: Format = config.format ?? 'classic';
   const events: GameEvent[] = [];
 
   const roll = randomInt(rng, 0, 1);
@@ -48,15 +43,9 @@ export function createMatch(config: MatchConfig): CreatedMatch {
   for (const side of ['a', 'b'] as const) {
     const deckConfig = config.decks[side];
     const cards: CardInZone[] = deckConfig.cards.map((cardId, index) => {
-      const card = cardById(cardId);
-      // uma partida corre num formato só: deck do outro formato é erro de programação,
-      // não jogada inválida — o servidor recusa antes de chegar aqui
-      if (formatOfCard(card) !== format) {
-        throw new Error(
-          `Carta ${cardId} ("${card.name}") é de ${FORMAT_NAME[formatOfCard(card)]},` +
-            ` mas a partida é ${FORMAT_NAME[format]}.`,
-        );
-      }
+      // carta inexistente é erro de programação, não jogada inválida: o servidor
+      // valida o deck contra o catálogo antes de chegar aqui
+      cardById(cardId);
       return { uid: `${side}${index + 1}`, cardId };
     });
     const shuffled = shuffle(rng, cards);
@@ -87,7 +76,6 @@ export function createMatch(config: MatchConfig): CreatedMatch {
   const state: GameState = {
     seed: normalizeSeed(config.seed),
     rng,
-    format,
     turn: 1,
     phase: 'mulligan',
     activeSide: firstSide,

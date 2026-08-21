@@ -30,7 +30,12 @@ import {
   heroOnTurnStart,
   regenerateOnTurnStart,
 } from './triggers.ts';
-import { canAttachTo, canAttack, canBeSummonedNormally } from './targeting.ts';
+import {
+  canAttachTo,
+  canAttack,
+  canBeSummonedNormally,
+  forcedAttackerSlot,
+} from './targeting.ts';
 import { shuffle, randomInt } from './rng.ts';
 import { drawCards } from './zones.ts';
 
@@ -115,7 +120,7 @@ export function reduce(originalState: GameState, command: Command): ReduceResult
       heroOnCreatureEnter(state, command.side, creature, events);
       queueOnEnter(state, command.side, command.slot);
       onOtherCreatureEntered(state, command.side, creature, events);
-      scheduleReaction(state, oppositeSide(command.side), 'summon', 'command');
+      scheduleReaction(state, oppositeSide(command.side), 'summon', 'command', zoneCard.cardId);
       processQueue(state, events);
       return { state, events };
     }
@@ -156,7 +161,7 @@ export function reduce(originalState: GameState, command: Command): ReduceResult
 
       queueOnAttach(state, command.side, command.slot, zoneCard.uid);
       fireAttachmentCountTrigger(state, command.side, creature, zoneCard.cardId, events);
-      scheduleReaction(state, oppositeSide(command.side), 'attach', 'command');
+      scheduleReaction(state, oppositeSide(command.side), 'attach', 'command', zoneCard.cardId);
       processQueue(state, events);
       return { state, events };
     }
@@ -218,13 +223,22 @@ export function reduce(originalState: GameState, command: Command): ReduceResult
       }
 
       events.push({ type: 'ATTACK_DECLARED', side: command.side, slot: command.slot });
-      queueAttack(state, command.side, command.slot);
       scheduleReaction(
         state,
         oppositeSide(command.side),
         defender ? 'attackCreature' : 'attackDirect',
         'command',
+        creature.cardId ?? undefined,
       );
+      /*
+        A ordem aqui É a regra (decisão nº 38): a janela de reação vai na frente
+        do combate, não depois dele. O ataque foi DECLARADO e ainda não resolveu
+        — é essa a brecha em que um comando ("Riso Histérico") ainda serve para
+        alguma coisa. Com a janela depois, como era, responder ao ataque só
+        acontecia com o dano já contado, e a carta chegava tarde por definição.
+      */
+      state.queue.push({ type: 'reaction_window' });
+      queueAttack(state, command.side, command.slot);
       processQueue(state, events);
       return { state, events };
     }
@@ -242,6 +256,9 @@ export function reduce(originalState: GameState, command: Command): ReduceResult
     case 'END_TURN': {
       if (state.activeSide !== command.side) return reject('not_your_turn');
       if (state.phase === 'mulligan') return reject('match_not_started');
+      // "deve atacar, se possível": com uma criatura obrigada e ainda capaz de
+      // atacar, o turno não encerra (decisão nº 34)
+      if (forcedAttackerSlot(state, command.side) !== null) return reject('must_attack_first');
       endTurn(state, events);
       processQueue(state, events);
       return { state, events };

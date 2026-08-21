@@ -1,18 +1,24 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { cardById } from '../../data/cards.ts';
-import type { Card as CatalogCard, Element } from '../../data/types.ts';
+import type { Element } from '../../data/types.ts';
 import {
+  creatureAbilityOffers,
   creatureActivations,
+  handAbilityOffers,
   handActivations,
   type ActivationScope,
 } from '../../engine/activation.ts';
+import { isAttachable } from '../../engine/cardsInPlay.ts';
 import { canBeAttackTarget } from '../../engine/combat.ts';
+import {
+  canAttachTo,
+  canBeCommandTarget,
+  commandTargetSpec,
+} from '../../engine/targeting.ts';
+import { currentStats } from '../../engine/stats.ts';
 import {
   DIRECT_DAMAGE_PER_POINT,
   POINTS_TO_WIN,
-  REACTION_SECONDS,
-  SLOTS_PER_SIDE,
-  TURN_SECONDS,
   oppositeSide,
   type AttachmentInPlay,
   type CardInZone,
@@ -20,14 +26,18 @@ import {
   type SideId,
 } from '../../engine/state.ts';
 import type { GameView } from '../../engine/view.ts';
+import { REACTION_SECONDS, TURN_SECONDS } from '../../shared/clock.ts';
+import { errorText } from '../../shared/errors.ts';
 import type { TextKey } from '../../i18n/keys.ts';
-import { useMatchStore } from '../stores/matchStore.ts';
+import { REPLAY_SPEEDS, useMatchStore, type ReplayControl } from '../stores/matchStore.ts';
 import { useAnimationBusy, useMovingUid, useShatter } from '../stores/animationStore.ts';
 import { useCardZoomStore } from '../stores/cardZoomStore.ts';
+import { ELEMENT_COLOR, ZN } from '../theme.ts';
 import { useTranslation } from '../useTranslation.ts';
 import { AnimationLayer } from './AnimationLayer.tsx';
 import { CardImage, CreatureOnField } from './Card.tsx';
 import { HeroPortrait } from './HeroPortrait.tsx';
+import { MatchLog } from './MatchLog.tsx';
 
 type TargetMode =
   | { type: 'summon'; cardUid: string }
@@ -35,21 +45,43 @@ type TargetMode =
   | { type: 'command'; cardUid: string; targetSide: SideId }
   | null;
 
-/** proporção do molde (415x555): o tabuleiro dimensiona pela ALTURA disponível */
+/** proporção do molde (415x555) — vale para a carta em campo, na mão e nas zonas */
 const CARD_RATIO = 415 / 555;
 
 /**
- * Largura da coluna de zonas: a da pilha, mas nunca menos que o rótulo embaixo dela.
+ * A geometria do tabuleiro, toda em `clamp`, como no desenho importado.
  *
- * Em janela baixa (720p) a pilha encolhe para uns 22px e "DESCARTE" tem uns 40 —
- * sem este piso a legenda vazava para fora da tela. O mesmo número é usado pelo
- * ESPAÇADOR do outro lado da fileira, senão as colunas de ataque desalinham.
+ * Isto REVOGA a medição por `ResizeObserver` que as fileiras faziam: a carta era
+ * dimensionada pela altura que sobrava, o que dava tamanhos diferentes conforme
+ * a placa do herói crescia. Agora as duas fileiras dividem `1fr` cada e a carta
+ * tem tamanho declarado — o que sobra é respiro, não uma terceira variável.
  */
-const ZONE_MIN_WIDTH = 58;
+/*
+  A largura entra por `min(cqw, vh)` e não só por `cqw`: a fileira ganha `1fr` da
+  altura, e num monitor largo e alto o teto por largura deixava a carta pequena no
+  meio de uma faixa vazia. O piso segue sendo o de 720p.
 
-function zoneColumnWidth(cardHeight: number): number {
-  return Math.max(cardHeight * CARD_RATIO + 4, ZONE_MIN_WIDTH);
-}
+  E é `cqw` — 1% da COLUNA DO CAMPO — e não `vw`, que é 1% da janela: desde a
+  decisão nº 46 o registro é coluna ao lado e ESPREME o campo, então a janela
+  deixou de ser a régua. Medida em `vw`, a carta continuaria do tamanho de antes e
+  transbordaria a coluna que encolheu. Quem declara o contêiner é a própria coluna
+  do campo (`container-type: inline-size`, no `Board`); fechado o registro, a
+  coluna é a janela e a conta dá exatamente o que dava.
+*/
+const SLOT_WIDTH = 'clamp(70px, min(8.6cqw, 16.5vh), 142px)';
+const HAND_WIDTH = 'clamp(84px, min(7.4cqw, 14vh), 118px)';
+const ZONE_WIDTH = 'clamp(44px, min(3.8cqw, 7vh), 62px)';
+
+/** o quanto uma carta da mão avança sobre a anterior no leque */
+const HAND_OVERLAP = 40;
+/**
+ * Graus de inclinação e pixels de altura que o leque tira por passo do centro.
+ * O teto existe porque a mão vai a 8 cartas: sem ele as pontas deitavam 17° e
+ * saíam pela borda de baixo da doca.
+ */
+const FAN_TILT = 5;
+const FAN_TILT_MAX = 12;
+const FAN_LIFT = 7;
 
 /**
  * Piso de tempo para responder uma janela de reação. A pergunta espera a animação
@@ -69,30 +101,37 @@ function canAttackInView(view: GameView, creature: CreatureInPlay): boolean {
 }
 
 /**
- * Tamanho da caixa, medido em vez de calculado: o tabuleiro inteiro cabe na janela
- * (`h-[100dvh]`, sem rolagem) e cada fileira reparte a altura que sobrou. Como a
- * carta tem proporção fixa, a ALTURA da fileira decide a largura da carta — e o
- * mesmo cálculo limita pela largura, para o tabuleiro caber também em monitor baixo
- * e largo ou em janela estreita.
+ * Uma ação que a carta escolhida na mão oferece.
+ *
+ * São DUAS listas na prática, e o desenho as põe lado a lado sob a carta: a de
+ * JOGAR (invocar, anexar, ativar comando, pôr cenário) e a da própria carta
+ * (descartar-se para ativar o efeito). A segunda aparece mesmo desligada — ver
+ * `handAbilityOffers`.
  */
-function useBoxSize(ref: React.RefObject<HTMLElement | null>): { width: number; height: number } {
-  const [box, setBox] = useState({ width: 0, height: 0 });
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (rect) setBox({ width: rect.width, height: rect.height });
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [ref]);
-  return box;
+interface HandAction {
+  key: string;
+  label: string;
+  /** o porquê de estar desligada, quando está */
+  why?: string;
+  disabled: boolean;
+  tone: 'gold' | 'wire';
+  run: () => void;
 }
 
 export function Board() {
-  const { view, mode, log, lastRefusal, opponentNickname, deadlineMs, send, leave, startTraining } =
-    useMatchStore();
+  const {
+    view,
+    mode,
+    log,
+    lastRefusal,
+    opponentNickname,
+    deadlineMs,
+    deadlineIsReaction,
+    send,
+    leave,
+    startTraining,
+    replay,
+  } = useMatchStore();
   const { t, resolve, cardRulesText } = useTranslation();
   const [handSelection, setHandSelection] = useState<string | null>(null);
   const [viewingDiscard, setViewingDiscard] = useState<'me' | 'opponent' | null>(null);
@@ -101,7 +140,7 @@ export function Board() {
   const [activating, setActivating] = useState<{ creature: CreatureInPlay; slot: number } | null>(
     null,
   );
-  /* fechado por padrão: virou gaveta por cima do campo, e o campo vem primeiro */
+  /* fechado por padrão: aberto, o registro toma largura do campo (decisão nº 46) */
   const [showLog, setShowLog] = useState(false);
   /* desistir é irreversível e o botão mora na barra do turno: pergunta antes */
   const [confirmingConcede, setConfirmingConcede] = useState(false);
@@ -115,11 +154,19 @@ export function Board() {
   } | null>(null);
 
   if (!view) return null;
+  /**
+   * Revendo (decisão nº 43): o tabuleiro é o MESMO, e é de propósito — rever tem
+   * de parecer com jogar. O que muda é que nada aqui é ação: a partida já
+   * aconteceu, e é uma trava só (`myTurn`) que apaga ataque, invocação, botão de
+   * turno e mulligan de uma vez.
+   */
+  const replaying = mode === 'replay';
   const mySide = view.side;
   const enemySide = oppositeSide(mySide);
   const me = view.me;
   const opponent = view.opponent;
   const myTurn =
+    !replaying &&
     view.activeSide === mySide &&
     !view.pending &&
     !view.waitingForOpponent &&
@@ -140,8 +187,36 @@ export function Board() {
     field: me.field,
     discard: me.discard,
     hand: me.hand,
+    enemyField: opponent.field,
   };
   const canActivateNow = canAct && view.phase === 'main';
+  const playable = canAct && view.phase === 'main';
+
+  /**
+   * A coluna aceita a carta que está sendo mirada?
+   *
+   * A regra é a MESMA do motor (`commandTargetSpec`/`canBeCommandTarget`,
+   * `canAttachTo`): o tabuleiro acende só o que o motor aceitaria, e clicar no
+   * resto não faz nada. Antes qualquer coluna acendia — inclusive as vazias —,
+   * o comando ia e voltava recusado, e a leitura do jogador era "a carta não
+   * funciona" (relato do DevLukkas).
+   */
+  function canTarget(side: SideId, slot: number): boolean {
+    if (!targetMode) return false;
+    const inHand = me.hand.find((held) => held.uid === targetMode.cardUid);
+    if (!inHand) return false;
+    const creature = (side === mySide ? me : opponent).field[slot] ?? null;
+    const card = cardById(inHand.cardId);
+    if (targetMode.type === 'summon') return side === mySide && creature === null;
+    if (targetMode.type === 'attach') {
+      return (
+        side === mySide && creature !== null && isAttachable(card) && canAttachTo(card, creature)
+      );
+    }
+    if (side !== targetMode.targetSide) return false;
+    const spec = commandTargetSpec(card);
+    return spec !== null && canBeCommandTarget(spec, creature);
+  }
 
   function clearSelection() {
     setHandSelection(null);
@@ -156,43 +231,6 @@ export function Board() {
     clearSelection();
   }
 
-  function playFromHand(inHand: CardInZone, card: CatalogCard) {
-    if (card.type === 'creature') {
-      // Leviathan de Esdras: não é invocável normalmente, ativa-se da mão. Mesmo
-      // sem o alvo pronto o comando vai — a recusa do motor diz o que falta, o que
-      // é mais útil do que oferecer uma invocação que ele nunca aceitaria
-      const fromHand = (card.activatedAbilities ?? []).find(
-        (ability) => ability.source === 'hand',
-      );
-      if (fromHand && card.summonRule?.normal === false) {
-        dispatch({
-          type: 'ACTIVATE_ABILITY',
-          side: mySide,
-          sourceUid: inHand.uid,
-          abilityId: fromHand.id,
-        });
-        return;
-      }
-      setTargetMode({ type: 'summon', cardUid: inHand.uid });
-    } else if (card.type === 'ability' || card.type === 'item') {
-      setTargetMode({ type: 'attach', cardUid: inHand.uid });
-    } else if (card.type === 'scenario') {
-      dispatch({ type: 'PLAY_SCENARIO', side: mySide, cardUid: inHand.uid });
-    } else if (card.type === 'command') {
-      const needsTarget = (card.effects ?? []).find(
-        (effect) =>
-          'target' in effect && (effect.target === 'chosen_enemy' || effect.target === 'chosen_ally'),
-      );
-      if (!needsTarget) {
-        dispatch({ type: 'PLAY_COMMAND', side: mySide, cardUid: inHand.uid });
-        return;
-      }
-      const targetSide =
-        'target' in needsTarget && needsTarget.target === 'chosen_enemy' ? enemySide : mySide;
-      setTargetMode({ type: 'command', cardUid: inHand.uid, targetSide });
-    }
-  }
-
   function onMySlotClick(slot: number) {
     if (!targetMode) {
       const creature = me.field[slot];
@@ -204,6 +242,7 @@ export function Board() {
       if (view!.phase === 'main' && canAct) setActivating({ creature, slot });
       return;
     }
+    if (!canTarget(mySide, slot)) return;
     if (targetMode.type === 'summon') {
       dispatch({ type: 'SUMMON', side: mySide, cardUid: targetMode.cardUid, slot });
       return;
@@ -230,6 +269,7 @@ export function Board() {
   }
 
   function onEnemySlotClick(slot: number) {
+    if (!canTarget(enemySide, slot)) return;
     if (targetMode?.type === 'command' && targetMode.targetSide === enemySide) {
       dispatch({
         type: 'PLAY_COMMAND',
@@ -240,239 +280,341 @@ export function Board() {
     }
   }
 
-  const selectedCard = handSelection
-    ? me.hand.find((inHand) => inHand.uid === handSelection)
-    : undefined;
+  const selected = handSelection
+    ? (me.hand.find((inHand) => inHand.uid === handSelection) ?? null)
+    : null;
+
+  /**
+   * Os botões da carta escolhida. A ordem é a do desenho: primeiro o que JOGA a
+   * carta, depois o que a própria carta faz — e a segunda leva o ouro quando a
+   * primeira não existe, porque aí ela É a ação principal daquela carta.
+   */
+  function handActions(inHand: CardInZone): HandAction[] {
+    const card = cardById(inHand.cardId);
+    const actions: HandAction[] = [];
+
+    if (card.type === 'creature' && card.summonRule?.normal !== false) {
+      actions.push({
+        key: 'summon',
+        label: t('board.summon'),
+        disabled: !playable || me.actions.summoned || me.field.every((slot) => slot !== null),
+        ...(me.actions.summoned ? { why: resolve(errorText('already_summoned')) } : {}),
+        tone: 'gold',
+        run: () => setTargetMode({ type: 'summon', cardUid: inHand.uid }),
+      });
+    }
+    if (card.type === 'ability' || card.type === 'item') {
+      const fits = me.field.some((creature) => creature !== null && canAttachTo(card, creature));
+      actions.push({
+        key: 'attach',
+        label: t('board.attach'),
+        disabled: !playable || !fits,
+        ...(fits ? {} : { why: resolve(errorText('incompatible_element')) }),
+        tone: 'gold',
+        run: () => setTargetMode({ type: 'attach', cardUid: inHand.uid }),
+      });
+    }
+    if (card.type === 'command') {
+      /* carta do Figma sem comportamento modelado: o motor recusa jogá-la */
+      const withoutEffect = !card.effects?.length;
+      const spec = commandTargetSpec(card);
+      const targetSide = spec?.target === 'chosen_enemy' ? enemySide : mySide;
+      const hasTarget =
+        !spec ||
+        (targetSide === mySide ? me.field : opponent.field).some((creature) =>
+          canBeCommandTarget(spec, creature),
+        );
+      actions.push({
+        key: 'command',
+        label: t('board.play'),
+        disabled: !playable || withoutEffect || !hasTarget,
+        ...(withoutEffect
+          ? { why: resolve(errorText('effect_not_implemented')) }
+          : hasTarget
+            ? {}
+            : { why: resolve(errorText('effect_has_no_target')) }),
+        tone: 'gold',
+        run: () => {
+          if (!spec) {
+            dispatch({ type: 'PLAY_COMMAND', side: mySide, cardUid: inHand.uid });
+            return;
+          }
+          setTargetMode({ type: 'command', cardUid: inHand.uid, targetSide });
+        },
+      });
+    }
+    if (card.type === 'scenario') {
+      actions.push({
+        key: 'scenario',
+        label: t('board.playScenario'),
+        disabled: !playable || me.actions.scenario,
+        ...(me.actions.scenario ? { why: resolve(errorText('scenario_already_played')) } : {}),
+        tone: 'gold',
+        run: () => dispatch({ type: 'PLAY_SCENARIO', side: mySide, cardUid: inHand.uid }),
+      });
+    }
+
+    /* a ação que a CARTA traz: descartar-se para ativar (Leviathan de Esdras) */
+    for (const offer of handAbilityOffers(inHand, scope)) {
+      actions.push({
+        key: `fx:${offer.abilityId}`,
+        label: t(offer.cost === 'discard_self' ? 'board.discardToActivate' : 'board.activate'),
+        disabled: !playable || !offer.available,
+        ...(offer.blocked ? { why: resolve(errorText(offer.blocked)) } : {}),
+        tone: actions.length ? 'wire' : 'gold',
+        run: () =>
+          dispatch({
+            type: 'ACTIVATE_ABILITY',
+            side: mySide,
+            sourceUid: offer.sourceUid,
+            abilityId: offer.abilityId,
+          }),
+      });
+    }
+
+    /* criatura que não se invoca e não tem efeito utilizável: diz por que não há botão */
+    if (!actions.length) {
+      actions.push({
+        key: 'none',
+        label: t('board.summon'),
+        why: resolve(
+          errorText(card.type === 'creature' ? 'cannot_summon_normally' : 'effect_not_implemented'),
+        ),
+        disabled: true,
+        tone: 'wire',
+        run: () => undefined,
+      });
+    }
+    return actions;
+  }
+
   const phaseLabel =
     view.phase === 'main'
       ? t('board.mainPhase')
       : view.phase === 'battle'
         ? t('board.battlePhase')
         : t('board.mulliganTitle');
-  const hint = lastRefusal
-    ? { text: resolve(lastRefusal), tone: 'text-ez-gold-light' }
-    : targetMode
-      ? { text: t('board.targetHint'), tone: 'text-ez-blue-light' }
-      : selectedCard
-        ? { text: cardRulesText(selectedCard.cardId) ?? t('card.noText'), tone: 'text-ez-muted' }
-        : { text: t('board.zoomHint'), tone: 'text-ez-dim' };
+
+  /*
+    Revendo, a dica não pode falar em decidir nem em esperar: não há vez de
+    ninguém. Sobra o que ainda serve — o texto da carta que se clicou para ler.
+  */
+  const replayHint = selected
+    ? { text: cardRulesText(selected.cardId) ?? t('card.noText'), tone: '#8a90a0' }
+    : { text: t('replay.hint'), tone: ZN.gold };
+
+  const hint = replaying
+    ? replayHint
+    : lastRefusal
+      ? { text: resolve(lastRefusal), tone: ZN.red }
+      : view.phase === 'mulligan'
+        ? { text: t('board.hint.mulligan'), tone: ZN.gold }
+        : view.winner
+          ? { text: t('board.hint.over'), tone: '#8a90a0' }
+          : !myTurn
+            ? { text: t('board.hint.opponent'), tone: '#8a90a0' }
+            : targetMode
+              ? {
+                  text: t(
+                    targetMode.type === 'summon'
+                      ? 'board.hint.summon'
+                      : targetMode.type === 'attach'
+                        ? 'board.hint.attach'
+                        : 'board.hint.command',
+                  ),
+                  tone: ZN.green,
+                }
+              : view.phase === 'battle'
+                ? { text: t('board.hint.battle'), tone: ZN.gold }
+                : selected
+                  ? {
+                      text: cardRulesText(selected.cardId) ?? t('card.noText'),
+                      tone: '#8a90a0',
+                    }
+                  : { text: t('board.hint.pick'), tone: '#6a7080' };
 
   return (
-    <div className="relative h-[100dvh] w-full select-none overflow-hidden bg-ez-ink">
+    <div className="relative flex h-[100dvh] w-full select-none overflow-hidden bg-zn-ink">
       {/* o campo do legado rebaixado a fundo: quem tem de ser lido são as cartas */}
       <img
         src="/assets/img/bg_gameBattle.png"
         alt=""
         draggable={false}
-        className="absolute inset-0 h-full w-full object-cover opacity-50"
+        className="absolute inset-0 h-full w-full object-cover opacity-35"
       />
       <div
         aria-hidden
         className="absolute inset-0"
         style={{
           background:
-            'radial-gradient(1100px 600px at 50% 50%, rgba(6,8,15,.25), rgba(6,8,15,.88) 78%),' +
-            ' linear-gradient(180deg, rgba(6,8,15,.75), rgba(6,8,15,.15) 30%,' +
-            ' rgba(6,8,15,.15) 70%, rgba(6,8,15,.85))',
+            'radial-gradient(1200px 640px at 50% 50%, rgba(8,9,11,.2), rgba(8,9,11,.9) 78%),' +
+            ' linear-gradient(180deg, rgba(8,9,11,.82), rgba(8,9,11,.1) 32%,' +
+            ' rgba(8,9,11,.12) 66%, rgba(8,9,11,.9))',
         }}
       />
       <AnimationLayer />
 
-      <div className="relative z-2 flex h-full min-w-0 flex-col p-2">
-        <HeroPlate
+      {/*
+        A COLUNA DO CAMPO: o que sobra da fileira depois do registro. O `1fr` com
+        `min-w-0` é o que faz o campo encolher em vez de empurrar a coluna do
+        registro para fora da tela, e o `container-type` a declara como régua das
+        cartas (ver a geometria, no alto do arquivo).
+      */}
+      <div
+        className="relative z-2 grid h-full min-w-0 flex-1 px-3.5 pt-3"
+        style={{
+          gridTemplateRows: 'minmax(0,1fr) 50px minmax(0,1fr) 178px',
+          containerType: 'inline-size',
+        }}
+      >
+        <BattleRow
           side={enemySide}
-          hero={opponent.hero}
-          name={opponentNickname}
-          points={opponent.points}
-          directDamage={opponent.directDamage}
-          deck={opponent.deckCount}
-          hand={opponent.handCount}
-          discard={opponent.discard.length}
-          active={view.activeSide === enemySide}
-        />
-        <FieldLine
-          side={enemySide}
-          field={opponent.field}
-          deckCount={opponent.deckCount}
-          discard={opponent.discard}
-          scenario={opponent.scenario}
-          onViewDiscard={() => setViewingDiscard('opponent')}
-          onClickSlot={onEnemySlotClick}
-          highlight={targetMode?.type === 'command' && targetMode.targetSide === enemySide}
-        />
-
-        <div className="relative shrink-0 border-y border-ez-line-soft py-1.5">
-          {!view.winner && (
-            <FuseBar
-              deadlineMs={deadlineMs}
-              totalSeconds={view.pending?.reaction ? REACTION_SECONDS : TURN_SECONDS}
+          plate={
+            <HeroPlate
+              side={enemySide}
+              hero={opponent.hero}
+              name={opponentNickname}
+              points={opponent.points}
+              damageTaken={me.points * DIRECT_DAMAGE_PER_POINT + opponent.directDamage}
+              deck={opponent.deckCount}
+              hand={opponent.handCount}
+              discard={opponent.discard.length}
+              active={view.activeSide === enemySide}
             />
-          )}
-          <div className="flex flex-wrap items-center justify-center gap-2.5">
-            <span className="font-title text-[15px] font-bold uppercase tracking-[0.18em] text-ez-parchment">
-              {t('board.turn', { turn: view.turn })} — {phaseLabel}
-            </span>
-            {view.waitingForOpponent && (
-              <span className="text-sm text-ez-gold-light">{t('board.opponentDeciding')}</span>
-            )}
-            {myTurn && view.phase === 'main' && (
-              <button
-                type="button"
-                disabled={!canAct}
-                className="ez-btn ez-btn-ember ez-btn-sm"
-                onClick={() => send({ type: 'ADVANCE_PHASE', side: mySide })}
-              >
-                {t('board.goToBattle')}
-              </button>
-            )}
-            {myTurn && (
-              <button
-                type="button"
-                disabled={!canAct}
-                className="ez-btn ez-btn-blue ez-btn-sm"
-                onClick={() => dispatch({ type: 'END_TURN', side: mySide })}
-              >
-                {t('board.endTurn')}
-              </button>
-            )}
-            <button
-              type="button"
-              className="ez-btn ez-btn-ghost ez-btn-ghost-danger ez-btn-sm"
-              onClick={() => setConfirmingConcede(true)}
-            >
-              {t('board.concede')}
-            </button>
-            <button
-              type="button"
-              title={t(showLog ? 'board.hideLog' : 'board.showLog')}
-              className="ez-btn ez-btn-ghost ez-btn-sm"
-              onClick={() => setShowLog((open) => !open)}
-            >
-              {showLog ? '›' : '‹'} {t('board.log')}
-            </button>
-            <span className={`max-w-90 truncate text-[13px] ${hint.tone}`}>
-              {hint.text}
-              {targetMode && (
-                <>
-                  {' '}
-                  <button type="button" className="underline" onClick={clearSelection}>
-                    {t('board.cancelLink')}
-                  </button>
-                </>
-              )}
-            </span>
-          </div>
-        </div>
-
-        <FieldLine
-          side={mySide}
-          mirrored
-          field={me.field}
-          deckCount={me.deckCount}
-          discard={me.discard}
-          scenario={me.scenario}
-          onViewDiscard={() => setViewingDiscard('me')}
-          onClickSlot={onMySlotClick}
-          highlight={
-            targetMode?.type === 'summon' ||
-            targetMode?.type === 'attach' ||
-            (targetMode?.type === 'command' && targetMode.targetSide === mySide)
           }
+          field={opponent.field}
+          onClickSlot={onEnemySlotClick}
+          targetable={(slot) => canTarget(enemySide, slot)}
+          forced={(creature) => (creature.mustAttackUntilTurn ?? 0) >= view.turn}
+          zones={
+            <ZoneColumn
+              side={enemySide}
+              deckCount={opponent.deckCount}
+              discard={opponent.discard}
+              scenario={opponent.scenario}
+              onViewDiscard={() => setViewingDiscard('opponent')}
+            />
+          }
+        />
+
+        <TurnBar
+          view={view}
+          canAct={canAct}
+          deadlineMs={deadlineMs}
+          deadlineIsReaction={deadlineIsReaction}
+          targeting={targetMode !== null}
+          logOpen={showLog}
+          onCancelTarget={clearSelection}
+          onAdvance={() => send({ type: 'ADVANCE_PHASE', side: mySide })}
+          onEndTurn={() => dispatch({ type: 'END_TURN', side: mySide })}
+          onToggleLog={() => setShowLog((open) => !open)}
+          onConcede={() => setConfirmingConcede(true)}
+          onLeaveReplay={leave}
+          phaseLabel={phaseLabel}
+          replay={replay}
+        />
+
+        <BattleRow
+          side={mySide}
+          mine
+          plate={
+            <HeroPlate
+              side={mySide}
+              mine
+              hero={me.hero}
+              name={t('board.you')}
+              points={me.points}
+              damageTaken={opponent.points * DIRECT_DAMAGE_PER_POINT + me.directDamage}
+              deck={me.deckCount}
+              hand={me.hand.length}
+              discard={me.discard.length}
+              active={view.activeSide === mySide}
+            />
+          }
+          field={me.field}
+          onClickSlot={onMySlotClick}
+          targetable={(slot) => canTarget(mySide, slot)}
+          forced={(creature) => (creature.mustAttackUntilTurn ?? 0) >= view.turn}
           canAttackNow={(creature, slot) => {
             if (!canAct || !canAttackInView(view, creature)) return false;
             const defender = opponent.field[slot];
             return !defender || canBeAttackTarget(view.turn, defender, creature, me.field);
           }}
+          attackDone={(creature) => view.phase === 'battle' && creature.attackedOnTurn === view.turn}
           hasActivation={(creature, slot) =>
             canActivateNow && creatureActivations(creature, slot, scope).length > 0
           }
-        />
-        <HeroPlate
-          side={mySide}
-          mine
-          hero={me.hero}
-          name={t('board.you')}
-          points={me.points}
-          directDamage={me.directDamage}
-          deck={me.deckCount}
-          hand={me.hand.length}
-          discard={me.discard.length}
-          active={view.activeSide === mySide}
+          zones={
+            <ZoneColumn
+              side={mySide}
+              mine
+              deckCount={me.deckCount}
+              discard={me.discard}
+              scenario={me.scenario}
+              onViewDiscard={() => setViewingDiscard('me')}
+            />
+          }
         />
 
-        <HandRow
+        <HandDock
+          side={mySide}
           hand={me.hand}
           selectedUid={handSelection}
-          playable={canAct && view.phase === 'main'}
+          hintText={hint.text}
+          hintTone={hint.tone}
+          scenario={me.scenario}
+          actionsOf={handActions}
+          showActions={!replaying && view.phase !== 'mulligan' && !view.winner}
           hasActivation={(inHand) => canActivateNow && handActivations(inHand, scope).length > 0}
           onSelect={(uid) => {
-            if (!canAct || view.phase !== 'main') return;
+            if (view.phase === 'mulligan' || view.winner) return;
             setHandSelection(uid === handSelection ? null : uid);
             setTargetMode(null);
           }}
-          onPlay={playFromHand}
         />
+
+        {/* o carimbo é do CAMPO: fora da coluna, o registro aberto o cobriria */}
+        {replaying && replay && <ReplayStamp replay={replay} />}
       </div>
 
       {/*
-        O registro virou gaveta POR CIMA do tabuleiro, e não coluna ao lado (revoga a
-        parte da decisão nº 24 que reservava largura para ele): fechado, o campo fica
-        com a janela inteira — que é o que faltava em 1366 e em 1280 de largura.
+        O registro é COLUNA ao lado do tabuleiro (decisão nº 46, que revoga a gaveta
+        da nº 31 e restabelece a coluna da nº 24): aberto, ele espreme o campo em vez
+        de tapá-lo — nada do que importa fica escondido atrás dele, e as cartas
+        reencolhem sozinhas porque medem a coluna do campo, não a janela.
       */}
-      {showLog && (
-        <aside
-          className="absolute inset-y-0 right-0 z-8 flex w-[min(320px,84vw)] flex-col border-l border-ez-line bg-ez-abyss/96 backdrop-blur-sm"
-          style={{
-            boxShadow: '-20px 0 50px rgba(0,0,0,.5)',
-            animation: 'ez-fade-in .25s ease both',
-          }}
-        >
-          <div className="flex shrink-0 items-center justify-between border-b border-ez-line-soft px-4 py-3.5">
-            <h2 className="ez-heading text-[13px] uppercase tracking-[0.18em]">{t('board.log')}</h2>
+      {showLog && <MatchLog log={log} onClose={() => setShowLog(false)} />}
+
+      {!replaying && view.phase === 'mulligan' && !me.mulliganDone && !view.winner && !animating && (
+        <BattleModal title={t('board.mulliganTitle')} note={t('board.mulliganNote')} width={780}>
+          <div className="grid grid-cols-5 gap-2.75">
+            {me.hand.map((inHand) => (
+              <div
+                key={inHand.uid}
+                className="border border-zn-edge bg-zn-ink"
+                style={{ animation: 'zn-card-in .5s cubic-bezier(.2,.9,.3,1.2) both' }}
+              >
+                <CardImage cardId={inHand.cardId} className="w-full" />
+              </div>
+            ))}
+          </div>
+          <div className="mt-5 grid grid-cols-2 gap-2.5">
             <button
               type="button"
-              title={t('board.hideLog')}
-              className="cursor-pointer text-lg text-ez-muted transition-colors hover:text-ez-gold-light"
-              onClick={() => setShowLog(false)}
-            >
-              ✕
-            </button>
-          </div>
-          <ol className="flex min-h-0 flex-1 flex-col-reverse gap-1.5 overflow-y-auto px-4 py-3">
-            {[...log].reverse().map((line, i) => (
-              <li
-                key={log.length - i}
-                className="border-l-2 border-ez-line pl-2.5 text-[13px] leading-5 text-[#aab8d0]"
-              >
-                {resolve(line)}
-              </li>
-            ))}
-          </ol>
-        </aside>
-      )}
-
-      {view.phase === 'mulligan' && !me.mulliganDone && !view.winner && !animating && (
-        <Modal title={t('board.mulliganTitle')}>
-          <p className="mb-4 text-center text-[15px] text-[#aab8d0]">{t('board.mulliganQuestion')}</p>
-          <div className="mb-3 flex gap-2">
-            {me.hand.map((inHand) => (
-              <CardImage key={inHand.uid} cardId={inHand.cardId} className="w-24 rounded" />
-            ))}
-          </div>
-          <div className="flex justify-center gap-3">
-            <ModalButton
+              className="zn-btn zn-btn-green h-11.5 uppercase"
               onClick={() => send({ type: 'DECIDE_MULLIGAN', side: mySide, swap: false })}
             >
               {t('board.mulliganKeep')}
-            </ModalButton>
-            <ModalButton
-              tone="amber"
+            </button>
+            <button
+              type="button"
+              className="zn-btn zn-btn-wire h-11.5 uppercase"
               onClick={() => send({ type: 'DECIDE_MULLIGAN', side: mySide, swap: true })}
             >
               {t('board.mulliganSwap')}
-            </ModalButton>
+            </button>
           </div>
-        </Modal>
+        </BattleModal>
       )}
 
       {/*
@@ -483,34 +625,60 @@ export function Board() {
         tela, mas porque o motor recusa qualquer comando com escolha pendente.
       */}
       {pending && askNow && (
-        <Modal title={resolve(pending.title)}>
-          {pending.reaction && deadlineMs !== null && <ReactionCountdown deadlineMs={deadlineMs} />}
-          <div className="flex flex-wrap items-center justify-center gap-2">
+        <BattleModal
+          title={resolve(pending.title)}
+          {...(pending.reaction && deadlineMs !== null
+            ? { countdown: <ReactionCountdown deadlineMs={deadlineMs} /> }
+            : {})}
+          width={620}
+          {...(pending.sourceCardId === undefined ? {} : { sourceCardId: pending.sourceCardId })}
+        >
+          {/*
+            Escolher entre CARTAS se faz olhando as cartas. Antes só as da própria
+            mão viravam ilustração (a tela ia procurar o uid na mão) e todo o
+            resto — carta revelada do oponente, criatura em campo, carta do deck,
+            anexo — caía num botão com o nome escrito, o que é decidir às cegas
+            (pedido do DevLukkas). Agora quem diz que a opção É uma carta é o
+            próprio motor, em `option.cardId`, e a regra vale para TODA pergunta.
+            Sobra o botão de texto para o que carta não é: "Sim"/"Não", elemento,
+            ficha sem carta de catálogo.
+          */}
+          <div className="flex flex-wrap items-start justify-center gap-2.5">
             {pending.options.map((option) => {
-              const inHand = me.hand.find((card) => card.uid === option.id);
               const answerWith = () =>
                 send({ type: 'ANSWER', side: mySide, pendingId: pending.id, optionId: option.id });
-              if (inHand) {
+              if (option.cardId !== undefined) {
                 return (
                   <button
                     key={option.id}
                     type="button"
-                    className="w-24 cursor-pointer rounded transition-transform hover:-translate-y-1 hover:ring-2 hover:ring-ez-gold-light"
+                    title={resolve(option.label)}
+                    className="zn-tile flex w-27 cursor-pointer flex-col gap-1.5 p-1.5"
+                    style={{ ['--tile-line' as string]: ZN.edge }}
                     onClick={answerWith}
                   >
-                    <CardImage cardId={inHand.cardId} />
+                    <CardImage cardId={option.cardId} className="w-full" />
+                    <span className="zn-name line-clamp-2 text-center text-[11.5px] leading-tight tracking-[0.03em]">
+                      {resolve(option.label)}
+                    </span>
                   </button>
                 );
               }
               return (
-                <ModalButton key={option.id} onClick={answerWith}>
+                <button
+                  key={option.id}
+                  type="button"
+                  className="zn-btn zn-btn-wire uppercase"
+                  onClick={answerWith}
+                >
                   {resolve(option.label)}
-                </ModalButton>
+                </button>
               );
             })}
             {pending.canDecline && (
-              <ModalButton
-                tone="gray"
+              <button
+                type="button"
+                className="zn-btn zn-btn-quiet self-center px-4 uppercase tracking-[0.18em]"
                 onClick={() =>
                   send({
                     type: 'ANSWER',
@@ -521,42 +689,46 @@ export function Board() {
                 }
               >
                 {t('common.decline')}
-              </ModalButton>
+              </button>
             )}
           </div>
-        </Modal>
+        </BattleModal>
       )}
 
       {viewingDiscard && (
-        <Modal title={t(viewingDiscard === 'me' ? 'board.yourDiscard' : 'board.opponentDiscard')}>
+        <BattleModal
+          title={t(viewingDiscard === 'me' ? 'board.yourDiscard' : 'board.opponentDiscard')}
+          note={t('board.discardOrder')}
+          width={780}
+          onClose={() => setViewingDiscard(null)}
+        >
           {(viewingDiscard === 'me' ? me.discard : opponent.discard).length ? (
-            <div className="flex max-h-[60vh] max-w-xl flex-wrap justify-center gap-2 overflow-y-auto">
+            <div className="grid max-h-[56vh] gap-2.5 overflow-y-auto [grid-template-columns:repeat(auto-fill,minmax(96px,1fr))]">
               {[...(viewingDiscard === 'me' ? me.discard : opponent.discard)]
                 .reverse()
                 .map((card) => (
-                  <CardImage key={card.uid} cardId={card.cardId} className="w-20 rounded" />
+                  <div key={card.uid} className="border border-zn-edge bg-zn-ink">
+                    <CardImage cardId={card.cardId} className="w-full" />
+                  </div>
                 ))}
             </div>
           ) : (
-            <p className="text-center text-sm text-ez-muted">{t('board.discardEmpty')}</p>
+            <p className="zn-num text-[10px] uppercase tracking-[0.14em] text-zn-ghost">
+              {t('board.discardEmpty')}
+            </p>
           )}
-          <p className="mt-2 text-center text-xs text-ez-dim">{t('board.discardOrder')}</p>
-          <div className="mt-3 flex justify-center">
-            <ModalButton tone="gray" onClick={() => setViewingDiscard(null)}>
-              {t('common.close')}
-            </ModalButton>
-          </div>
-        </Modal>
+        </BattleModal>
       )}
 
       {replacing && (
-        <Modal title={t('board.replaceAttachment')}>
-          <div className="flex justify-center gap-3">
+        <BattleModal title={t('board.replaceAttachment')} width={520} onClose={clearSelection}>
+          <div className="flex flex-wrap justify-center gap-3">
             {me.field[replacing.slot]?.attachments.map((attachment) => (
               <button
                 key={attachment.uid}
                 type="button"
-                className="w-24"
+                className="zn-tile w-24 cursor-pointer p-0"
+                style={{ ['--tile-line' as string]: ZN.edge }}
                 onClick={() =>
                   dispatch({
                     type: 'ATTACH',
@@ -567,18 +739,23 @@ export function Board() {
                   })
                 }
               >
-                <CardImage cardId={attachment.cardId} />
+                <CardImage cardId={attachment.cardId} className="w-full" />
               </button>
             ))}
-            <ModalButton tone="gray" onClick={clearSelection}>
-              {t('common.cancel')}
-            </ModalButton>
           </div>
-        </Modal>
+        </BattleModal>
       )}
 
       {activating && (
-        <Modal title={t('board.creature')}>
+        <BattleModal
+          title={t('board.creature')}
+          width={520}
+          onClose={clearSelection}
+          /* de qual criatura é este painel: a lista de habilidades sozinha não dizia */
+          {...(activating.creature.cardId === null
+            ? {}
+            : { sourceCardId: activating.creature.cardId })}
+        >
           <ActivationPanel
             creature={activating.creature}
             slot={activating.slot}
@@ -591,17 +768,19 @@ export function Board() {
               }
               dispatch({ type: 'ACTIVATE_ABILITY', side: mySide, sourceUid, abilityId });
             }}
-            onClose={clearSelection}
           />
-        </Modal>
+        </BattleModal>
       )}
 
       {choosingElement && (
-        <Modal title={t('board.chooseElement')}>
-          <div className="flex flex-wrap justify-center gap-2">
+        <BattleModal title={t('board.chooseElement')} width={520} onClose={clearSelection}>
+          <div className="flex flex-wrap justify-center gap-2.5">
             {choosingElement.options.map((element) => (
-              <ModalButton
+              <button
                 key={element}
+                type="button"
+                className="zn-btn zn-btn-wire uppercase"
+                style={{ borderColor: ELEMENT_COLOR[element], color: ELEMENT_COLOR[element] }}
                 onClick={() =>
                   dispatch({
                     type: 'ACTIVATE_ABILITY',
@@ -613,13 +792,10 @@ export function Board() {
                 }
               >
                 {t(`element.${element}`)}
-              </ModalButton>
+              </button>
             ))}
-            <ModalButton tone="gray" onClick={clearSelection}>
-              {t('common.cancel')}
-            </ModalButton>
           </div>
-        </Modal>
+        </BattleModal>
       )}
 
       {/*
@@ -629,50 +805,1120 @@ export function Board() {
         do desfecho apareceria por baixo desta pergunta.
       */}
       {confirmingConcede && !view.winner && (
-        <Modal title={t('board.concedeTitle')}>
-          <p className="mb-5 text-center text-[15px] text-[#aab8d0]">
-            {t('board.concedeQuestion')}
-          </p>
-          <div className="flex justify-center gap-3">
-            <ModalButton tone="gray" onClick={() => setConfirmingConcede(false)}>
+        <BattleModal title={t('board.concedeTitle')} width={460}>
+          <p className="text-[14px] leading-snug text-zn-dim">{t('board.concedeQuestion')}</p>
+          <div className="mt-5 grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              className="zn-btn zn-btn-wire h-11 uppercase"
+              onClick={() => setConfirmingConcede(false)}
+            >
               {t('common.cancel')}
-            </ModalButton>
-            <ModalButton
-              tone="danger"
+            </button>
+            <button
+              type="button"
+              className="zn-btn zn-btn-quiet zn-btn-undo h-11 uppercase tracking-[0.18em]"
+              style={{ borderColor: ZN.red, color: ZN.redLight }}
               onClick={() => {
                 setConfirmingConcede(false);
                 send({ type: 'CONCEDE', side: mySide });
               }}
             >
               {t('board.concedeConfirm')}
-            </ModalButton>
+            </button>
           </div>
-        </Modal>
+        </BattleModal>
       )}
 
       {/* o fim só é anunciado depois do último passo — o ponto que venceu se vê antes */}
-      {view.winner && !animating && (
-        <Modal title={t(view.winner === mySide ? 'board.victory' : 'board.defeat')} grand>
-          <p className="mb-5 text-center text-[15px] text-[#aab8d0]">
-            {view.endReason === 'points'
-              ? t('board.byPoints')
+      {view.winner && !animating && !replaying && (
+        <GameOver
+          won={view.winner === mySide}
+          reason={t(
+            view.endReason === 'points'
+              ? 'board.byPoints'
               : view.endReason === 'concede'
-                ? t('board.byConcede')
-                : t('board.byTimeout')}
-          </p>
-          <div className="flex justify-center gap-3">
-            {mode === 'training' && (
-              <ModalButton onClick={() => startTraining()}>{t('board.playAgain')}</ModalButton>
-            )}
-            <ModalButton tone="gray" onClick={leave}>
-              {t('board.menu')}
-            </ModalButton>
-          </div>
-        </Modal>
+                ? 'board.byConcede'
+                : 'board.byTimeout',
+          )}
+          stats={t('board.overStats', {
+            turn: view.turn,
+            mine: me.points,
+            theirs: opponent.points,
+          })}
+          {...(mode === 'training' ? { onRematch: () => startTraining() } : {})}
+          onLeave={leave}
+        />
       )}
     </div>
   );
 }
+
+
+/**
+ * O carimbo do canto (decisão nº 44): com que versão do jogo esta partida foi
+ * JOGADA — não a que está rodando agora.
+ *
+ * Ele existe para depuração. Quando alguém traz "esse combate resolveu errado",
+ * a primeira pergunta é de que época é a partida: uma fita de agosto mostra as
+ * regras de agosto, e sem o carimbo não dá para saber se o que se está vendo é
+ * um erro do motor de hoje ou o comportamento correto da versão que jogou.
+ *
+ * Em ouro quando é fita gravada — o que se vê é o que aconteceu. Em vermelho
+ * quando é reconstituição (partida anterior à decisão nº 44): aí o tabuleiro
+ * saiu do motor de HOJE reexecutando a receita, e pode divergir.
+ */
+function ReplayStamp({ replay }: { replay: ReplayControl }) {
+  const { t } = useTranslation();
+  const version = replay.source === 'tape' ? replay.version : null;
+
+  return (
+    <div
+      className="absolute top-2.5 right-3.5 z-3 flex flex-col items-end gap-0.75 border border-zn-edge bg-zn-panel/85 px-2.5 py-1.5"
+      style={{ borderLeft: `2px solid ${version ? ZN.gold : ZN.red}` }}
+      title={
+        version
+          ? t('replay.stamp.versionTitle', { version })
+          : t('replay.stamp.rebuiltTitle')
+      }
+    >
+      <span className="zn-num text-[7.5px] tracking-[0.22em] text-zn-fainter uppercase">
+        {t(version ? 'replay.stamp.version' : 'replay.stamp.rebuilt')}
+      </span>
+      <span
+        className="zn-num text-[11px] leading-none font-bold tracking-[0.08em]"
+        style={{ color: version ? ZN.goldLight : ZN.redLight }}
+      >
+        {version ? `v${version}` : t('replay.stamp.rebuiltNote')}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Os controles do replay, no lugar exato onde ficam os do turno (decisão nº 43).
+ *
+ * Andar um passo para a FRENTE anima o lance; qualquer outro salto assenta o
+ * tabuleiro sem animação — um pulo de trinta passos animado seria um borrão, e o
+ * que se quer ao buscar é chegar, não assistir de novo o caminho.
+ */
+function ReplayControls({ replay }: { replay: ReplayControl }) {
+  const { t } = useTranslation();
+  const { replayStep, replayToggle, replaySpeed, replaySeek } = useMatchStore();
+  const atEnd = replay.index >= replay.total - 1;
+
+  return (
+    <>
+      <span className="zn-num text-[9px] tracking-[0.2em] text-zn-gold uppercase">
+        {t('replay.tag')}
+      </span>
+      <span className="zn-num text-[10px] tracking-[0.12em] text-zn-muted">
+        {t('replay.step', { index: replay.index + 1, total: replay.total })}
+      </span>
+      {replay.truncated && (
+        <span
+          className="zn-num max-w-70 truncate text-[9px] tracking-[0.1em]"
+          style={{ color: ZN.redLight }}
+          title={t('replay.truncated', { index: replay.total })}
+        >
+          {t('replay.truncated', { index: replay.total })}
+        </span>
+      )}
+
+      <div className="zn-hair grid-flow-col border border-zn-edge">
+        <button
+          type="button"
+          title={t('replay.restart')}
+          aria-label={t('replay.restart')}
+          disabled={replay.index === 0}
+          className="zn-btn zn-btn-flat h-8 w-9 p-0 text-[12px]"
+          onClick={() => replaySeek(0)}
+        >
+          ⏮
+        </button>
+        <button
+          type="button"
+          title={t('replay.back')}
+          aria-label={t('replay.back')}
+          disabled={replay.index === 0}
+          className="zn-btn zn-btn-flat h-8 w-9 p-0 text-[12px]"
+          onClick={() => replayStep(-1)}
+        >
+          ◀
+        </button>
+        <button
+          type="button"
+          title={t(replay.playing ? 'replay.pause' : 'replay.play')}
+          aria-label={t(replay.playing ? 'replay.pause' : 'replay.play')}
+          className="zn-btn zn-btn-gold h-8 w-11 p-0 text-[12px]"
+          onClick={replayToggle}
+        >
+          {replay.playing ? '❚❚' : '▶'}
+        </button>
+        <button
+          type="button"
+          title={t('replay.forward')}
+          aria-label={t('replay.forward')}
+          disabled={atEnd}
+          className="zn-btn zn-btn-flat h-8 w-9 p-0 text-[12px]"
+          onClick={() => replayStep(1)}
+        >
+          {/* não é o "tocar" de novo: o passo a passo leva a barrinha do fim */}
+          ▶|
+        </button>
+      </div>
+
+      <div className="zn-hair grid-flow-col border border-zn-edge">
+        {REPLAY_SPEEDS.map((speed) => (
+          <button
+            key={speed}
+            type="button"
+            className={`zn-tab ${replay.speed === speed ? 'zn-tab-on' : ''} h-8 px-2.5`}
+            onClick={() => replaySpeed(speed)}
+          >
+            {t('replay.speed', { n: speed })}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/* ── fileira ─────────────────────────────────────────────────────────────── */
+
+/**
+ * Uma fileira do tabuleiro: placa do herói, campo e coluna de zonas.
+ *
+ * As três colunas têm a MESMA largura declarada nas duas fileiras, e é isso que
+ * põe as colunas de ataque uma sobre a outra — "só ataca quem está em frente" é
+ * regra do jogo, e ela precisa ser legível na tela sem contar slots.
+ */
+function BattleRow({
+  side,
+  mine,
+  plate,
+  field,
+  zones,
+  onClickSlot,
+  targetable,
+  forced,
+  canAttackNow,
+  attackDone,
+  hasActivation,
+}: {
+  side: SideId;
+  mine?: boolean;
+  plate: React.ReactNode;
+  field: readonly (CreatureInPlay | null)[];
+  zones: React.ReactNode;
+  onClickSlot: (slot: number) => void;
+  /** esta coluna é alvo legal da carta que está sendo mirada */
+  targetable?: (slot: number) => boolean;
+  /** a criatura está obrigada a atacar (Marionete de Guerra) */
+  forced?: (creature: CreatureInPlay) => boolean;
+  canAttackNow?: (creature: CreatureInPlay, slot: number) => boolean;
+  attackDone?: (creature: CreatureInPlay) => boolean;
+  hasActivation?: (creature: CreatureInPlay, slot: number) => boolean;
+}) {
+  /* a faixa de anexos só rouba altura quando há anexo na fileira */
+  const anyAttachment = field.some((creature) => (creature?.attachments.length ?? 0) > 0);
+
+  return (
+    <div
+      className="grid min-h-0 items-center gap-3"
+      style={{ gridTemplateColumns: 'minmax(196px,252px) minmax(0,1fr) 128px' }}
+    >
+      {plate}
+      {/* o vão entre colunas nunca é menor que os dois losangos que se penduram
+          nos cantos vizinhos, senão o ATQ de uma carta encosta na VIDA da outra */}
+      <div
+        className="flex min-h-0 items-center justify-center"
+        style={{ gap: 'clamp(12px, 1.6cqw, 26px)' }}
+      >
+        {field.map((creature, slot) => (
+          <Slot
+            key={slot}
+            side={side}
+            slot={slot}
+            creature={creature}
+            field={field}
+            mine={mine === true}
+            reserveStrip={anyAttachment}
+            onClick={() => onClickSlot(slot)}
+            targeting={targetable?.(slot) ?? false}
+            mustAttack={creature ? (forced?.(creature) ?? false) : false}
+            canAttack={creature ? (canAttackNow?.(creature, slot) ?? false) : false}
+            done={creature ? (attackDone?.(creature) ?? false) : false}
+            ready={creature ? (hasActivation?.(creature, slot) ?? false) : false}
+          />
+        ))}
+      </div>
+      <div className={`flex justify-end ${mine ? 'items-end' : 'items-start'}`}>{zones}</div>
+    </div>
+  );
+}
+
+/**
+ * Um slot do campo: a caixa existe com ou sem criatura, e o filete dela é o
+ * estado — cinza parado, verde chamando um alvo, ouro pronto para atacar.
+ *
+ * A carta é a composta (decisão nº 23) e ela já imprime os números VIGENTES
+ * (`statsAtuais` entra como `stats`). Os dois losangos que ficavam pendurados
+ * nos cantos saíram: repetiam em cima da carta o que a carta mostra, e o pedido
+ * do DevLukkas foi tirar a duplicata.
+ */
+function Slot({
+  side,
+  slot,
+  creature,
+  field,
+  mine,
+  reserveStrip,
+  onClick,
+  targeting,
+  mustAttack,
+  canAttack,
+  done,
+  ready,
+}: {
+  side: SideId;
+  slot: number;
+  creature: CreatureInPlay | null;
+  field: readonly (CreatureInPlay | null)[];
+  mine: boolean;
+  /** a fileira tem anexo em alguma coluna: todas reservam a mesma altura */
+  reserveStrip: boolean;
+  onClick: () => void;
+  /** esta coluna é alvo legal da carta que está sendo mirada */
+  targeting: boolean;
+  /** obrigada a atacar: o turno não encerra com ela parada */
+  mustAttack: boolean;
+  canAttack: boolean;
+  done: boolean;
+  ready: boolean;
+}) {
+  const { t } = useTranslation();
+  /** o atacante sai do slot enquanto o fantasma vai bater e voltar */
+  const movingUid = useMovingUid();
+  const stats = creature ? currentStats(creature, field) : null;
+  const attachments = creature?.attachments.length ?? 0;
+
+  let border = mine ? '#39404e' : '#4a3038';
+  let glow = 'none';
+  if (targeting) {
+    border = ZN.green;
+    glow = `0 0 0 1px ${ZN.green}, 0 0 16px rgba(99,199,123,.25)`;
+  }
+  if (canAttack) {
+    border = ZN.gold;
+    glow = `0 0 0 1px ${ZN.gold}, 0 0 16px rgba(224,163,60,.3)`;
+  }
+
+  return (
+    <div className="flex flex-col items-center" style={{ width: SLOT_WIDTH }}>
+      <div
+        data-anchor={`slot:${side}:${slot}`}
+        className="zn-slot w-full"
+        style={{
+          aspectRatio: `${CARD_RATIO}`,
+          borderColor: creature ? border : targeting ? ZN.green : ZN.edge,
+          boxShadow: glow,
+          opacity: done ? 0.68 : 1,
+          ...(targeting && !creature
+            ? { animation: 'zn-slot-pulse 1.4s ease-in-out infinite' }
+            : ready
+              ? { animation: 'zn-fx-aura 1.6s ease-in-out infinite' }
+              : {}),
+        }}
+      >
+        {creature && stats ? (
+          <div className={`absolute inset-0 ${creature.uid === movingUid ? 'invisible' : ''}`}>
+            <CreatureOnField
+              creature={creature}
+              field={field}
+              owner={mine ? 'me' : 'opponent'}
+              slot={slot}
+              className="h-full w-full"
+              onClick={onClick}
+            />
+
+            {/* o filete de elemento no topo: a cor que diz o elemento de longe */}
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 top-0 h-0.5"
+              style={{ background: ELEMENT_COLOR[creature.changedElement ?? elementOf(creature)] }}
+            />
+
+            {canAttack && (
+              <span
+                className="zn-num pointer-events-none absolute left-1 top-1 px-1.5 py-0.5 text-[8px] uppercase tracking-[0.12em]"
+                style={{ background: ZN.gold, color: '#12130f' }}
+              >
+                {t('board.attack')}
+              </span>
+            )}
+            {done && !canAttack && (
+              <span className="zn-num pointer-events-none absolute left-1 top-1 bg-zn-ink/95 px-1.5 py-0.5 text-[8px] uppercase tracking-[0.12em] text-zn-green">
+                {t('board.attackDone')}
+              </span>
+            )}
+            {mustAttack && !canAttack && !done && (
+              <span
+                title={t('board.mustAttackTitle')}
+                className="zn-num pointer-events-none absolute left-1 top-1 border px-1 py-0.5 text-[8px] uppercase tracking-[0.12em]"
+                style={{ background: 'rgba(8,9,11,.94)', borderColor: ZN.red, color: ZN.redLight }}
+              >
+                {t('board.mustAttackTag')}
+              </span>
+            )}
+            {attachments > 0 && (
+              <span
+                title={t('board.attachments')}
+                className="zn-num pointer-events-none absolute right-1 top-1 border px-1 py-0.5 text-[8px] text-zn-green-light"
+                style={{ background: 'rgba(8,9,11,.94)', borderColor: ZN.green }}
+              >
+                +{attachments}
+              </span>
+            )}
+            {ready && (
+              <span
+                title={t('board.canActivate')}
+                className="zn-num pointer-events-none absolute bottom-1.5 left-1/2 flex -translate-x-1/2 items-center gap-1.25 border px-1.5 py-0.75 text-[8px] uppercase tracking-[0.12em]"
+                style={{
+                  background: 'rgba(20,10,34,.94)',
+                  borderColor: '#a875f0',
+                  color: '#d6bcff',
+                  animation: 'zn-fx-blink 1.1s ease-in-out infinite',
+                }}
+              >
+                <span aria-hidden className="h-1.75 w-1.75 rotate-45 bg-[#a875f0]" />
+                {t('board.effectTag')}
+              </span>
+            )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={onClick}
+            className="zn-num absolute inset-0 grid cursor-pointer place-items-center px-1.5 text-center text-[8.5px] uppercase tracking-[0.16em]"
+            style={{ color: targeting ? ZN.green : '#3e4450' }}
+          >
+            {targeting ? t('board.placeHere') : t('board.column', { n: slot + 1 })}
+          </button>
+        )}
+      </div>
+
+      {reserveStrip && (
+        <AttachmentStrip attachments={creature?.attachments ?? []} />
+      )}
+    </div>
+  );
+}
+
+/** o elemento impresso da criatura (a ficha não tem carta, e cai no neutro) */
+function elementOf(creature: CreatureInPlay): Element {
+  if (creature.cardId === null) return 'void';
+  return cardById(creature.cardId).element;
+}
+
+/**
+ * Os anexos da criatura, meus e do oponente, desenhados debaixo dela — antes só
+ * existia o contador "+2" no canto, e o jogador não tinha como saber o que estava
+ * anexado sem abrir a carta. O contador ficou também, no alto do slot, para quem
+ * só quer o número; clique direito na miniatura amplia.
+ */
+function AttachmentStrip({ attachments }: { attachments: readonly AttachmentInPlay[] }) {
+  const zoom = useCardZoomStore((state) => state.zoom);
+  const { t, cardName } = useTranslation();
+  const height = 'clamp(22px, 3.4vh, 34px)';
+
+  return (
+    <div
+      className="mt-2.5 flex w-full items-start justify-center gap-1"
+      style={{ height }}
+      title={attachments.length ? t('board.attachments') : undefined}
+    >
+      {attachments.map((attachment) => (
+        <button
+          key={attachment.uid}
+          type="button"
+          onClick={() => zoom(attachment.cardId)}
+          title={cardName(attachment.cardId)}
+          className="zn-tile h-full cursor-pointer p-0"
+          style={{
+            ['--tile-line' as string]: ZN.green,
+            width: `calc(${height} * ${CARD_RATIO})`,
+          }}
+        >
+          <CardImage cardId={attachment.cardId} className="h-full w-full" />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ── placa do herói ──────────────────────────────────────────────────────── */
+
+/**
+ * A placa do herói: retrato, nome, efeito, os pontos em losango e os 15 cristais.
+ *
+ * Os cristais são a régua de "quanto falta para o outro vencer": cada ponto de
+ * vitória do adversário apaga cinco, e o dano direto acumulado apaga o resto.
+ * Os losangos ao lado do nome continuam sendo os pontos em si — a régua conta a
+ * mesma história em outra escala, e é a que se lê de relance.
+ *
+ * O NOME segue sendo a âncora do ataque direto (`data-anchor`), não a placa.
+ */
+function HeroPlate({
+  side,
+  mine,
+  hero,
+  name,
+  points,
+  damageTaken,
+  deck,
+  hand,
+  discard,
+  active,
+}: {
+  side: SideId;
+  /** o meu lado: verde em vez do vermelho do oponente */
+  mine?: boolean;
+  hero: string;
+  name: string;
+  points: number;
+  /** cristais já apagados: pontos do adversário × 5 + dano direto acumulado */
+  damageTaken: number;
+  deck: number;
+  hand: number;
+  discard: number;
+  active: boolean;
+}) {
+  const { t } = useTranslation();
+  const heroName = t(`hero.${hero}.name` as TextKey);
+  const effectName = t(`hero.${hero}.effectName` as TextKey);
+  const effectText = t(`hero.${hero}.effectText` as TextKey);
+  const accent = mine ? ZN.green : ZN.red;
+  const shatter = useShatter(side);
+
+  return (
+    <div
+      /*
+        Trocar a chave REMONTA a placa, e é o que faz o CSS tocar o tranco de novo:
+        o mesmo `animation` numa árvore que só teve o estilo atualizado não
+        recomeça. A chave é o id do lote de cristais quebrados — um tranco por
+        lote de dano direto, nunca dois pelo mesmo golpe.
+      */
+      key={shatter ? shatter.id : 'idle'}
+      className="zn-plate"
+      style={{
+        borderColor: mine ? '#222c26' : '#2c2228',
+        borderLeft: `3px solid ${accent}`,
+        ...(active ? { boxShadow: `0 0 0 1px ${accent}44` } : {}),
+        ...(shatter ? { animation: 'zn-shake .5s both' } : {}),
+      }}
+    >
+      <div className="flex items-center gap-2.75">
+        <HeroPortrait hero={hero} size={44} />
+        <div className="flex min-w-0 flex-col gap-0.75">
+          {/* o ataque direto mira o NOME do herói, não a placa inteira */}
+          <span
+            data-anchor={`hero:${side}`}
+            className="zn-head truncate text-[17px] tracking-[0.06em]"
+            title={`${name} — ${heroName}`}
+          >
+            {name}
+          </span>
+          <span
+            title={effectText}
+            className="zn-num truncate text-[8.5px] uppercase tracking-[0.14em]"
+            style={{ color: accent }}
+          >
+            {effectName}
+          </span>
+        </div>
+        <div
+          className="ml-auto flex shrink-0 gap-1"
+          title={t('board.pointsTitle', { max: POINTS_TO_WIN })}
+        >
+          {Array.from({ length: POINTS_TO_WIN }, (_, index) => (
+            <span
+              key={index}
+              className={`h-2.75 w-2.75 ${index < points ? 'zn-point zn-point-on' : 'zn-point'}`}
+              style={{ ['--zn-crys' as string]: accent }}
+            />
+          ))}
+        </div>
+      </div>
+
+      <LifeCrystals
+        spent={damageTaken}
+        accent={accent}
+        fresh={shatter ? shatter.count : 0}
+        {...(shatter ? { shatterId: shatter.id } : {})}
+      />
+
+      {/*
+        A âncora da mão do OPONENTE é esta linha de contagens: a mão dele não é
+        desenhada em lugar nenhum, e o descarte precisa sair de algum lugar
+        visível. A minha vem do leque, lá embaixo — por isso a âncora só entra na
+        placa de cima; duas com o mesmo nome fariam a camada medir a errada.
+      */}
+      <span
+        {...(mine ? {} : { 'data-anchor': `hand:${side}` })}
+        className="zn-num truncate text-[8.5px] uppercase tracking-[0.12em] text-zn-dim"
+      >
+        {t('board.counts', { hand, deck, discard })}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Os cristais da vida: `POINTS_TO_WIN × DIRECT_DAMAGE_PER_POINT` pedras em três
+ * fileiras. Quem diz que um cristal quebrou AGORA é o evento (invariante 3), não
+ * a diferença entre dois valores — `useShatter` entrega o lote que acabou de
+ * chegar, e o `key` com o id do lote faz o CSS tocar o estilhaço de novo quando o
+ * mesmo cristal quebrar numa partida seguinte.
+ */
+function LifeCrystals({
+  spent,
+  accent,
+  fresh,
+  shatterId,
+}: {
+  spent: number;
+  accent: string;
+  /** quantos dos apagados acabaram de quebrar */
+  fresh: number;
+  shatterId?: number;
+}) {
+  const { t } = useTranslation();
+  const total = POINTS_TO_WIN * DIRECT_DAMAGE_PER_POINT;
+  const left = Math.max(0, total - spent);
+
+  return (
+    <div
+      className="flex flex-col gap-1"
+      style={{ ['--zn-crys' as string]: accent }}
+      title={t('board.life', { left, total })}
+    >
+      {[0, 1, 2].map((row) => (
+        <div key={row} className="flex gap-1.25">
+          {[0, 1, 2, 3, 4].map((cell) => {
+            const index = row * DIRECT_DAMAGE_PER_POINT + cell;
+            const lit = index < left;
+            /* apagar avança da direita para a esquerda: o lote novo é o que
+               acabou de cruzar `left`, e só ele estilhaça */
+            const justBroke = !lit && index < left + fresh;
+            return (
+              <span key={cell} className="relative block h-3.25 w-3.25">
+                <span className={`absolute inset-0 ${lit ? 'zn-crystal' : 'zn-crystal-out'}`} />
+                {justBroke && shatterId !== undefined && (
+                  <span key={shatterId} className="zn-crystal-shard absolute inset-0" />
+                )}
+              </span>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── zonas ───────────────────────────────────────────────────────────────── */
+
+/**
+ * Deck e descarte lado a lado, cenário embaixo. É a coluna de 128px do desenho,
+ * e ela é igual nas duas fileiras — o cenário do oponente é informação pública, e
+ * escondê-lo obrigaria a decorar o que o outro pôs em campo.
+ */
+function ZoneColumn({
+  side,
+  mine,
+  deckCount,
+  discard,
+  scenario,
+  onViewDiscard,
+}: {
+  side: SideId;
+  /** o meu lado: descarte primeiro, deck na borda — espelho do de cima */
+  mine?: boolean;
+  deckCount: number;
+  discard: readonly CardInZone[];
+  scenario: CardInZone | null;
+  onViewDiscard: () => void;
+}) {
+  const { t } = useTranslation();
+  const discardTop = discard[discard.length - 1];
+
+  const deck = (
+    <ZoneTile label={t('board.deck')} count={deckCount} tone={mine ? ZN.green : ZN.red}>
+      <img
+        src="/assets/img/cover.png"
+        alt={t('board.deck')}
+        draggable={false}
+        data-anchor={`deck:${side}`}
+        className="block h-full w-full object-cover"
+        style={{
+          border: `1px solid ${mine ? '#2a5a3a' : '#6a3434'}`,
+          opacity: deckCount ? 1 : 0.25,
+        }}
+      />
+    </ZoneTile>
+  );
+
+  const trash = (
+    <ZoneTile label={t('board.discard')} count={discard.length} tone={ZN.redLight}>
+      <button
+        type="button"
+        onClick={onViewDiscard}
+        title={t('board.seeDiscard')}
+        data-anchor={`discard:${side}`}
+        className="block h-full w-full cursor-pointer"
+      >
+        {discardTop ? (
+          <CardImage cardId={discardTop.cardId} className="h-full w-full" />
+        ) : (
+          <span className="block h-full w-full border border-dashed border-[#3a2a2e] bg-zn-panel/60" />
+        )}
+      </button>
+    </ZoneTile>
+  );
+
+  return (
+    <div className="flex flex-col items-end gap-2">
+      <div className="flex gap-2.5">
+        {mine ? trash : deck}
+        {mine ? deck : trash}
+      </div>
+      <ZoneTile
+        label={t('board.scenario')}
+        tone={ELEMENT_COLOR.wind}
+        title={scenario ? undefined : t('board.noScenario')}
+      >
+        {scenario ? (
+          <CardImage cardId={scenario.cardId} className="h-full w-full" />
+        ) : (
+          <span className="block h-full w-full border border-dashed border-[#2a3a38] bg-zn-panel/60" />
+        )}
+      </ZoneTile>
+    </div>
+  );
+}
+
+/** uma pilha da coluna de zonas: a imagem, a contagem no canto e o rótulo mono */
+function ZoneTile({
+  label,
+  count,
+  tone,
+  title,
+  children,
+}: {
+  label: string;
+  count?: number;
+  tone: string;
+  title?: string | undefined;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1.25" title={title}>
+      <div className="relative" style={{ width: ZONE_WIDTH, aspectRatio: `${CARD_RATIO}` }}>
+        {children}
+        {count !== undefined && (
+          <span
+            className="zn-num absolute -right-1.75 -top-1.75 min-w-5.5 bg-zn-ink px-1.25 py-0.5 text-center text-[10px] font-bold"
+            style={{ border: `1px solid ${tone}`, color: tone }}
+          >
+            {count}
+          </span>
+        )}
+      </div>
+      <span
+        className="zn-num text-[8px] uppercase tracking-[0.16em]"
+        style={{ color: count === undefined ? '#6a7080' : tone }}
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
+
+/* ── barra do turno ──────────────────────────────────────────────────────── */
+
+/**
+ * A faixa entre as duas fileiras: de quem é a vez, em que fase, quanto falta do
+ * relógio e o que dá para fazer agora.
+ *
+ * "Ir para combate" e "Fim de turno" convivem na fase principal — o desenho traz
+ * um botão só que muda de rótulo, mas encerrar o turno sem passar pelo combate é
+ * lance legítimo do motor, e escondê-lo obrigaria a um clique inútil.
+ */
+function TurnBar({
+  view,
+  canAct,
+  deadlineMs,
+  deadlineIsReaction,
+  targeting,
+  logOpen,
+  phaseLabel,
+  onCancelTarget,
+  onAdvance,
+  onEndTurn,
+  onToggleLog,
+  onConcede,
+  onLeaveReplay,
+  replay,
+}: {
+  view: GameView;
+  canAct: boolean;
+  deadlineMs: number | null;
+  /** o prazo que está correndo é o de uma janela de reação (7s), não o do turno */
+  deadlineIsReaction: boolean;
+  targeting: boolean;
+  logOpen: boolean;
+  phaseLabel: string;
+  onCancelTarget: () => void;
+  onAdvance: () => void;
+  onEndTurn: () => void;
+  onToggleLog: () => void;
+  onConcede: () => void;
+  onLeaveReplay: () => void;
+  /** presente só no replay: os controles de turno dão lugar aos de reprodução */
+  replay: ReplayControl | null;
+}) {
+  const { t } = useTranslation();
+  const seekReplay = useMatchStore((state) => state.replaySeek);
+  const mine = view.activeSide === view.side;
+  /*
+    A régua tem de ser a do prazo que veio, não a do meu estado: enquanto o
+    OPONENTE responde uma janela de reação, o prazo na tela é o dela (7s) e
+    medi-lo em 60 fazia a barra desabar e voltar ao cheio a cada lance —
+    o "a linha do tempo diminui e volta pra onde tava" do relato.
+  */
+  const totalSeconds = deadlineIsReaction ? REACTION_SECONDS : TURN_SECONDS;
+  const left = useTimeLeft(deadlineMs);
+  const held = deadlineMs === null;
+  const remaining = held ? totalSeconds * 1000 : left;
+  const fraction = Math.max(0, Math.min(1, remaining / (totalSeconds * 1000)));
+  const running = !held && !view.winner && view.phase !== 'mulligan';
+  const fuseColor = !running ? '#2e333d' : remaining < 15_000 ? ZN.red : ZN.gold;
+  /* no replay o fusível do turno não conta nada: o fio vira o avanço da fita */
+  const progress = replay ? (replay.index + 1) / replay.total : fraction;
+
+  const sideLabel = replay && view.winner
+    ? t('replay.end')
+    : view.winner
+    ? t('board.overTag')
+    : view.phase === 'mulligan'
+      ? t('board.mulliganTitle')
+      : mine
+        ? t('board.announce.yourTurn')
+        : t('board.announce.opponentTurn');
+
+  return (
+    <div className="relative flex items-center gap-3 px-1">
+      {/* o fusível do legado: queima da esquerda para a direita, colado no topo */}
+      {/*
+        O fusível do turno e a fita do replay são o MESMO fio, e é o que faz a
+        barra do replay caber onde cabia a do turno. No replay ele vira alvo de
+        clique: é a busca, e o passo pedido é a fração da largura.
+      */}
+      <div
+        className={`zn-track absolute inset-x-0 -top-0.5 ${replay ? 'h-1.5 cursor-pointer' : 'h-0.5'}`}
+        {...(replay
+          ? {
+              role: 'slider' as const,
+              'aria-label': t('replay.step', { index: replay.index + 1, total: replay.total }),
+              'aria-valuenow': replay.index + 1,
+              'aria-valuemin': 1,
+              'aria-valuemax': replay.total,
+              tabIndex: 0,
+              onClick: (event: React.MouseEvent<HTMLDivElement>) => {
+                const box = event.currentTarget.getBoundingClientRect();
+                const at = (event.clientX - box.left) / box.width;
+                seekReplay(Math.round(at * (replay.total - 1)));
+              },
+            }
+          : {})}
+      >
+        <span
+          className={`h-full ${replay ? '' : 'transition-[width] duration-1000 ease-linear'}`}
+          style={{
+            width: `${progress * 100}%`,
+            background: replay ? ZN.gold : fuseColor,
+          }}
+        />
+      </div>
+
+      <span className="zn-num shrink-0 text-[9px] uppercase tracking-[0.22em] text-zn-faint">
+        {t('board.turn', { turn: view.turn })}
+      </span>
+      <span
+        className="zn-head shrink-0 text-[20px] tracking-[0.16em]"
+        style={{ color: mine ? ZN.green : ZN.red }}
+      >
+        {sideLabel}
+      </span>
+      <span className="zn-num hidden shrink-0 text-[9px] uppercase tracking-[0.2em] text-zn-gold md:inline">
+        {phaseLabel}
+      </span>
+      {!replay && (
+        <span className="zn-num shrink-0 text-[12px] font-bold" style={{ color: fuseColor }}>
+          {running ? Math.ceil(remaining / 1000) : '—'}
+        </span>
+      )}
+      {view.waitingForOpponent && (
+        <span className="zn-num truncate text-[9px] uppercase tracking-[0.16em] text-zn-gold-light">
+          {t('board.opponentDeciding')}
+        </span>
+      )}
+
+      <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        {replay && <ReplayControls replay={replay} />}
+        {targeting && (
+          <button
+            type="button"
+            className="zn-btn zn-btn-wire h-8 uppercase"
+            onClick={onCancelTarget}
+          >
+            {t('common.cancel')}
+          </button>
+        )}
+        {!replay && mine && view.phase === 'main' && !view.winner && (
+          <button
+            type="button"
+            disabled={!canAct}
+            className="zn-btn zn-btn-gold h-8.5 tracking-[0.18em] uppercase"
+            onClick={onAdvance}
+          >
+            {t('board.goToBattle')}
+          </button>
+        )}
+        {!replay && mine && view.phase !== 'mulligan' && !view.winner && (
+          <button
+            type="button"
+            disabled={!canAct}
+            className="zn-btn zn-btn-wire h-8.5 tracking-[0.18em] uppercase"
+            style={{ borderColor: ZN.redDeep, color: ZN.redLight }}
+            onClick={onEndTurn}
+          >
+            {t('board.endTurn')}
+          </button>
+        )}
+        <button
+          type="button"
+          title={t(logOpen ? 'board.hideLog' : 'board.showLog')}
+          className="zn-btn zn-btn-quiet h-8.5 px-3 uppercase tracking-[0.16em]"
+          onClick={onToggleLog}
+        >
+          {logOpen ? '›' : '‹'} {t('board.log')}
+        </button>
+        {/* a última posição da barra é a da saída: desistir na partida, sair no replay */}
+        {replay ? (
+          <button
+            type="button"
+            className="zn-btn zn-btn-wire h-8.5 tracking-[0.18em] uppercase"
+            onClick={onLeaveReplay}
+          >
+            {t('replay.exit')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="zn-btn zn-btn-quiet zn-btn-undo h-8.5 px-3 uppercase tracking-[0.16em]"
+            onClick={onConcede}
+          >
+            {t('board.concede')}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── mão ─────────────────────────────────────────────────────────────────── */
+
+/**
+ * A doca de baixo: a dica à esquerda, o cenário em campo à direita e a mão em
+ * leque no meio.
+ *
+ * As cartas se sobrepõem, inclinam a partir do centro e a de baixo do ponteiro se
+ * levanta reta e grande. A ESCOLHIDA sai do leque e abre os botões dela por cima
+ * da própria carta — é o comportamento que já existia, e o desenho só trocou a
+ * pele dele. Ampliar continua sendo o clique DIREITO, em qualquer carta.
+ */
+function HandDock({
+  side,
+  hand,
+  selectedUid,
+  hintText,
+  hintTone,
+  scenario,
+  actionsOf,
+  showActions,
+  hasActivation,
+  onSelect,
+}: {
+  /** o lado dono da mão: é a âncora `hand:<lado>` de onde o descarte parte */
+  side: SideId;
+  hand: readonly CardInZone[];
+  selectedUid: string | null;
+  hintText: string;
+  hintTone: string;
+  scenario: CardInZone | null;
+  actionsOf: (inHand: CardInZone) => HandAction[];
+  showActions: boolean;
+  hasActivation: (inHand: CardInZone) => boolean;
+  onSelect: (uid: string) => void;
+}) {
+  const { t, cardName } = useTranslation();
+  const middle = (Math.max(1, hand.length) - 1) / 2;
+
+  return (
+    <div className="relative">
+      <div className="absolute bottom-3.5 left-4 flex max-w-[34cqw] items-center gap-2.25">
+        <span aria-hidden className="h-1.5 w-1.5 shrink-0" style={{ background: hintTone }} />
+        <span
+          className="zn-num truncate text-[9px] uppercase tracking-[0.14em]"
+          style={{ color: hintTone }}
+          title={hintText}
+        >
+          {hintText}
+        </span>
+      </div>
+
+      <div className="absolute bottom-3.5 right-4">
+        <span
+          className="zn-num block max-w-[26cqw] truncate border border-zn-edge bg-zn-bar/90 px-2.25 py-1.25 text-[9px] uppercase tracking-[0.12em]"
+          style={{ color: ELEMENT_COLOR.wind }}
+        >
+          {t('board.scenarioTag', {
+            name: scenario ? cardName(scenario.cardId) : t('board.noScenario'),
+          })}
+        </span>
+      </div>
+
+      <div
+        data-anchor={`hand:${side}`}
+        className="absolute bottom-2 left-1/2 flex h-[190px] -translate-x-1/2 items-end"
+      >
+        {hand.map((inHand, index) => {
+          const offset = index - middle;
+          const selected = selectedUid === inHand.uid;
+          return (
+            <HandCard
+              key={inHand.uid}
+              inHand={inHand}
+              first={index === 0}
+              tilt={Math.max(-FAN_TILT_MAX, Math.min(FAN_TILT_MAX, offset * FAN_TILT))}
+              lift={Math.abs(offset) * FAN_LIFT - 18}
+              selected={selected}
+              flagged={hasActivation(inHand)}
+              actions={selected && showActions ? actionsOf(inHand) : []}
+              onSelect={() => onSelect(inHand.uid)}
+            />
+          );
+        })}
+        {hand.length === 0 && (
+          <span className="zn-num self-center text-[10px] uppercase tracking-[0.14em] text-zn-ghost">
+            {t('board.emptyHand')}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HandCard({
+  inHand,
+  first,
+  tilt,
+  lift,
+  selected,
+  flagged,
+  actions,
+  onSelect,
+}: {
+  inHand: CardInZone;
+  /** a primeira não recua: é dela que o leque começa */
+  first: boolean;
+  tilt: number;
+  lift: number;
+  selected: boolean;
+  /** tem efeito para ativar agora */
+  flagged: boolean;
+  actions: HandAction[];
+  onSelect: () => void;
+}) {
+  const { t, cardName } = useTranslation();
+
+  return (
+    <div
+      className="zn-hand-card relative"
+      style={{
+        width: HAND_WIDTH,
+        marginLeft: first ? 0 : -HAND_OVERLAP,
+        transform: selected
+          ? 'rotate(0deg) translateY(-40px) scale(1.14)'
+          : `rotate(${tilt}deg) translateY(${lift}px)`,
+        zIndex: selected ? 40 : 1,
+        ...(selected ? { filter: 'drop-shadow(0 0 16px rgba(224,163,60,.65))' } : {}),
+      }}
+    >
+      <button
+        type="button"
+        onClick={onSelect}
+        title={cardName(inHand.cardId)}
+        className="block w-full cursor-pointer"
+        style={{ border: `1px solid ${selected ? ZN.gold : '#2a2e38'}` }}
+      >
+        <CardImage cardId={inHand.cardId} className="w-full" />
+      </button>
+
+      {flagged && (
+        <span
+          title={t('board.canActivate')}
+          className="pointer-events-none absolute -right-1.75 -top-1.75 grid h-5.5 w-5.5 place-items-center"
+        >
+          <span
+            aria-hidden
+            className="absolute inset-0 rotate-45"
+            style={{
+              background: 'rgba(20,10,34,.96)',
+              border: '1px solid #a875f0',
+              animation: 'zn-fx-blink 1s ease-in-out infinite',
+            }}
+          />
+          <span className="zn-num relative text-[11px] font-bold text-[#d6bcff]">★</span>
+        </span>
+      )}
+
+      {actions.length > 0 && (
+        <div className="absolute inset-x-1 bottom-1 flex flex-col gap-1">
+          {actions.map((action) => (
+            <button
+              key={action.key}
+              type="button"
+              disabled={action.disabled}
+              title={action.why ?? action.label}
+              /* altura livre: "Descartar e ativar" não cabe numa linha na carta
+                 de 112px, e rótulo cortado é pior que botão de duas linhas */
+              className={`zn-btn h-auto min-h-6 px-1 py-1 text-[8.5px] leading-[1.15] tracking-[0.06em] uppercase ${
+                action.tone === 'gold' ? 'zn-btn-gold' : 'zn-btn-wire'
+              }`}
+              onClick={action.run}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── relógio ─────────────────────────────────────────────────────────────── */
 
 /** ms que faltam do prazo — Infinito quando não há prazo correndo. */
 function useTimeLeft(deadlineMs: number | null): number {
@@ -692,706 +1938,193 @@ function useTimeLeft(deadlineMs: number | null): number {
   return left;
 }
 
-function useRemaining(deadlineMs: number): number {
-  const [remaining, setRemaining] = useState(() => Math.max(0, deadlineMs - Date.now()));
-  useEffect(() => {
-    setRemaining(Math.max(0, deadlineMs - Date.now()));
-    const interval = setInterval(() => setRemaining(Math.max(0, deadlineMs - Date.now())), 250);
-    return () => clearInterval(interval);
-  }, [deadlineMs]);
-  return remaining;
-}
-
-/**
- * O "fusível" do legado: barra que queima da esquerda para a direita.
- *
- * `deadlineMs` nulo é prazo que ainda NÃO começou a correr — a animação está
- * contando o lance (decisão nº 25). A barra fica cheia e apagada em vez de sumir:
- * ela reserva a própria altura, e barra que aparece e desaparece a cada virada é o
- * mesmo pulo de tela que esta trava veio tirar.
- */
-function FuseBar({ deadlineMs, totalSeconds }: { deadlineMs: number | null; totalSeconds: number }) {
-  const left = useTimeLeft(deadlineMs);
-  const held = deadlineMs === null;
-  const remaining = held ? totalSeconds * 1000 : left;
-  const seconds = Math.ceil(remaining / 1000);
-  const fraction = Math.max(0, Math.min(1, remaining / (totalSeconds * 1000)));
-  const color =
-    fraction > 0.4
-      ? 'linear-gradient(90deg,#8fce4f,#d9a940)'
-      : fraction > 0.2
-        ? 'linear-gradient(90deg,#d9a940,#f7a44a)'
-        : 'linear-gradient(90deg,#cf6420,#c0392b)';
-  return (
-    <div className={`mb-1.5 flex items-center gap-2 text-xs ${held ? 'opacity-40' : ''}`}>
-      <span
-        className={`w-14 text-right font-bold tabular-nums ${
-          fraction > 0.2 ? 'text-ez-muted' : 'text-ez-blood-light'
-        }`}
-      >
-        ⏱ {seconds}s
-      </span>
-      <div className="h-[3px] flex-1 overflow-hidden rounded-sm bg-[#141b31]">
-        <div
-          className="h-full rounded-sm transition-[width] duration-200 ease-linear"
-          style={{ width: `${fraction * 100}%`, background: color }}
-        />
-      </div>
-    </div>
-  );
-}
-
 function ReactionCountdown({ deadlineMs }: { deadlineMs: number }) {
-  const remaining = useRemaining(deadlineMs);
+  const remaining = useTimeLeft(deadlineMs);
   return (
-    <p className="ez-heading mb-3 text-center text-2xl tabular-nums text-ez-ember-light">
+    <span className="zn-num text-[22px] font-bold" style={{ color: ZN.red }}>
       {Math.max(0, Math.ceil(remaining / 1000))}s
-    </p>
-  );
-}
-
-function ZoneColumn({
-  side,
-  deckCount,
-  discard,
-  scenario,
-  cardHeight,
-  onViewDiscard,
-}: {
-  side: SideId;
-  deckCount: number;
-  discard: readonly CardInZone[];
-  scenario: CardInZone | null;
-  /** medida pela fileira, para as duas colunas de zona terem a mesma largura */
-  cardHeight: number;
-  onViewDiscard: () => void;
-}) {
-  const { t } = useTranslation();
-  const discardTop = discard[discard.length - 1];
-  const width = cardHeight * CARD_RATIO;
-  /* a pilha manda na largura do grupo, o rótulo se corta nela e nunca a estica */
-  const group = 'flex w-full min-w-0 flex-col items-center';
-  const label = 'w-full truncate';
-
-  return (
-    <div
-      className="font-title flex h-full shrink-0 flex-col items-center justify-center gap-1 overflow-hidden text-center text-[9px] font-bold uppercase tracking-[0.1em] text-ez-muted"
-      style={{ width: zoneColumnWidth(cardHeight) }}
-    >
-      <div className={group}>
-        <div className="relative" style={{ height: cardHeight, width }}>
-          <img
-            src="/assets/img/cover.png"
-            alt={t('board.deck')}
-            draggable={false}
-            className={`h-full w-full rounded object-cover ${deckCount ? '' : 'opacity-25 grayscale'}`}
-            style={{ boxShadow: '2px 2px 0 #0a0f22, 4px 4px 0 #0d1430, 0 10px 20px rgba(0,0,0,.6)' }}
-          />
-          <CountBadge value={deckCount} />
-        </div>
-        <div className={label}>{t('board.deck')}</div>
-      </div>
-      <div className={group}>
-        <button
-          type="button"
-          onClick={onViewDiscard}
-          title={t('board.seeDiscard')}
-          data-anchor={`discard:${side}`}
-          className="relative block cursor-pointer rounded hover:ring-2 hover:ring-ez-blue-light"
-          style={{ height: cardHeight, width }}
-        >
-          {discardTop ? (
-            <CardImage cardId={discardTop.cardId} className="h-full w-auto rounded" />
-          ) : (
-            <div className="h-full w-full rounded border border-dashed border-ez-line" />
-          )}
-          <CountBadge value={discard.length} />
-        </button>
-        <div className={label}>{t('board.discard')}</div>
-      </div>
-      <div className={group}>
-        <div style={{ height: cardHeight, width }}>
-          {scenario ? (
-            <CardImage
-              cardId={scenario.cardId}
-              className="h-full w-auto rounded ring-1 ring-ez-moss/60"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center rounded border border-dashed border-ez-moss/30 text-ez-moss/50">
-              ∅
-            </div>
-          )}
-        </div>
-        <div className={label}>{t('board.scenario')}</div>
-      </div>
-    </div>
-  );
-}
-
-function CountBadge({ value }: { value: number }) {
-  return (
-    <span className="absolute -bottom-1 -right-1 rounded-full bg-ez-ink px-1.5 text-[10px] font-bold text-ez-text ring-1 ring-ez-line">
-      {value}
     </span>
   );
 }
 
-function FieldRow({
-  side,
-  field,
-  cardHeight,
-  stripHeight,
-  gap,
-  onClickSlot,
-  highlight,
-  canAttackNow,
-  hasActivation,
-}: {
-  side: SideId;
-  field: readonly (CreatureInPlay | null)[];
-  cardHeight: number;
-  stripHeight: number;
-  gap: number;
-  onClickSlot: (slot: number) => void;
-  highlight?: boolean;
-  canAttackNow?: (creature: CreatureInPlay, slot: number) => boolean;
-  hasActivation?: (creature: CreatureInPlay, slot: number) => boolean;
-}) {
-  const { t } = useTranslation();
-  /** o atacante sai do slot enquanto o fantasma vai bater e voltar */
-  const movingUid = useMovingUid();
-  const cardWidth = cardHeight * CARD_RATIO;
-
-  return (
-    <div className="flex min-w-0 flex-1 items-start justify-center overflow-hidden" style={{ gap }}>
-      {field.map((creature, slot) => {
-        const ready = creature ? (hasActivation?.(creature, slot) ?? false) : false;
-        return (
-          <div key={slot} className="flex h-full flex-col items-center" style={{ width: cardWidth }}>
-            <div
-              data-anchor={`slot:${side}:${slot}`}
-              className="relative rounded border border-transparent"
-              style={{
-                height: cardHeight,
-                width: cardWidth,
-                ...(highlight && !creature
-                  ? { animation: 'ez-slot-pulse 1.4s ease-in-out infinite' }
-                  : highlight
-                    ? { borderColor: 'rgba(232,193,90,.7)' }
-                    : {}),
-              }}
-            >
-              {creature ? (
-                <div
-                  className={`relative h-full ${creature.uid === movingUid ? 'invisible' : ''}`}
-                  title={ready ? t('board.canActivate') : undefined}
-                  style={
-                    ready
-                      ? { animation: 'ezone-ready 1.6s ease-in-out infinite', borderRadius: 6 }
-                      : undefined
-                  }
-                >
-                  <CreatureOnField
-                    creature={creature}
-                    field={field}
-                    className="h-full"
-                    onClick={() => onClickSlot(slot)}
-                  />
-                  {canAttackNow?.(creature, slot) && (
-                    <span className="font-title pointer-events-none absolute -top-2 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded bg-gradient-to-b from-[#f7a44a] to-[#934011] px-1.5 text-[10px] font-bold tracking-wider text-[#fff3e4] shadow-md">
-                      {t('board.attack')}
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="font-title h-full w-full cursor-pointer rounded border border-dashed border-ez-line/70 text-lg text-ez-faint transition-colors hover:bg-white/5 hover:text-ez-muted"
-                  onClick={() => onClickSlot(slot)}
-                >
-                  {slot + 1}
-                </button>
-              )}
-            </div>
-            {stripHeight > 0 && creature && (
-              <AttachmentStrip attachments={creature.attachments} height={stripHeight} />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+/* ── ativação e janelas ──────────────────────────────────────────────────── */
 
 /**
- * Uma fileira inteira do tabuleiro: coluna de zonas (deck/descarte/cenário) de um
- * lado, campo no meio e um ESPAÇADOR da mesma largura do outro.
+ * O painel de ativação da criatura.
  *
- * O espaçador não é enfeite: sem ele o campo do jogador começaria colado na borda
- * enquanto o do oponente começaria depois da coluna de zonas, e as colunas de
- * ataque — que são a regra do jogo, "só ataca quem está em frente" — deixariam de
- * ficar uma sobre a outra na tela. Medir aqui, uma vez por fileira, é o que garante
- * que as duas usem exatamente a mesma geometria.
+ * Lista TODA habilidade que a criatura traz, inclusive a que não dá para usar
+ * agora — desligada, com o motivo do motor no lugar do rótulo. Antes o painel só
+ * conhecia o que estava utilizável e dizia "esta criatura não tem habilidade
+ * ativável": o Bebê Urso, que promete uma no texto impresso, parecia quebrado
+ * quando faltava o Urso no descarte (relato do DevLukkas).
  */
-function FieldLine({
-  side,
-  mirrored,
-  field,
-  deckCount,
-  discard,
-  scenario,
-  onViewDiscard,
-  onClickSlot,
-  highlight,
-  canAttackNow,
-  hasActivation,
-}: {
-  side: SideId;
-  /** lado do jogador: as zonas ficam à direita */
-  mirrored?: boolean;
-  field: readonly (CreatureInPlay | null)[];
-  deckCount: number;
-  discard: readonly CardInZone[];
-  scenario: CardInZone | null;
-  onViewDiscard: () => void;
-  onClickSlot: (slot: number) => void;
-  highlight?: boolean;
-  canAttackNow?: (creature: CreatureInPlay, slot: number) => boolean;
-  hasActivation?: (creature: CreatureInPlay, slot: number) => boolean;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const box = useBoxSize(ref);
-  const gap = 8;
-
-  /** três pilhas empilhadas: cada uma fica com um terço da fileira, menos o rótulo */
-  const zoneCardHeight = Math.max(24, Math.min(box.height / 3 - 14, 132));
-  const zoneWidth = zoneColumnWidth(zoneCardHeight);
-  const fieldWidth = Math.max(0, box.width - 2 * (zoneWidth + gap));
-  const slotWidth = Math.max(0, (fieldWidth - gap * (SLOTS_PER_SIDE - 1)) / SLOTS_PER_SIDE);
-  // a faixa de anexos só rouba altura quando há anexo na fileira
-  const anyAttachment = field.some((creature) => (creature?.attachments.length ?? 0) > 0);
-  const stripHeight = anyAttachment ? Math.max(22, box.height * 0.24) : 0;
-  const cardHeight = Math.max(0, Math.min(box.height - stripHeight - 2, slotWidth / CARD_RATIO));
-
-  const zone = (
-    <ZoneColumn
-      side={side}
-      deckCount={deckCount}
-      discard={discard}
-      scenario={scenario}
-      cardHeight={zoneCardHeight}
-      onViewDiscard={onViewDiscard}
-    />
-  );
-  const spacer = <div className="shrink-0" style={{ width: zoneWidth }} />;
-
-  return (
-    <div ref={ref} className="flex min-h-0 flex-1 items-stretch" style={{ gap }}>
-      {mirrored ? spacer : zone}
-      <FieldRow
-        side={side}
-        field={field}
-        cardHeight={cardHeight}
-        stripHeight={stripHeight}
-        gap={gap}
-        onClickSlot={onClickSlot}
-        {...(highlight === undefined ? {} : { highlight })}
-        {...(canAttackNow ? { canAttackNow } : {})}
-        {...(hasActivation ? { hasActivation } : {})}
-      />
-      {mirrored ? zone : spacer}
-    </div>
-  );
-}
-
-/**
- * Os anexos da criatura, meus e do oponente, desenhados debaixo dela — antes só
- * existia o contador "+2" no canto, e o jogador não tinha como saber o que estava
- * anexado sem abrir a carta. Clique amplia.
- */
-function AttachmentStrip({
-  attachments,
-  height,
-}: {
-  attachments: readonly AttachmentInPlay[];
-  height: number;
-}) {
-  const zoom = useCardZoomStore((state) => state.zoom);
-  const { t, cardName } = useTranslation();
-  if (!attachments.length) return null;
-  return (
-    <div
-      className="flex w-full items-start justify-center gap-1 pt-0.5"
-      style={{ height }}
-      title={t('board.attachments')}
-    >
-      {attachments.map((attachment) => (
-        <button
-          key={attachment.uid}
-          type="button"
-          onClick={() => zoom(attachment.cardId)}
-          title={cardName(attachment.cardId)}
-          className="cursor-pointer rounded ring-1 ring-ez-blue/70 transition-transform hover:-translate-y-0.5 hover:ring-2 hover:ring-ez-blue-light"
-          style={{ height: height - 4, width: (height - 4) * CARD_RATIO }}
-        >
-          <CardImage cardId={attachment.cardId} className="h-full w-auto rounded" />
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/** graus de inclinação e pixels de altura que o leque tira por passo do centro */
-const FAN_TILT_PER_CARD = 4;
-const FAN_LIFT_PER_CARD = 7;
-
-/** o quanto a carta escolhida fica ACIMA do alto do arco, para se destacar dele */
-const PICKED_LIFT = 6;
-
-/**
- * A mão em leque, como na mesa: as cartas se sobrepõem, inclinam a partir do
- * centro e a de baixo do ponteiro se levanta reta e grande.
- *
- * A medida continua sendo a de antes — a ALTURA que sobrou manda no tamanho da
- * carta —, mas o passo horizontal agora pode ser MENOR que a carta: é a
- * sobreposição que deixa oito cartas caberem sem encolher todas. Sem
- * `overflow-hidden`: o que sobe no hover precisa passar por cima do tabuleiro.
- */
-function HandRow({
-  hand,
-  selectedUid,
-  playable,
-  hasActivation,
-  onSelect,
-  onPlay,
-}: {
-  hand: readonly CardInZone[];
-  selectedUid: string | null;
-  playable: boolean;
-  hasActivation: (inHand: CardInZone) => boolean;
-  onSelect: (uid: string) => void;
-  onPlay: (inHand: CardInZone, card: CatalogCard) => void;
-}) {
-  const { t } = useTranslation();
-  const ref = useRef<HTMLDivElement>(null);
-  const box = useBoxSize(ref);
-  const count = Math.max(1, hand.length);
-  const middle = (count - 1) / 2;
-  /*
-    O leque é um ARCO com a carta do meio no alto, e ele sobe a partir da borda de
-    baixo: as pontas ficam apoiadas no chão da faixa e o meio se levanta. Fazer o
-    contrário (pontas descendo) empurrava duas cartas para fora da janela.
-    A altura da carta desconta essa subida, senão o meio estoura por cima.
-  */
-  const fanLift = middle * FAN_LIFT_PER_CARD;
-  const cardHeight = Math.max(0, box.height - 10 - fanLift - PICKED_LIFT);
-  const cardWidth = cardHeight * CARD_RATIO;
-  /* passo: a carta inteira mais um respiro, ou o que couber — o resto sobrepõe */
-  const step = Math.min(
-    cardWidth + 6,
-    Math.max(28, (box.width - cardWidth) / Math.max(1, count - 1)),
-  );
-
-  return (
-    <div
-      ref={ref}
-      className="relative flex min-h-0 flex-[1.15] shrink-0 items-end justify-center pt-1"
-    >
-      {hand.map((inHand, index) => {
-        const card = cardById(inHand.cardId);
-        const selected = selectedUid === inHand.uid;
-        const offset = index - middle;
-        return (
-          <div
-            key={inHand.uid}
-            className="ez-hand-card absolute bottom-0"
-            style={{
-              height: cardHeight,
-              width: cardWidth,
-              left: `calc(50% + ${offset * step}px - ${cardWidth / 2}px)`,
-              /* a escolhida sai do leque e fica de pé: é nela que o botão de jogar mora */
-              transform: selected
-                ? `translateY(${-(fanLift + PICKED_LIFT)}px)`
-                : `rotate(${offset * FAN_TILT_PER_CARD}deg) translateY(${
-                    (Math.abs(offset) - middle) * FAN_LIFT_PER_CARD
-                  }px)`,
-              zIndex: selected ? 30 : 1,
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => onSelect(inHand.uid)}
-              className={`block h-full w-full cursor-pointer rounded ${
-                selected ? 'ring-2 ring-ez-gold-light' : ''
-              }`}
-              style={
-                selected ? { boxShadow: '0 0 24px rgba(242,211,129,.65)' } : undefined
-              }
-            >
-              <CardImage cardId={inHand.cardId} className="h-full w-auto rounded" />
-            </button>
-            {hasActivation(inHand) && (
-              <span
-                title={t('board.canActivate')}
-                /* canto de cima à ESQUERDA: à direita fica o hexágono de elemento da carta, e
-                   um ícone ciano em cima de outro ícone ciano não se lê */
-                className="pointer-events-none absolute left-1 top-1 rounded-full bg-sky-300 px-2 py-1 text-base font-black leading-none text-slate-950 ring-2 ring-white"
-                style={{ animation: 'ezone-blink 1s ease-in-out infinite' }}
-              >
-                ✦
-              </span>
-            )}
-            {selected && playable && (
-              <button
-                type="button"
-                className="ez-btn ez-btn-gold absolute inset-x-1 bottom-1 px-1 py-1 text-[11px] tracking-[0.08em]"
-                onClick={() => onPlay(inHand, card)}
-              >
-                {card.type === 'creature'
-                  ? card.summonRule?.normal === false
-                    ? t('board.activate')
-                    : t('board.summon')
-                  : card.type === 'command'
-                    ? t('board.play')
-                    : card.type === 'scenario'
-                      ? t('board.activate')
-                      : t('board.attach')}
-              </button>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/**
- * A placa do herói: retrato, nome, o efeito que ele carrega e os pontos em losango.
- *
- * Compacta de propósito — o tabuleiro cabe na janela (decisão nº 24) e cada pixel
- * que a placa toma sai da altura da carta em campo. O NOME segue sendo a âncora do
- * ataque direto (`data-anchor`), não a placa inteira.
- */
-function HeroPlate({
-  side,
-  mine,
-  hero,
-  name,
-  points,
-  directDamage,
-  deck,
-  hand,
-  discard,
-  active,
-}: {
-  side: SideId;
-  /** o meu lado: verde de sereno em vez do azul do oponente */
-  mine?: boolean;
-  hero: string;
-  name: string;
-  points: number;
-  directDamage: number;
-  deck: number;
-  hand: number;
-  discard: number;
-  active: boolean;
-}) {
-  const { t } = useTranslation();
-  const heroName = t(`hero.${hero}.name` as TextKey);
-  const effectName = t(`hero.${hero}.effectName` as TextKey);
-
-  return (
-    <div
-      className="ez-panel flex shrink-0 flex-wrap items-center gap-3 px-2.5 py-1"
-      style={
-        active
-          ? {
-              borderColor: mine ? 'rgba(143,206,79,.55)' : 'rgba(92,182,247,.5)',
-              boxShadow: `0 0 0 1px ${mine ? 'rgba(143,206,79,.25)' : 'rgba(92,182,247,.22)'}`,
-            }
-          : undefined
-      }
-    >
-      <HeroPortrait hero={hero} size={38} />
-      <div className="flex min-w-0 flex-col leading-tight">
-        {/* o ataque direto mira o NOME do herói, não a placa inteira */}
-        <span
-          data-anchor={`hero:${side}`}
-          className={`ez-heading truncate text-sm ${mine ? 'text-ez-moss-light' : 'text-ez-parchment'}`}
-        >
-          {name} — {heroName}
-        </span>
-        <span className={`truncate text-[11px] ${mine ? 'text-[#a4c98a]' : 'text-[#7fb7e8]'}`}>
-          {effectName}
-        </span>
-      </div>
-
-      <div
-        className="flex items-center gap-1.5"
-        title={t('board.pointsTitle', { max: POINTS_TO_WIN })}
-      >
-        {Array.from({ length: POINTS_TO_WIN }, (_, index) => (
-          <span
-            key={index}
-            className="h-3 w-3 rotate-45 border"
-            style={
-              index < points
-                ? {
-                    background: 'radial-gradient(circle at 35% 30%, #f8e3a4, #cb9c31 60%, #7a5514)',
-                    borderColor: '#f6dd9a',
-                    boxShadow: '0 0 10px rgba(232,193,90,.6)',
-                  }
-                : { background: '#0b1020', borderColor: '#33405f' }
-            }
-          />
-        ))}
-      </div>
-
-      <DamageCrystals side={side} damage={directDamage} />
-      <span className="hidden text-xs text-ez-dim tabular-nums sm:inline">
-        {t('board.hand', { count: hand })} · {t('board.deckCount', { count: deck })} ·{' '}
-        {t('board.discardCount', { count: discard })}
-      </span>
-    </div>
-  );
-}
-
-/**
- * O dano direto desenhado: um cristal por ponto que falta para o oponente marcar,
- * quebrando conforme o dano entra (pedido do DevLukkas — antes era o texto
- * "Dano 0/5", que ninguém lia no meio da partida). O número continua ali, no
- * `title`, para quem quiser conferir.
- *
- * Quem diz que um cristal quebrou AGORA é o evento (invariante 3), não a diferença
- * entre dois valores de `directDamage`: `useShatter` entrega o lote que acabou de
- * chegar, e o `key` com o id do lote é o que faz o CSS tocar o estilhaço de novo
- * quando o mesmo cristal quebra numa partida seguinte.
- */
-function DamageCrystals({ side, damage }: { side: SideId; damage: number }) {
-  const { t } = useTranslation();
-  const shatter = useShatter(side);
-  /** o primeiro cristal deste lote: os anteriores já estavam quebrados, não estouram de novo */
-  const firstFresh = Math.max(0, damage - (shatter?.count ?? 0));
-
-  return (
-    <div
-      className="flex shrink-0 items-center gap-1"
-      title={t('board.damage', { value: damage, max: DIRECT_DAMAGE_PER_POINT })}
-    >
-      {Array.from({ length: DIRECT_DAMAGE_PER_POINT }, (_, index) => {
-        const broken = index < damage;
-        return (
-          <span key={index} className="relative block" style={{ width: 11, height: 17 }}>
-            <span className={`absolute inset-0 ${broken ? 'ez-crystal-out' : 'ez-crystal'}`} />
-            {broken && shatter && index >= firstFresh && (
-              <span key={shatter.id} className="ez-crystal-shard absolute inset-0" />
-            )}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
-
 function ActivationPanel({
   creature,
   slot,
   scope,
   onActivate,
-  onClose,
 }: {
   creature: CreatureInPlay;
   slot: number;
   scope: ActivationScope;
   onActivate: (sourceUid: string, abilityId: string, elements?: Element[]) => void;
-  onClose: () => void;
 }) {
-  const { t, cardName } = useTranslation();
+  const { t, resolve, cardName } = useTranslation();
   /** a oferta sai do motor (activation.ts), não de uma segunda leitura do catálogo */
-  const options = creatureActivations(creature, slot, scope);
+  const offers = creatureAbilityOffers(creature, slot, scope);
 
-  if (!options.length) {
+  if (!offers.length) {
     return (
-      <div className="text-center">
-        <p className="mb-3 text-sm text-[#aab8d0]">{t('board.noActivatable')}</p>
-        <ModalButton tone="gray" onClick={onClose}>
-          {t('common.close')}
-        </ModalButton>
-      </div>
+      <p className="zn-num text-[10px] uppercase tracking-[0.14em] text-zn-ghost">
+        {t('board.noActivatable')}
+      </p>
     );
   }
 
   return (
-    <div className="flex flex-col items-center gap-2">
-      {options.map((option) => (
-        <ModalButton
-          key={`${option.sourceUid}:${option.abilityId}`}
-          onClick={() => onActivate(option.sourceUid, option.abilityId, option.elements)}
-        >
-          {t('board.activateAbility', { card: cardName(option.cardId) })}
-        </ModalButton>
-      ))}
-      <ModalButton tone="gray" onClick={onClose}>
-        {t('common.cancel')}
-      </ModalButton>
+    <div className="flex flex-col gap-2">
+      {offers.map((offer) => {
+        const why = offer.blocked ? resolve(errorText(offer.blocked)) : undefined;
+        return (
+          <div key={`${offer.sourceUid}:${offer.abilityId}`} className="flex flex-col gap-1">
+            <button
+              type="button"
+              disabled={!offer.available}
+              title={why ?? undefined}
+              className="zn-btn zn-btn-wire h-10 uppercase"
+              onClick={() => onActivate(offer.sourceUid, offer.abilityId, offer.elements)}
+            >
+              {t(offer.available ? 'board.activateAbility' : 'board.abilityBlocked', {
+                card: cardName(offer.cardId),
+              })}
+            </button>
+            {why && (
+              <span className="zn-num text-[9px] uppercase tracking-[0.12em] text-zn-ghost">
+                {why}
+              </span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function Modal({
+/**
+ * A janela da partida. É o `ConsoleModal` sem a moldura do console: mesmo canto
+ * chanfrado, mesmo cabeçalho de título condensado + nota mono, e o × só quando a
+ * janela pode ser fechada sem responder (mulligan e reação não podem).
+ */
+function BattleModal({
   title,
-  grand,
+  note,
+  countdown,
+  width,
+  sourceCardId,
+  onClose,
   children,
 }: {
   title: string;
-  /** o desfecho da partida: título grande e entrada de carta virando */
-  grand?: boolean;
+  note?: string;
+  countdown?: React.ReactNode;
+  width: number;
+  /**
+   * A carta de quem é o efeito. A pergunta trazia só o nome no título, e no meio
+   * de uma corrente ("Mapa do Tesouro: comprar 1 e descartar 1?") o jogador não
+   * tinha como conciliar de onde aquilo veio — pedido do DevLukkas, e vale
+   * também para a janela de reação, onde a carta é a que o oponente jogou.
+   */
+  sourceCardId?: number;
+  onClose?: () => void;
   children: React.ReactNode;
 }) {
   return (
-    <div className="ez-backdrop fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="zn-backdrop z-50">
       <div
-        className={`ez-panel max-w-2xl ${grand ? 'px-14 py-9' : 'p-6'}`}
-        style={{
-          boxShadow: '0 0 0 1px rgba(201,153,46,.35), 0 30px 80px rgba(0,0,0,.7)',
-          animation: grand
-            ? 'ez-card-in .5s cubic-bezier(.2,.9,.3,1.2) both'
-            : 'ez-fade-in .3s ease both',
-        }}
+        role="dialog"
+        aria-label={title}
+        className="zn-dialog zn-notch-lg max-h-full overflow-auto px-6 pb-6 pt-5.5"
+        style={{ width: `min(${width}px, 100%)` }}
       >
-        <h2 className={`ez-title mb-4 text-center ${grand ? 'text-5xl tracking-[0.1em]' : 'text-2xl'}`}>
-          {title}
-        </h2>
-        {children}
+        <div className="flex flex-wrap items-baseline gap-3 pb-4">
+          <h2 className="zn-head text-[27px] tracking-[0.1em]">{title}</h2>
+          {note && (
+            <span className="zn-num text-[9px] uppercase tracking-[0.2em] text-zn-faint">
+              {note}
+            </span>
+          )}
+          {countdown}
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="zn-btn zn-btn-quiet zn-btn-undo ml-auto h-7 w-7 text-[13px]"
+            >
+              ×
+            </button>
+          )}
+        </div>
+        {sourceCardId === undefined ? (
+          children
+        ) : (
+          <div className="flex flex-wrap items-start gap-5">
+            <div className="w-28 shrink-0 border border-zn-edge bg-zn-ink">
+              <CardImage cardId={sourceCardId} className="w-full" />
+            </div>
+            <div className="min-w-[min(100%,240px)] flex-1">{children}</div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function ModalButton({
-  children,
-  onClick,
-  tone = 'green',
+/** O desfecho: título em Cinzel na cor do resultado, o porquê e o placar. */
+function GameOver({
+  won,
+  reason,
+  stats,
+  onRematch,
+  onLeave,
 }: {
-  children: React.ReactNode;
-  onClick: () => void;
-  /**
-   * `green` é a resposta que segue o jogo; `amber` a que troca/queima; `gray` a
-   * saída; `danger` a que desfaz a partida (o sangue do tema, ver decisão nº 26).
-   */
-  tone?: 'green' | 'amber' | 'gray' | 'danger';
+  won: boolean;
+  reason: string;
+  stats: string;
+  onRematch?: () => void;
+  onLeave: () => void;
 }) {
-  const skin =
-    tone === 'green'
-      ? 'ez-btn-gold'
-      : tone === 'amber'
-        ? 'ez-btn-ember'
-        : tone === 'danger'
-          ? 'ez-btn-danger'
-          : 'ez-btn-ghost';
+  const { t } = useTranslation();
+  const color = won ? ZN.green : ZN.red;
+
   return (
-    <button type="button" onClick={onClick} className={`ez-btn ez-btn-sm ${skin}`}>
-      {children}
-    </button>
+    <div className="zn-backdrop z-60">
+      <div
+        className="w-[min(460px,100%)] border border-zn-edge bg-zn-bar p-7 text-center"
+        style={{
+          borderTop: `3px solid ${color}`,
+          animation: 'zn-card-in .45s cubic-bezier(.2,.9,.3,1.2) both',
+        }}
+      >
+        <div className="zn-label uppercase">{t('board.overTag')}</div>
+        <div
+          className="zn-wordmark mt-2.5 text-[42px] leading-none uppercase"
+          style={{ color }}
+        >
+          {t(won ? 'board.victory' : 'board.defeat')}
+        </div>
+        <p className="mt-2.5 text-[14px] text-zn-muted">{reason}</p>
+        <p className="zn-num mt-3.5 text-[10px] uppercase tracking-[0.16em] text-zn-dim">{stats}</p>
+        <div className="mt-5.5 grid gap-2.5" style={{ gridTemplateColumns: onRematch ? '1fr 1fr' : '1fr' }}>
+          {onRematch && (
+            <button type="button" className="zn-btn zn-btn-green h-11 uppercase" onClick={onRematch}>
+              {t('board.playAgain')}
+            </button>
+          )}
+          <button type="button" className="zn-btn zn-btn-wire h-11 uppercase" onClick={onLeave}>
+            {t('board.menu')}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

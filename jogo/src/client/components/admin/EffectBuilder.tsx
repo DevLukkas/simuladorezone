@@ -25,7 +25,7 @@ import {
   defaultTriggered,
 } from '../../../data/defaults.ts';
 import type { Card, CardType } from '../../../data/types.ts';
-import { FieldGroup } from './FieldInput.tsx';
+import { FieldGroup, Note } from './FieldInput.tsx';
 import { useTranslation } from '../../useTranslation.ts';
 
 /**
@@ -35,6 +35,9 @@ import { useTranslation } from '../../useTranslation.ts';
  * Que blocos aparecem sai de `CARD_BLOCKS` — é o descritor que sabe que `effects`
  * quer dizer efeito contínuo na criatura, lista de ações no comando e gatilho de
  * cenário no cenário. Trocar o tipo da carta troca os blocos sem nenhum `if` aqui.
+ *
+ * Cada bloco, cada tipo escolhido e cada campo trazem a descrição do que fazem
+ * (decisão nº 41): o identificador do motor continua cru, a explicação vem junto.
  */
 
 type Plain = Record<string, unknown>;
@@ -44,15 +47,22 @@ const isPlain = (value: unknown): value is Plain =>
 
 const listOf = (value: unknown): Plain[] => (Array.isArray(value) ? (value as Plain[]) : []);
 
-const CARD = 'rounded border border-slate-700 bg-slate-900/60 p-3';
-const SELECT = 'rounded bg-slate-800 px-2 py-1 font-mono text-sm text-emerald-300';
-
 // ---------------------------------------------------------------------------
 // União discriminada: escolhe o `type` e o formulário troca junto
 // ---------------------------------------------------------------------------
 
-function VariantEditor({ label, types, table, value, onChange, make }: {
+function VariantEditor({
+  label,
+  notes,
+  types,
+  table,
+  value,
+  onChange,
+  make,
+}: {
   label: string;
+  /** prefixo da chave que descreve o tipo escolhido: `vocab.action.`, `vocab.cost.`… */
+  notes: string;
   types: readonly string[];
   table: Record<string, FieldMap>;
   value: Plain;
@@ -63,11 +73,11 @@ function VariantEditor({ label, types, table, value, onChange, make }: {
   const fields = table[type] ?? {};
 
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-2">
-        <span className="w-52 shrink-0 font-mono text-xs text-slate-400">{label}</span>
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2.5">
+        <span className="zn-label tracking-[0.18em] uppercase">{label}</span>
         <select
-          className={SELECT}
+          className="zn-select h-8 max-w-full"
           value={type}
           onChange={(event) => onChange(make(event.target.value))}
         >
@@ -78,31 +88,31 @@ function VariantEditor({ label, types, table, value, onChange, make }: {
           ))}
         </select>
       </div>
+      {/* o que aquele identificador FAZ, na linha de baixo e sempre à vista */}
+      <Note of={`${notes}${type}`} className="text-[12.5px] leading-snug text-zn-dim" />
       <FieldGroup fields={fields} value={value} onChange={(next) => onChange(next)} />
     </div>
   );
 }
 
-function ActionEditor({ value, onChange }: {
-  value: Plain;
-  onChange: (value: Plain) => void;
-}) {
+function ActionEditor({ value, onChange }: { value: Plain; onChange: (value: Plain) => void }) {
   const { t } = useTranslation();
 
   return (
-    <div className="rounded bg-slate-950/40 p-2">
+    <div className="border border-zn-edge bg-zn-bar p-3">
       <VariantEditor
         label={t('admin.actionType')}
+        notes="vocab.action."
         types={ACTION_TYPES}
         table={ACTION_FIELDS}
         value={value}
         onChange={onChange}
         make={(type) => defaultAction(type as never) as unknown as Plain}
       />
-      <label className="mt-1 flex items-center gap-2 text-xs text-slate-400">
+      <label className="mt-2 flex items-center gap-2 text-[12px] text-zn-dim">
         <input
           type="checkbox"
-          className="h-3 w-3 accent-sky-500"
+          className="h-3 w-3 accent-[#e0a33c]"
           checked={value.optional === true}
           onChange={(event) => {
             const next = { ...value };
@@ -121,7 +131,11 @@ function ActionEditor({ value, onChange }: {
 // Um item de bloco, conforme a natureza dele
 // ---------------------------------------------------------------------------
 
-function BlockItem({ kind, value, onChange }: {
+function BlockItem({
+  kind,
+  value,
+  onChange,
+}: {
   kind: BlockKind;
   value: Plain;
   onChange: (value: Plain) => void;
@@ -134,6 +148,7 @@ function BlockItem({ kind, value, onChange }: {
     return (
       <VariantEditor
         label="type"
+        notes="vocab.continuous."
         types={CONTINUOUS_TYPES}
         table={CONTINUOUS_FIELDS}
         value={value}
@@ -147,6 +162,7 @@ function BlockItem({ kind, value, onChange }: {
     return (
       <VariantEditor
         label="type"
+        notes="vocab.scenario."
         types={SCENARIO_TYPES}
         table={SCENARIO_FIELDS}
         value={value}
@@ -158,7 +174,7 @@ function BlockItem({ kind, value, onChange }: {
 
   if (kind === 'triggered') {
     return (
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2.5">
         <FieldGroup fields={TRIGGERED_FIELDS} value={value} onChange={onChange} />
         <ActionEditor
           value={isPlain(value.action) ? value.action : {}}
@@ -175,18 +191,21 @@ function BlockItem({ kind, value, onChange }: {
   const toggle = (key: 'cost' | 'condition', on: boolean) => {
     const next = { ...value };
     if (!on) delete next[key];
-    else next[key] = key === 'cost' ? defaultCost('discard_self') : defaultFields(ACTIVATION_CONDITION_FIELDS);
+    else {
+      next[key] =
+        key === 'cost' ? defaultCost('discard_self') : defaultFields(ACTIVATION_CONDITION_FIELDS);
+    }
     onChange(next);
   };
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2.5">
       <FieldGroup fields={ACTIVATED_FIELDS} value={value} onChange={onChange} />
 
-      <label className="flex items-center gap-2 text-xs text-slate-400">
+      <label className="flex items-center gap-2 text-[12px] text-zn-dim">
         <input
           type="checkbox"
-          className="h-3 w-3 accent-sky-500"
+          className="h-3 w-3 accent-[#e0a33c]"
           checked={cost !== null}
           onChange={(event) => toggle('cost', event.target.checked)}
         />
@@ -195,6 +214,7 @@ function BlockItem({ kind, value, onChange }: {
       {cost !== null && (
         <VariantEditor
           label="cost"
+          notes="vocab.cost."
           types={COST_TYPES}
           table={COST_FIELDS}
           value={cost}
@@ -203,10 +223,10 @@ function BlockItem({ kind, value, onChange }: {
         />
       )}
 
-      <label className="flex items-center gap-2 text-xs text-slate-400">
+      <label className="flex items-center gap-2 text-[12px] text-zn-dim">
         <input
           type="checkbox"
-          className="h-3 w-3 accent-sky-500"
+          className="h-3 w-3 accent-[#e0a33c]"
           checked={condition !== null}
           onChange={(event) => toggle('condition', event.target.checked)}
         />
@@ -243,7 +263,10 @@ function freshItem(kind: BlockKind, index: number): Plain {
 // Os blocos da carta
 // ---------------------------------------------------------------------------
 
-export function EffectBuilder({ card, onChange }: {
+export function EffectBuilder({
+  card,
+  onChange,
+}: {
   card: Card;
   onChange: (card: Card) => void;
 }) {
@@ -259,30 +282,46 @@ export function EffectBuilder({ card, onChange }: {
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3.5">
       {(Object.entries(blocks) as [BlockName, BlockKind][]).map(([name, kind]) => {
         const items = listOf(source[name]);
         return (
-          <section key={name} className={CARD}>
-            <header className="mb-2 flex items-center justify-between">
-              <h3 className="font-mono text-sm text-sky-300">
-                {name}
-                <span className="ml-2 text-xs text-slate-500">{kind}</span>
-              </h3>
+          <section key={name} className="border border-zn-edge bg-zn-bar p-3.5">
+            <header className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 flex-col gap-1">
+                <span className="zn-num flex flex-wrap items-baseline gap-2 text-[12.5px] text-zn-gold-light">
+                  {name}
+                  <span
+                    className="zn-label tracking-[0.14em] uppercase"
+                    title={t(`vocab.kind.${kind}`)}
+                  >
+                    {kind}
+                  </span>
+                </span>
+                <Note
+                  of={`vocab.block.${name}`}
+                  className="text-[12px] leading-snug text-zn-fainter"
+                />
+                <Note of={`vocab.kind.${kind}`} className="text-[12px] leading-snug text-zn-dim" />
+              </div>
               <button
                 type="button"
-                className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-300 hover:bg-slate-700"
+                className="zn-btn zn-btn-wire h-7 shrink-0 px-3"
                 onClick={() => setBlock(name, [...items, freshItem(kind, items.length + 1)])}
               >
                 {t('admin.addTo', { block: name })}
               </button>
             </header>
 
-            {items.length === 0 && <p className="text-xs text-slate-600">{t('admin.empty')}</p>}
+            {items.length === 0 && (
+              <p className="zn-num mt-2.5 text-[10px] uppercase tracking-[0.12em] text-zn-ghost">
+                {t('admin.empty')}
+              </p>
+            )}
 
-            <div className="flex flex-col gap-3">
+            <div className="mt-3 flex flex-col gap-2.5">
               {items.map((item, index) => (
-                <div key={index} className="rounded border border-slate-800 p-2">
+                <div key={index} className="border border-zn-line p-2.5">
                   <BlockItem
                     kind={kind}
                     value={item}
@@ -295,7 +334,7 @@ export function EffectBuilder({ card, onChange }: {
                   />
                   <button
                     type="button"
-                    className="mt-2 text-xs text-rose-400 hover:underline"
+                    className="zn-num mt-2 cursor-pointer border-0 bg-transparent p-0 text-[10px] uppercase tracking-[0.12em] text-zn-fainter hover:text-zn-red-light"
                     onClick={() =>
                       setBlock(
                         name,

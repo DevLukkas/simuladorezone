@@ -99,13 +99,21 @@ export function describeEvent(event: GameEvent, mySide: SideId): TextRef | null 
     case 'ATTACK_DENIED':
       return text('log.attackDenied', { card: cardRef(event.attachmentCardId) });
     case 'ATTACK_BLOCKED':
-      return null;
+      // agora ele acontece de verdade (decisão nº 38): o ataque foi declarado e
+      // a reação do oponente o impediu antes de resolver
+      return text('log.attackBlocked');
     case 'PREVENTED_FROM_ATTACKING':
-      return text('log.preventedFromAttacking');
+      return text('log.preventedFromAttacking', { turn: event.untilTurn });
     case 'PROTECTED_FROM_ATTACKS':
-      return text('log.protectedFromAttacks');
+      return text('log.protectedFromAttacks', { turn: event.untilTurn });
+    case 'FORCED_TO_ATTACK':
+      return text('log.forcedToAttack', { turn: event.untilTurn });
     case 'COMMAND_PLAYED':
       return text('log.commandPlayed', { who: who(event.side), card: cardRef(event.card.cardId) });
+    case 'REACTION_WINDOW':
+      // a pausa na tela já conta que houve uma janela; escrever aqui só encheria
+      // o registro com uma linha por jogada
+      return null;
     case 'REACTION_DECLINED':
       return mine(event.side) ? null : text('log.reactionDeclined');
     case 'ABILITY_ACTIVATED':
@@ -120,6 +128,12 @@ export function describeEvent(event: GameEvent, mySide: SideId): TextRef | null 
       return text('log.heroActivated', { hero: heroName(event.hero) });
     case 'SCENARIO_TRIGGERED':
       return text('log.scenarioTriggered', { card: cardRef(event.cardId) });
+    default:
+      // a união é fechada, então este ramo não existe em partida ao vivo. Existe
+      // para a FITA (decisão nº 44): uma partida arquivada carrega os eventos da
+      // versão que a gravou, e um evento que este código ainda não conhece — ou
+      // já não conhece mais — vira linha em branco em vez de derrubar o replay
+      return null;
   }
 }
 

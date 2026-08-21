@@ -2,7 +2,8 @@ import { cardById } from '../../data/cards.ts';
 import type { Card } from '../../data/types.ts';
 import type { CreatureInPlay } from '../../engine/state.ts';
 import { currentStats } from '../../engine/stats.ts';
-import { useCardZoomStore } from '../stores/cardZoomStore.ts';
+import { useCardZoomStore, type ZoomedOnField } from '../stores/cardZoomStore.ts';
+import { ZN } from '../theme.ts';
 import { ComposedCard, type DisplayStats } from './ComposedCard.tsx';
 import { useTranslation } from '../useTranslation.ts';
 
@@ -11,8 +12,12 @@ import { useTranslation } from '../useTranslation.ts';
  * Figma e o catálogo aponta o arquivo em `art`; no clássico é o recorte da carta
  * impressa, com o mesmo nome de `img` (ver scripts/art4e.ts e scripts/art.ts).
  */
+export function artFileOf(card: Card): string | undefined {
+  return card.art ?? card.img?.replace(/\.png$/, '.webp');
+}
+
 export function artPath(card: Card): string | undefined {
-  const file = card.art ?? card.img?.replace(/\.png$/, '.webp');
+  const file = artFileOf(card);
   return file ? `/assets/arte/${file}` : undefined;
 }
 
@@ -27,12 +32,15 @@ export function CardImage({
   className,
   title,
   stats,
+  onField,
 }: {
   cardId: number;
   className?: string;
   title?: string;
   /** stats vigentes; ausente = os impressos na carta */
   stats?: DisplayStats;
+  /** de onde esta cópia está no tabuleiro: dá a aba "em campo" ao ampliar */
+  onField?: ZoomedOnField;
 }) {
   const card = cardById(cardId);
   const zoom = useCardZoomStore((state) => state.zoom);
@@ -46,7 +54,7 @@ export function CardImage({
       title={title}
       onContextMenu={(event) => {
         event.preventDefault();
-        zoom(cardId);
+        zoom(cardId, onField);
       }}
     />
   );
@@ -55,12 +63,17 @@ export function CardImage({
 export function CreatureOnField({
   creature,
   field,
+  owner,
+  slot,
   selected,
   className,
   onClick,
 }: {
   creature: CreatureInPlay;
   field: readonly (CreatureInPlay | null)[];
+  /** de quem é a fileira e em que coluna está — o clique direito leva junto */
+  owner: 'me' | 'opponent';
+  slot: number;
   selected?: boolean;
   /** o tabuleiro dimensiona pela ALTURA da fileira; a carta segue a proporção */
   className?: string;
@@ -74,15 +87,19 @@ export function CreatureOnField({
     <button
       type="button"
       onClick={onClick}
-      className={`relative block transition-transform hover:scale-105 ${
-        className ?? 'w-full'
-      } ${selected ? 'rounded ring-2 ring-ez-gold-light' : ''}`}
+      className={`relative block cursor-pointer ${className ?? 'w-full'}`}
+      style={selected ? { boxShadow: `0 0 0 2px ${ZN.gold}` } : undefined}
     >
       {creature.cardId !== null ? (
-        <CardImage cardId={creature.cardId} stats={stats} className="h-full w-auto" />
+        <CardImage
+          cardId={creature.cardId}
+          stats={stats}
+          className="h-full w-full"
+          onField={{ owner, slot, uid: creature.uid }}
+        />
       ) : (
         <div
-          className="flex aspect-[415/555] h-full flex-col items-center justify-center rounded p-1 text-center text-[10px] font-bold"
+          className="flex h-full w-full flex-col items-center justify-center p-1 text-center text-[10px] font-bold"
           style={{ backgroundColor: `#${(creature.token?.color ?? 0x4b2a68).toString(16).padStart(6, '0')}` }}
         >
           {creature.token ? tokenName(creature.token.id) : null}
@@ -91,15 +108,18 @@ export function CreatureOnField({
       {/* a ficha não tem carta composta para imprimir os números vigentes */}
       {creature.cardId === null && (
         <span
-          className={`absolute bottom-0 left-0 rounded-tr bg-ez-ink/85 px-1 text-xs font-bold ${
-            wounded ? 'text-ez-blood-light' : 'text-ez-text'
-          }`}
+          className="zn-num absolute bottom-0 left-0 bg-zn-ink/85 px-1 text-[11px] font-bold"
+          style={{ color: wounded ? ZN.redLight : ZN.greenLight }}
         >
           {stats.attack}/{stats.defense}
         </span>
       )}
+      {/* o elemento TROCADO por efeito: a carta composta imprime o de fábrica */}
       {creature.changedElement && (
-        <span className="absolute left-0 top-0 rounded-br bg-[#33175e]/90 px-1 text-[10px] text-[#d6c6f5]">
+        <span
+          className="zn-num absolute bottom-0 right-0 px-1 text-[9px] uppercase tracking-[0.08em]"
+          style={{ background: 'rgba(20,10,34,.92)', color: '#d6bcff' }}
+        >
           {t(`element.${creature.changedElement}`)}
         </span>
       )}

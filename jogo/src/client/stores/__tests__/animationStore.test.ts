@@ -43,6 +43,13 @@ const destroy: GameEvent = {
 const scored: GameEvent = { type: 'SCORED', side: 'a', gained: 1, total: 3 };
 const turnStarted: GameEvent = { type: 'TURN_STARTED', side: 'b', turn: 2 };
 
+const discarded = (uid: string, cardId: number): GameEvent => ({
+  type: 'CARD_DISCARDED',
+  side: 'a',
+  card: { uid, cardId },
+  reason: 'effect',
+});
+
 /** Toca até o fim o que estiver na fila, como a camada faria com o tempo. */
 function playAll(): void {
   let guard = 0;
@@ -119,6 +126,61 @@ describe('linha do tempo da animação', () => {
     useAnimationStore.getState().push([attack], 'a');
     playAll();
     expect(woke).toBe(1);
+  });
+
+  /* decisão nº 40: descarte é movimento, e descarte em lote é UM movimento */
+  test('descartes seguidos para o mesmo destino viram um passo com todas as cartas', () => {
+    useAnimationStore.getState().push([discarded('h1', 5), discarded('h2', 6), discarded('h3', 7)], 'a');
+
+    const current = useAnimationStore.getState().current!;
+    expect(current.kind).toBe('discard');
+    expect(useAnimationStore.getState().queue).toHaveLength(0);
+    expect(current.kind === 'discard' && current.cards.map((card) => card.cardId)).toEqual([
+      5, 6, 7,
+    ]);
+  });
+
+  test('descartes de origens diferentes não se juntam', () => {
+    useAnimationStore.getState().push(
+      [
+        discarded('h1', 5),
+        { type: 'CARD_MILLED', side: 'a', card: { uid: 'd1', cardId: 8 } },
+      ],
+      'a',
+    );
+    const kinds: string[] = [];
+    const froms: string[] = [];
+    let guard = 0;
+    while (animationBusy() && guard++ < 10) {
+      const step = useAnimationStore.getState().current!;
+      kinds.push(step.kind);
+      if (step.kind === 'discard') froms.push(step.from);
+      useAnimationStore.getState().finish(step.id);
+    }
+    expect(kinds).toEqual(['discard', 'discard']);
+    expect(froms).toEqual(['hand:a', 'deck:a']);
+  });
+
+  /* decisão nº 39: a espera é para quem NÃO decide — quem decide vê o modal */
+  test('a janela de reação só vira pausa para quem não vai responder', () => {
+    const window: GameEvent = { type: 'REACTION_WINDOW', side: 'b', category: 'command' };
+
+    useAnimationStore.getState().push([window], 'a');
+    expect(useAnimationStore.getState().current?.kind).toBe('thinking');
+    playAll();
+
+    useAnimationStore.getState().push([window], 'b');
+    expect(useAnimationStore.getState().current).toBeNull();
+  });
+
+  /* decisão nº 40: o efeito do herói ganhou passo — antes ele acontecia invisível */
+  test('o herói que dispara vira um passo da linha do tempo', () => {
+    useAnimationStore
+      .getState()
+      .push([{ type: 'HERO_ACTIVATED', side: 'a', hero: 'ispisher' }], 'a');
+    const step = useAnimationStore.getState().current!;
+    expect(step.kind).toBe('hero');
+    expect(step.kind === 'hero' && step.mine).toBe(true);
   });
 
   test('cancelar a espera desliga o aviso; reset() não deixa ninguém pendurado', () => {

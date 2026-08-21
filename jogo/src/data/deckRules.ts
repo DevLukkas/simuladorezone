@@ -1,6 +1,5 @@
-import { cardById, cardExists, formatOfCard } from './cards.ts';
+import { cardExists, cardPlayable } from './cards.ts';
 import { heroByKey } from './heroes.ts';
-import type { Format } from './types.ts';
 import { text, type TextRef } from '../shared/text.ts';
 
 /**
@@ -18,35 +17,32 @@ export interface DeckDraft {
   hero: string;
   /** id da carta → quantidade */
   cards: Record<number, number>;
-  /** ausente = clássico, para decks gravados antes do segundo formato existir */
-  format?: Format;
 }
 
-/** Retorna a lista de problemas, já traduzível; deck válido = lista vazia. */
-export function validateDeck(deck: DeckDraft): TextRef[] {
+/**
+ * As regras do CONTEÚDO do baralho: herói, cartas e quantidades.
+ *
+ * Vive separada do nome porque nem todo baralho que o servidor confere tem um:
+ * o registro de treino chega como lista de ids, e nem o baralho do bot nem o de
+ * demonstração carregam rótulo. O nome é etiqueta da linha de histórico; o que
+ * torna um baralho LEGAL está tudo aqui — e é por isso que esta é a função que
+ * todo caminho de entrada precisa chamar.
+ */
+export function validateDeckContents(hero: string, cards: Record<number, number>): TextRef[] {
   const problems: TextRef[] = [];
-  const format = deck.format ?? 'classic';
 
-  if (!deck.name.trim()) problems.push(text('deckRule.name_required'));
-  if (!heroByKey(deck.hero)) problems.push(text('deckRule.unknown_hero', { hero: deck.hero }));
+  if (!heroByKey(hero)) problems.push(text('deckRule.unknown_hero', { hero }));
 
   let total = 0;
-  for (const [idText, amount] of Object.entries(deck.cards)) {
+  for (const [idText, amount] of Object.entries(cards)) {
     const id = Number(idText);
     if (!cardExists(id)) {
       problems.push(text('deckRule.unknown_card', { id }));
       continue;
     }
-    // formatos não se misturam num mesmo deck: as regras de um não valem no outro
-    const formatOfDeckCard = formatOfCard(cardById(id));
-    if (formatOfDeckCard !== format) {
-      problems.push(
-        text('deckRule.wrong_format', {
-          id,
-          cardFormat: text(`format.${formatOfDeckCard}`),
-          deckFormat: text(`format.${format}`),
-        }),
-      );
+    // existe no catálogo mas não está publicada (decisão nº 41): não entra em deck
+    if (!cardPlayable(id)) {
+      problems.push(text('deckRule.unpublished_card', { id }));
       continue;
     }
     if (!Number.isInteger(amount) || amount < 1) {
@@ -65,6 +61,16 @@ export function validateDeck(deck: DeckDraft): TextRef[] {
   if (total < MIN_DECK_CARDS) {
     problems.push(text('deckRule.too_few_cards', { total, min: MIN_DECK_CARDS }));
   }
+
+  return problems;
+}
+
+/** Retorna a lista de problemas, já traduzível; deck válido = lista vazia. */
+export function validateDeck(deck: DeckDraft): TextRef[] {
+  const problems: TextRef[] = [];
+
+  if (!deck.name.trim()) problems.push(text('deckRule.name_required'));
+  problems.push(...validateDeckContents(deck.hero, deck.cards));
 
   return problems;
 }

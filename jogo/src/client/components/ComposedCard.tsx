@@ -304,6 +304,20 @@ export function collectionCode(card: Card): string {
   return card.ref ?? `RDI - 080/${String(card.id).padStart(3, '0')}`;
 }
 
+/**
+ * Quem assina quando a carta não declara `author`.
+ *
+ * As 45 clássicas e as 33 do Quatro Elementos são todas do Lucas Antônio e entraram
+ * sem o campo (ver `author` em `data/types.ts`), por isso o rodapé trazia o nome
+ * dele cravado. Carta nova assina com quem o estúdio preencher — o padrão só cobre
+ * o acervo que já existe, e some da carta no instante em que o campo é preenchido.
+ */
+const DEFAULT_AUTHOR = 'Lucas Antônio';
+
+function cardCredit(card: Card): string {
+  return card.author?.trim() || DEFAULT_AUTHOR;
+}
+
 export function ComposedCard({
   card,
   art,
@@ -501,9 +515,14 @@ export function ComposedCard({
           fontSize: u(8),
           lineHeight: 1,
           color: '#e8e2d6',
+          /* assinatura é nome livre, digitado no estúdio: corta em vez de vazar
+             para cima do código de coleção do outro canto do rodapé */
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
         }}
       >
-        Lucas Antônio
+        {cardCredit(card)}
       </div>
 
       {/* ATQ e VIDA: só criatura, e o número é o vigente no motor */}

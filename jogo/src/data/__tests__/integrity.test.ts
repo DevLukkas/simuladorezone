@@ -1,18 +1,15 @@
 import { describe, expect, test } from 'vitest';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ALL_CARDS, cardById, cardsOfFormat, formatOfCard } from '../cards.ts';
+import { ALL_CARDS, cardById } from '../cards.ts';
 import { heroes } from '../heroes.ts';
 import { validateDeck } from '../deckRules.ts';
 import { validateCard } from '../validate.ts';
-import { FORMATS, type Keyword } from '../types.ts';
+import type { Keyword } from '../types.ts';
 import ptBR from '../../i18n/locales/pt-BR.ts';
 
 const publicFolder = join(import.meta.dirname, '../../../public');
 const filesIn = (folder: string) => new Set(readdirSync(join(publicFolder, folder)));
-
-/** Clássico ocupa 1..45; cada formato seguinte começa depois do anterior. */
-const FIRST_ID = { classic: 1, 'four-elements': 46 } as const;
 
 /**
  * As duas levas que ENTRARAM prontas: 1..45 são as impressas do legado e 46..78 as
@@ -42,26 +39,18 @@ describe('catálogo de cartas', () => {
   });
 
   /**
-   * Dois formatos nunca compartilham id, e cada um segue começando onde começou.
-   * A faixa CONTÍGUA deixou de ser exigível quando o catálogo virou editável: id
-   * novo sai sempre do fim da fila (o maior + 1), então uma carta clássica criada
-   * hoje cai depois do Quatro Elementos, e apagar uma carta abre buraco na faixa.
-   * O que ainda protege de verdade é a não-sobreposição — é ela que garante que
-   * `formatOfCard` responde uma coisa só por id.
+   * As duas PROCEDÊNCIAS não dividem id: as impressas do legado ocupam 1..45 e as
+   * importadas do Figma começam em 46. Não é mais divisa de formato (decisão
+   * nº 36) — as duas jogam no mesmo pool —, mas segue sendo o que amarra id a
+   * arte e a código de coleção, e é por faixa de id que os blocos abaixo separam
+   * o que se pode afirmar de cada leva.
    */
-  test('formatos não dividem id, e cada um começa onde sempre começou', () => {
-    const owner = new Map<number, string>();
-    for (const format of FORMATS) {
-      const ids = cardsOfFormat(format)
-        .map((card) => card.id)
-        .sort((a, b) => a - b);
-      if (!ids.length) continue;
-      expect(ids[0], `${format} começa no id errado`).toBe(FIRST_ID[format]);
-      for (const id of ids) {
-        expect(owner.get(id), `id ${id} está em dois formatos`).toBeUndefined();
-        owner.set(id, format);
-      }
-    }
+  test('as duas levas de origem não dividem id', () => {
+    const printed = ALL_CARDS.filter(isPrinted).map((card) => card.id);
+    const imported = ALL_CARDS.filter(isImported).map((card) => card.id);
+    expect(Math.min(...printed)).toBe(1);
+    expect(Math.min(...imported)).toBe(LAST_PRINTED + 1);
+    expect(printed.some((id) => imported.includes(id))).toBe(false);
   });
 
   test('cartaPorId devolve a carta certa e rejeita id inexistente', () => {
@@ -71,7 +60,7 @@ describe('catálogo de cartas', () => {
 });
 
 describe('as 45 impressas do legado', () => {
-  const classicCards = cardsOfFormat('classic').filter(isPrinted);
+  const classicCards = ALL_CARDS.filter(isPrinted);
 
   test('são 45 cartas', () => {
     expect(classicCards.length).toBe(45);
@@ -100,7 +89,7 @@ describe('as 45 impressas do legado', () => {
 });
 
 describe('as 33 importadas do Figma', () => {
-  const fresh = cardsOfFormat('four-elements').filter(isImported);
+  const fresh = ALL_CARDS.filter(isImported);
 
   test('são as 33 cartas dos baralhos iniciais do Figma', () => {
     expect(fresh.length).toBe(33);
@@ -301,24 +290,13 @@ describe('validarDeck', () => {
     expect(problems.length).toBeGreaterThanOrEqual(2);
   });
 
-  test('rejeita carta de outro formato', () => {
-    const fromOtherFormat = ALL_CARDS.find((card) => formatOfCard(card) !== 'classic');
-    if (!fromOtherFormat) return; // só há um formato povoado por enquanto
+  /* formato único (decisão nº 37): edições diferentes no mesmo deck são legais */
+  test('aceita cartas das duas edições no mesmo deck', () => {
+    const imported = ALL_CARDS.find(isImported)!;
     const problems = validateDeck({
       ...validDeck,
-      format: 'classic',
-      cards: { ...validDeck.cards, [fromOtherFormat.id]: 1 },
+      cards: { ...validDeck.cards, [imported.id]: 1 },
     });
-    expect(problems.some((p) => p.key === 'deckRule.wrong_format')).toBe(true);
-  });
-
-  test('um deck do formato novo não aceita carta clássica', () => {
-    const problems = validateDeck({
-      name: 'misto',
-      hero: 'badur',
-      format: 'four-elements',
-      cards: { 1: 1 },
-    });
-    expect(problems.some((p) => p.key === 'deckRule.wrong_format')).toBe(true);
+    expect(problems).toEqual([]);
   });
 });

@@ -40,6 +40,7 @@ const IDENTITY_ORDER = [
   'edition',
   'ref',
   'author',
+  'status',
   'behaviorPending',
   'summonRule',
 ] as const;

@@ -1,15 +1,12 @@
 import { create } from 'zustand';
 import { ApiError, api } from '../services/api.ts';
 import { text, type TextRef } from '../../shared/text.ts';
-import type { Format } from '../../data/types.ts';
 
 export interface SavedDeck {
   id: number;
   name: string;
   hero: string;
   cards: Record<number, number>;
-  /** ausente nos decks gravados antes do segundo formato existir */
-  format?: Format;
 }
 
 /**

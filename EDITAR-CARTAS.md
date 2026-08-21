@@ -207,6 +207,24 @@ Diferença importante entre os dois:
 
 ### 3. Criar uma carta nova
 
+**Em `jogo/`, isto se faz pelo estúdio, não à mão** (`npm run estudio` + `npm run dev`,
+"Estúdio" na trilha; a chave sai no console). Ele tem três abas:
+
+- **nova carta** — formulário com TODOS os campos, cada um com a explicação do que faz,
+  os blocos declarativos (efeitos, gatilhos, habilidades ativadas) montados a partir do
+  vocabulário do motor, e a prévia ao lado mostrando a carta exatamente como ela vai
+  aparecer em jogo;
+- **cartas criadas** — o catálogo pela esteira: **rascunho → em revisão → publicada**, com
+  **arquivada** de saída. Carta só entra na coleção, no baralho e nas partidas quando está
+  **publicada**; apagar do catálogo só é oferecido depois de arquivar;
+- **biblioteca de imagens** — envio, filtro, marca de **arte final** e de **arquivada**.
+  Apagar a imagem do disco só depois de arquivar, e nunca se alguma carta a estiver usando.
+
+O estúdio grava no arquivo `src/data/*.ts` e nos dicionários de idioma; a edição vira diff
+no git. Depois de gravar, **reinicie o servidor** para as partidas usarem a carta nova.
+
+Na mão (ou no legado):
+
 1. **Escolha o `id`** — precisa ser único no catálogo inteiro (não só no arquivo).
    Em `jogo/` os ids são contíguos por formato (clássico 1–45, Quatro Elementos
    46–78) e há teste que falha se abrir lacuna.

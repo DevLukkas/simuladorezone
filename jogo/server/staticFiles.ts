@@ -9,6 +9,9 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  // a ilustração das cartas é webp: sem esta linha ela saía como octet-stream e
+  // dependia de o navegador farejar o formato para desenhar
+  '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.wav': 'audio/wav',

@@ -1,4 +1,4 @@
-import type { Element, Format, Hero } from './types.ts';
+import type { Element, Hero } from './types.ts';
 
 /**
  * Os 4 baralhos iniciais do legado (`backend/config/starter_decks.php`),
@@ -11,8 +11,6 @@ export interface StarterDeck {
   name: string;
   element: Element;
   hero: Hero['key'];
-  /** os 4 vieram do legado, que só tinha o clássico; o construtor só oferece os do formato aberto */
-  format: Format;
   descricao: string;
   /** id da carta → quantidade */
   cards: Record<number, number>;
@@ -24,7 +22,6 @@ export const starterDecks: readonly StarterDeck[] = [
     name: 'Abismos & Profundezas',
     element: 'water',
     hero: 'ispisher',
-    format: 'classic',
     descricao: 'Um baralho de Água focado em Atlantis, tridentes e controle de combate.',
     cards: {
       1: 2, 2: 2, 3: 1, 4: 1, 5: 2, 6: 3, 7: 2, 8: 2,
@@ -38,7 +35,6 @@ export const starterDecks: readonly StarterDeck[] = [
     name: 'Matilha & Predadores',
     element: 'earth',
     hero: 'badur',
-    format: 'classic',
     descricao: 'Um baralho de Terra com Bestas, Badur e pressão de campo.',
     cards: {
       28: 2, 29: 2, 30: 3, 31: 2, 32: 2, 33: 2, 34: 2, 35: 1, 36: 2,
@@ -52,7 +48,6 @@ export const starterDecks: readonly StarterDeck[] = [
     name: 'Goblins & Promessas',
     element: 'fire',
     hero: 'gimlou',
-    format: 'classic',
     descricao: 'Starter de Fogo reservado para a coleção Goblins. Usa cartas neutras temporárias até a coleção entrar.',
     // a 4ª cópia da carta 34 do legado foi capada em 3 (regra de deck; decisions.md nº 7)
     cards: {
@@ -67,7 +62,6 @@ export const starterDecks: readonly StarterDeck[] = [
     name: 'Guardiões & Penas',
     element: 'wind',
     hero: 'tennor',
-    format: 'classic',
     descricao: 'Starter de Vento reservado para Guardiões. Usa cartas de suporte temporárias até a coleção entrar.',
     cards: {
       1: 1, 2: 2, 7: 2, 30: 2, 31: 2, 32: 3, 33: 2, 36: 2,

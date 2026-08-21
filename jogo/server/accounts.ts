@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { asInt, text } from './db.ts';
 import { created, ok, rejected } from './http.ts';
 import { noteFailure, lockoutSeconds, clearFailures } from './loginAttempts.ts';
+import { fuse } from './rateLimit.ts';
 import type { Db } from './db.ts';
 import type { ApiRequest, ApiReply, Route } from './http.ts';
 
@@ -16,6 +17,22 @@ const MIN_PASSWORD_LENGTH = 8;
 const MAX_PASSWORD_LENGTH = 200;
 const MAX_EMAIL_LENGTH = 160;
 const MAX_NICKNAME_LENGTH = 24;
+
+/**
+ * Fusíveis de CRIAÇÃO de conta, por origem.
+ *
+ * Conta nasce sem ninguém autenticado na frente, então a única chave possível é
+ * o endereço de quem pediu — e atrás de proxy ele é o do proxy, o que faz o teto
+ * valer para todo mundo junto (ver `rateLimit.ts`). Daí os números folgados: 30
+ * contas convidadas por 10 minutos são mais jogadores novos do que este projeto
+ * vê num dia, e ainda assim param um script no trigésimo pedido em vez de no
+ * milésimo.
+ *
+ * O cadastro com e-mail é mais apertado porque cada tentativa custa um scrypt —
+ * dezenas de ms de CPU num servidor de uma thread só.
+ */
+const guestFuse = fuse(30, 10 * 60);
+const signupFuse = fuse(20, 10 * 60);
 
 // scrypt do node:crypto (padrão jogo-gacha): N=16384 leva dezenas de ms por
 // tentativa — o rate limit de tentativas.ts faz o resto
@@ -45,6 +62,21 @@ const passwordMatches = (password: string, stored: string): boolean => {
 const tokenFingerprint = (token: string): string =>
   crypto.createHash('sha256').update(token).digest('hex');
 
+/**
+ * Apelido de quem entra como convidado: `Summoner-A3F91C`.
+ *
+ * Antes toda conta convidada nascia chamada "Convidado" — na barra isso saía como
+ * "CONVIDADO · CONVIDADO" (o apelido e o selo de convidado repetidos), e numa sala
+ * com dois convidados nenhum dos dois sabia quem era quem. O sufixo em hexa é o que
+ * separa um do outro; não é chave de nada (apelido nunca foi único no banco), então
+ * 16,7 milhões de combinações bastam para a colisão ser irrelevante.
+ *
+ * O nome fica em inglês de propósito: é identidade da pessoa, não rótulo de tela —
+ * quem trocar de idioma continua sendo o mesmo Summoner. O selo ao lado dele, esse
+ * sim, é traduzido (`shell.guest`).
+ */
+const guestNickname = (): string => `Summoner-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
 const isValidEmail = (value: string): boolean => {
   if (value.length < 3 || value.length > MAX_EMAIL_LENGTH) return false;
   const parts = value.split('@');
@@ -73,13 +105,27 @@ const credentials = (body: unknown): Credentials | null => {
   return { email, password: body.password, nickname };
 };
 
+/**
+ * Quantos dias PARADA uma sessão continua valendo.
+ *
+ * Ocioso, e não absoluto: cada dia de uso empurra o prazo, então quem joga nunca
+ * é deslogado. O prazo é largo porque numa conta convidada o token é a única
+ * credencial que existe — não há e-mail nem senha para voltar —, e encurtar isto
+ * não tranca a porta de ninguém, só apaga o baralho de quem viajou. O que ele
+ * fecha é a outra ponta: token copiado de um log ou de um navegador emprestado
+ * deixa de valer para sempre.
+ */
+const SESSION_IDLE_DAYS = 90;
+
 const openSession = (db: Db, accountId: number): string => {
   const token = crypto.randomBytes(32).toString('base64url');
+  const now = new Date().toISOString();
   db.run(
-    'INSERT INTO sessions (token, account_id, created_at) VALUES (?, ?, ?)',
+    'INSERT INTO sessions (token, account_id, created_at, last_used_at) VALUES (?, ?, ?, ?)',
     tokenFingerprint(token),
     accountId,
-    new Date().toISOString(),
+    now,
+    now,
   );
   return token;
 };
@@ -111,22 +157,50 @@ const noteAccess = (db: Db, accountId: number, storedAt: string): void => {
   db.run('UPDATE accounts SET last_seen_at = ? WHERE id = ?', now, accountId);
 };
 
+/**
+ * A sessão passou do prazo de ociosidade?
+ *
+ * Data ilegível conta como vencida: linha que não sabe dizer quando foi usada
+ * não pode servir de credencial. As de antes da coluna existir vêm com a data de
+ * criação copiada pela migração, então elas envelhecem a partir dali.
+ */
+const sessionExpired = (usedAt: string, now: number): boolean => {
+  const last = Date.parse(usedAt);
+  if (!Number.isFinite(last)) return true;
+  return now - last > SESSION_IDLE_DAYS * 24 * 3_600_000;
+};
+
 export const accountOfRequest = (db: Db, request: ApiRequest): Account | null => {
   const header = request.authorization ?? '';
   if (!header.startsWith('Bearer ')) return null;
 
+  const fingerprint = tokenFingerprint(header.slice(7));
   const row = db.one(
     `SELECT accounts.id AS id, accounts.email AS email, accounts.nickname AS nickname,
-            accounts.last_seen_at AS last_seen_at
+            accounts.last_seen_at AS last_seen_at, sessions.last_used_at AS last_used_at
        FROM sessions JOIN accounts ON accounts.id = sessions.account_id
       WHERE sessions.token = ?`,
-    tokenFingerprint(header.slice(7)),
+    fingerprint,
   );
 
   if (!row) return null;
 
+  const usedAt = text(row.last_used_at);
+  if (sessionExpired(usedAt, Date.now())) {
+    // a linha vencida sai do banco no ato: deixá-la ali só daria a mesma recusa
+    // mais caro, todo pedido, para sempre
+    db.run('DELETE FROM sessions WHERE token = ?', fingerprint);
+    return null;
+  }
+
   const id = asInt(row.id);
   noteAccess(db, id, text(row.last_seen_at));
+  // mesma regra do acesso da conta: empurra o prazo quando o DIA muda, e não a
+  // cada pedido — senão cada quadro de uma partida viraria uma escrita
+  const today = new Date().toISOString();
+  if (onDay(usedAt) !== onDay(today)) {
+    db.run('UPDATE sessions SET last_used_at = ? WHERE token = ?', today, fingerprint);
+  }
 
   return {
     id,
@@ -158,11 +232,14 @@ export const accountRoutes = (db: Db): Route[] => [
     method: 'POST',
     pattern: '/api/guest',
     handle: (request) => {
+      const wait = guestFuse(request.origin);
+      if (wait > 0) return rejected(429, 'too_many_attempts', { seconds: wait });
+
       const body = isObject(request.body) ? request.body : {};
       const nickname =
         typeof body.nickname === 'string' && body.nickname.trim()
           ? body.nickname.trim().slice(0, MAX_NICKNAME_LENGTH)
-          : 'Convidado';
+          : guestNickname();
       const id = createAccount(db, null, null, nickname);
       return created({ token: openSession(db, id), nickname, email: null, guest: true });
     },
@@ -171,6 +248,9 @@ export const accountRoutes = (db: Db): Route[] => [
     method: 'POST',
     pattern: '/api/accounts',
     handle: (request) => {
+      const wait = signupFuse(request.origin);
+      if (wait > 0) return rejected(429, 'too_many_attempts', { seconds: wait });
+
       const data = credentials(request.body);
       if (!data) {
         return rejected(400, 'bad_credentials_format', { min: MIN_PASSWORD_LENGTH });

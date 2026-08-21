@@ -2,6 +2,7 @@ import { openDb } from './db.ts';
 import { accountRoutes } from './accounts.ts';
 import { adminRoutes, type AdminOptions } from './admin.ts';
 import { deckRoutes } from './decks.ts';
+import { historyRoutes } from './history.ts';
 import { matchRoutes } from './matches.ts';
 import { roomRoutes } from './rooms.ts';
 import { applyMigrations } from './schema.ts';
@@ -34,6 +35,7 @@ export function buildServer(
     ...deckRoutes(db),
     ...roomRoutes(db),
     ...matchRoutes(db),
+    ...historyRoutes(db),
     ...adminRoutes(db, admin),
   ];
   const server = createHttpServer(routes, staticFolder ? serveFolder(staticFolder) : null);

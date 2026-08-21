@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { ALL_CARDS, cardById } from '../../data/cards.ts';
-import { FORMAT_BY_EDITION, type Keyword } from '../../data/types.ts';
+import { EDITIONS, type Keyword } from '../../data/types.ts';
 import { LOCALES, DEFAULT_LOCALE, cardName, cardRulesText, getLocale, setLocale, t } from '../index.ts';
 import ptBR from '../locales/pt-BR.ts';
 import enUS from '../locales/en-US.ts';
@@ -63,7 +63,7 @@ describe('dicionário de cartas', () => {
 
 describe('edições', () => {
   test('todo idioma nomeia exatamente as edições do catálogo', () => {
-    const editions = Object.keys(FORMAT_BY_EDITION).sort();
+    const editions = [...EDITIONS].sort();
     for (const locale of LOCALES) {
       expect(Object.keys(BUNDLES[locale].ui.edition).sort(), locale).toEqual(editions);
     }

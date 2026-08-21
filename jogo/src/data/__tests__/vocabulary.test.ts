@@ -1,8 +1,20 @@
 import { describe, expect, test } from 'vitest';
 import { ALL_CARDS, cardById } from '../cards.ts';
 import { validateCard } from '../validate.ts';
-import { ACTION_FIELDS, CARD_BLOCKS, CONTINUOUS_FIELDS, SCENARIO_FIELDS } from '../vocabulary.ts';
+import {
+  ACTION_FIELDS,
+  ACTIVATED_FIELDS,
+  ACTIVATION_CONDITION_FIELDS,
+  CARD_BLOCKS,
+  CONTINUOUS_FIELDS,
+  COST_FIELDS,
+  SCENARIO_FIELDS,
+  SUMMON_RULE_FIELDS,
+  TRIGGERED_FIELDS,
+  type FieldMap,
+} from '../vocabulary.ts';
 import { CARD_TYPES } from '../types.ts';
+import { hasText } from '../../i18n/index.ts';
 
 /**
  * O descritor de `vocabulary.ts` só vale se descrever o catálogo REAL. O compilador
@@ -124,5 +136,46 @@ describe('validação de carta', () => {
     const card = base();
     card.onAttach = [{ type: 'draw', count: 1 }];
     expect(validateCard(card)).toContainEqual({ path: 'onAttach', problem: 'unknown_field' });
+  });
+});
+
+/**
+ * O estúdio explica cada peça do vocabulário com `vocab.*` no dicionário, e o
+ * compilador cobra as listas fechadas (ver as asserções no fim de `vocabulary.ts`).
+ * O que ele NÃO consegue cobrar é o nome de campo, que é string livre — então é
+ * aqui: campo novo no descritor sem uma linha em `vocab.field` e este teste cai.
+ */
+describe('descrição do vocabulário', () => {
+  const fieldNames = (fields: FieldMap, into: Set<string>): Set<string> => {
+    for (const [name, spec] of Object.entries(fields)) {
+      into.add(name);
+      if (spec.kind === 'group' || spec.kind === 'groups') fieldNames(spec.fields, into);
+    }
+    return into;
+  };
+
+  test('todo campo do descritor tem descrição em vocab.field', () => {
+    const names = new Set<string>();
+    const tables: Record<string, FieldMap>[] = [
+      ACTION_FIELDS,
+      CONTINUOUS_FIELDS,
+      SCENARIO_FIELDS,
+      COST_FIELDS,
+    ];
+    for (const table of tables) {
+      for (const fields of Object.values(table)) fieldNames(fields, names);
+    }
+    for (const fields of [
+      TRIGGERED_FIELDS,
+      ACTIVATED_FIELDS,
+      ACTIVATION_CONDITION_FIELDS,
+      SUMMON_RULE_FIELDS,
+    ]) {
+      fieldNames(fields as FieldMap, names);
+    }
+
+    for (const name of names) {
+      expect(hasText(`vocab.field.${name}`), `campo "${name}" sem descrição`).toBe(true);
+    }
   });
 });

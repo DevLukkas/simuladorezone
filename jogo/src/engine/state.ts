@@ -1,11 +1,5 @@
 import type { TextRef } from '../shared/text.ts';
-import type {
-  Action,
-  Element,
-  CreatureToken,
-  CardFilter,
-  Format,
-} from '../data/types.ts';
+import type { Action, Element, CreatureToken, CardFilter } from '../data/types.ts';
 
 /**
  * Estado serializável da partida. Nenhuma referência a objetos gráficos,
@@ -20,9 +14,8 @@ export const MAX_HAND = 8;
 export const POINTS_TO_WIN = 3;
 export const DIRECT_DAMAGE_PER_POINT = 5;
 export const STARTING_HAND = 5;
-export const TURN_SECONDS = 60;
-/** janela de reação à jogada do oponente (paridade com os 7s do legado) */
-export const REACTION_SECONDS = 7;
+/** o relógio da partida mora fora do motor: aqui dentro não se lê hora nenhuma */
+export { TURN_SECONDS, REACTION_SECONDS } from '../shared/clock.ts';
 
 export function oppositeSide(side: SideId): SideId {
   return side === 'a' ? 'b' : 'a';
@@ -79,6 +72,12 @@ export interface CreatureInPlay {
   attackedOnTurn?: number;
   cannotAttackUntilTurn?: number;
   cannotBeTargetedUntilTurn?: number;
+  /**
+   * Marionete de Guerra / Feiticeiro Tribal: esta criatura é OBRIGADA a atacar
+   * enquanto o turno corrente for <= este número (decisão nº 34). O dono não
+   * encerra o turno com ela parada podendo atacar.
+   */
+  mustAttackUntilTurn?: number;
   /** id da habilidade ativada → turno em que foi usada (once_per_turn) */
   usedAbilities: Record<string, number>;
   /** Pele de Pedra (herói Badur) é uma vez por criatura */
@@ -138,6 +137,13 @@ export interface PendingTrigger {
  * Tudo serializável: o replay atravessa pendências sem perder nada.
  */
 export type Job =
+  /**
+   * Abre a janela de reação agendada AQUI, no meio da fila, em vez de esperar
+   * ela esvaziar. É o que põe a reação ANTES do ataque resolver (decisão nº 38):
+   * enfileirado na frente do trabalho de `attack`, o oponente responde com o
+   * combate ainda por acontecer — que é quando responder ainda muda alguma coisa.
+   */
+  | { type: 'reaction_window' }
   | { type: 'trigger_batch'; triggers: PendingTrigger[] }
   | { type: 'trigger'; trigger: PendingTrigger }
   | { type: 'attack'; side: SideId; slot: number }
@@ -175,6 +181,14 @@ export interface PendingOption {
   id: string;
   /** rótulo traduzível: nome de carta, elemento, "Sim"/"Não"… */
   label: TextRef;
+  /**
+   * A carta que ESTA opção é, quando a escolha é entre cartas. Não entra na
+   * regra — o motor continua decidindo por `id` — mas é o que deixa a tela
+   * desenhar a ILUSTRAÇÃO em vez de um botão com o nome (pedido do DevLukkas):
+   * escolher entre duas cartas lendo dois nomes é decidir às cegas. Ausente em
+   * opção que não é carta: "Sim"/"Não", elemento, ficha sem carta de catálogo.
+   */
+  cardId?: number;
 }
 
 export interface Pending {
@@ -186,6 +200,12 @@ export interface Pending {
   title: TextRef;
   options: PendingOption[];
   canDecline: boolean;
+  /**
+   * A carta que ABRIU esta escolha. Não entra na regra: é para a tela mostrar a
+   * ilustração ao lado da pergunta — "de que carta é este efeito?" era pergunta
+   * sem resposta quando só o nome aparecia no título (pedido do DevLukkas).
+   */
+  sourceCardId?: number;
   /** janela de reação: prazo curto (SEGUNDOS_DE_REACAO) e recusa automática */
   reaction?: true;
   /** dados internos para retomar a resolução — sempre serializáveis */
@@ -205,18 +225,13 @@ export interface ReactionWindow {
   /** o que o oponente fez, para o título da pendência */
   action: ReactionTrigger;
   category: 'command' | 'ability';
+  /** a carta que o oponente acabou de jogar — a tela a mostra na pergunta */
+  sourceCardId?: number;
 }
 
 export interface GameState {
   seed: number;
   rng: number;
-  /**
-   * Formato em que a partida corre. Fica no estado (e não numa variável de build)
-   * porque servidor e cliente têm de concordar sobre quais regras valem, e porque o
-   * replay determinístico precisa dele gravado junto com a seed.
-   * Ausente nas partidas gravadas antes do segundo formato: trate como `classico`.
-   */
-  format: Format;
   turn: number;
   phase: Phase;
   activeSide: SideId;

@@ -675,4 +675,17 @@ export const creatures: CreatureCard[] = [
     ref: 'GES-0004',
     behaviorPending: true,
   },
+  {
+    id: 79,
+    type: 'creature',
+    name: 'asf',
+    race: 'Beast',
+    attack: 1,
+    health: 1,
+    text: 'asf',
+    element: 'neutral',
+    rarity: 'common',
+    edition: 'Quatro Elementos',
+    status: 'draft',
+  },
 ];

@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'vitest';
+import { ALL_CARDS } from '../../data/cards.ts';
 import { damageAfterReduction } from '../combat.ts';
+import { reduce } from '../reduce.ts';
 import { currentStats } from '../stats.ts';
 import { oppositeSide } from '../state.ts';
 import {
@@ -9,6 +11,7 @@ import {
   readyMatch,
   putInHand,
   answerOk,
+  testDeck,
 } from './helpers.ts';
 
 /**
@@ -46,7 +49,9 @@ describe('self_sent_to_discard_from_field', () => {
     expect(state.pending?.side).toBe(enemy);
     expect(state.pending?.type).toBe('choose_target');
     state = answerOk(state, `${side}:0`);
-    expect(state.sides[side].field[0]!.cannotAttackUntilTurn).toBe(state.turn + 1);
+    // "no próximo turno do controlador dela": o atacante é o lado ativo, então o
+    // bloqueio vale até o turno seguinte AO do oponente (decisão nº 33)
+    expect(state.sides[side].field[0]!.cannotAttackUntilTurn).toBe(state.turn + 2);
   });
 
   test('Lobo das Presas Prateadas (29): do campo ao descarte, invoca outra cópia do deck', () => {
@@ -271,5 +276,73 @@ describe('invocação especial e cenário', () => {
     state = applyOk(state, { type: 'END_TURN', side });
     const after = state.sides[enemy].field[1]!;
     expect(currentStats(after, state.sides[enemy].field).attack).toBe(3);
+  });
+});
+
+/**
+ * O efeito passivo do herói. Entrou em teste por causa de um relato — "testei o
+ * Ispisher e ele não curou minhas criaturas" — que acabou sendo outra coisa (a
+ * revanche não guardava o baralho, e a partida corria com o herói do deck de
+ * demonstração; ver decisão nº 40). O efeito funcionava; o que faltava era um
+ * teste dizendo isso, e um passo de animação para alguém ver acontecer.
+ */
+describe('efeito passivo do herói', () => {
+  test('Ispisher cura 1 da aliada ferida no início do turno do dono', () => {
+    let state = readyMatch({
+      decks: {
+        a: { hero: 'ispisher', cards: testDeck([1, 2, 5, 6]) },
+        b: { hero: 'tennor', cards: testDeck([1, 2, 5, 6]) },
+      },
+    });
+    const wounded = placeCreature(state, 'a', 0, 1);
+    wounded.damage = 2;
+
+    // roda até o turno de 'a' começar de novo
+    if (state.activeSide === 'a') state = applyOk(state, { type: 'END_TURN', side: 'a' });
+    const result = reduce(state, { type: 'END_TURN', side: 'b' });
+    expect(result.error).toBeUndefined();
+
+    expect(result.state.sides.a.field[0]?.damage).toBe(1);
+    // e o evento existe, que é o que a tela anima
+    expect(
+      result.events.some((event) => event.type === 'HERO_ACTIVATED' && event.hero === 'ispisher'),
+    ).toBe(true);
+    expect(result.events.some((event) => event.type === 'CREATURE_HEALED')).toBe(true);
+  });
+
+  test('Ispisher não cura criatura intacta, e o herói sem efeito não emite nada', () => {
+    let state = readyMatch({
+      decks: {
+        a: { hero: 'ispisher', cards: testDeck([1, 2, 5, 6]) },
+        b: { hero: 'tennor', cards: testDeck([1, 2, 5, 6]) },
+      },
+    });
+    placeCreature(state, 'a', 0, 1);
+    if (state.activeSide === 'a') state = applyOk(state, { type: 'END_TURN', side: 'a' });
+    const result = reduce(state, { type: 'END_TURN', side: 'b' });
+    expect(result.events.some((event) => event.type === 'HERO_ACTIVATED')).toBe(false);
+  });
+
+  test('Badur dá +1 de vida máxima à criatura Terra que entra', () => {
+    let state = readyMatch({
+      decks: {
+        a: { hero: 'badur', cards: testDeck([31]) },
+        b: { hero: 'tennor', cards: testDeck([1]) },
+      },
+    });
+    // o herói é o de 'a': a invocação tem de ser no turno dele
+    if (state.activeSide !== 'a') state = applyOk(state, { type: 'END_TURN', side: 'b' });
+    const earth = ALL_CARDS.find(
+      (card) => card.type === 'creature' && card.element === 'earth',
+    )!;
+    const uid = putInHand(state, 'a', earth.id);
+    const result = reduce(state, { type: 'SUMMON', side: 'a', cardUid: uid, slot: 0 });
+    expect(result.error).toBeUndefined();
+    const summoned = result.state.sides.a.field[0]!;
+    expect(summoned.markers.defense).toBe(1);
+    expect(summoned.stoneSkinApplied).toBe(true);
+    expect(
+      result.events.some((event) => event.type === 'HERO_ACTIVATED' && event.hero === 'badur'),
+    ).toBe(true);
   });
 });

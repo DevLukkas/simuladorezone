@@ -7,25 +7,17 @@ import { createMatch } from '../src/engine/createMatch.ts';
 import { reduce } from '../src/engine/reduce.ts';
 import { decideCommand } from '../src/engine/bot.ts';
 import { shuffle, randomInt, normalizeSeed } from '../src/engine/rng.ts';
-import { cardsOfFormat } from '../src/data/cards.ts';
+import { ALL_CARDS } from '../src/data/cards.ts';
 import { heroes } from '../src/data/heroes.ts';
 import { MAX_COPIES, MAX_DECK_CARDS } from '../src/data/deckRules.ts';
-import { FORMATS, FORMAT_NAME, type Format } from '../src/data/types.ts';
 import type { GameState, SideId } from '../src/engine/state.ts';
 
 const TURN_LIMIT = 300;
 
-/**
- * Sorteia dentro de UM formato: partida tem um formato só. A fumaça roda os dois —
- * o Quatro Elementos entrou aqui quando as palavras-chave (MARCIAL, VORPAL,
- * REGENERAR) passaram a valer em jogo, mesmo com o resto do texto pendente.
- */
-function randomDeck(
-  rng: number,
-  format: Format,
-): { rng: number; hero: string; cards: number[] } {
+/** Sorteia do catálogo inteiro: formato único (decisão nº 37). */
+function randomDeck(rng: number): { rng: number; hero: string; cards: number[] } {
   const pool: number[] = [];
-  for (const card of cardsOfFormat(format)) {
+  for (const card of ALL_CARDS) {
     for (let i = 0; i < MAX_COPIES; i++) pool.push(card.id);
   }
   const shuffled = shuffle(rng, pool);
@@ -43,15 +35,14 @@ interface MatchSummary {
   commands: number;
 }
 
-function play(seed: number, format: Format): MatchSummary {
+function play(seed: number): MatchSummary {
   let rng = normalizeSeed(seed * 7919);
-  const deckA = randomDeck(rng, format);
+  const deckA = randomDeck(rng);
   rng = deckA.rng;
-  const deckB = randomDeck(rng, format);
+  const deckB = randomDeck(rng);
 
   const created = createMatch({
     seed,
-    format,
     decks: {
       a: { hero: deckA.hero, cards: deckA.cards },
       b: { hero: deckB.hero, cards: deckB.cards },
@@ -103,7 +94,7 @@ function checkConservation(state: GameState, seed: number): void {
   }
 }
 
-function runFormat(format: Format, howMany: number): void {
+function run(howMany: number): void {
   const start = performance.now();
   let winsA = 0;
   let winsB = 0;
@@ -112,7 +103,7 @@ function runFormat(format: Format, howMany: number): void {
   let totalCommands = 0;
 
   for (let seed = 1; seed <= howMany; seed++) {
-    const summary = play(seed, format);
+    const summary = play(seed);
     if (summary.winner === 'a') winsA++;
     else if (summary.winner === 'b') winsB++;
     else draws++;
@@ -121,15 +112,15 @@ function runFormat(format: Format, howMany: number): void {
   }
 
   const duration = ((performance.now() - start) / 1000).toFixed(1);
-  console.log(`${FORMAT_NAME[format]}: ${howMany} partidas em ${duration}s`);
+  console.log(`${howMany} partidas em ${duration}s`);
   console.log(`  vitorias A: ${winsA} | vitorias B: ${winsB} | sem vencedor ate o turno ${TURN_LIMIT}: ${draws}`);
   console.log(`  media de turnos: ${(totalTurns / howMany).toFixed(1)} | media de comandos: ${(totalCommands / howMany).toFixed(0)}`);
 
   if (draws > howMany * 0.2) {
-    console.error(`Empate demais em ${FORMAT_NAME[format]}: as regras atuais estao travando partidas.`);
+    console.error('Empate demais: as regras atuais estao travando partidas.');
     process.exit(1);
   }
 }
 
 const howMany = Number(process.argv[2]) || 200;
-for (const format of FORMATS) runFormat(format, howMany);
+run(howMany);

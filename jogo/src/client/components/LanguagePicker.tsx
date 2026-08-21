@@ -5,44 +5,17 @@ import { useTranslation } from '../useTranslation.ts';
  * Troca de idioma. O padrão vem do sistema (`navigator.language`); a escolha
  * feita aqui é guardada e passa a valer por cima dele.
  *
- * Duas peças porque há dois temas em pé: o console (decisão nº 29) só cobriu as
- * telas de fora da partida, e o login segue no tema anterior. `LanguagePicker`
- * é a do login e sai junto com ele; `ConsoleLanguagePicker` é a da barra do topo.
+ * Era um par — uma peça para o login, outra para a barra do console —, porque o
+ * login ainda vivia no tema anterior. Com a migração do login (decisão nº 31)
+ * sobrou uma só: mesmo `.zn-select` das outras etiquetas da barra, do mesmo
+ * tamanho e da mesma voz mono, nas duas telas.
  */
-export function LanguagePicker({ className }: { className?: string }) {
-  const { t, locale, setLocale } = useTranslation();
-
-  return (
-    <label className={`flex items-center gap-2.5 text-[13px] text-ez-muted ${className ?? ''}`}>
-      <span className="sr-only">{t('common.language')}</span>
-      <span aria-hidden className="ez-gem h-2 w-2 shrink-0" />
-      <select
-        className="ez-select ez-select-sm"
-        value={locale}
-        onChange={(event) => setLocale(event.target.value as (typeof LOCALES)[number])}
-      >
-        {LOCALES.map((option) => (
-          <option key={option} value={option}>
-            {LOCALE_NAMES[option]}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-/**
- * O mesmo seletor na barra do console. O desenho importado não o previa — nasceu
- * num protótipo só em português —, então ele entra como `.zn-select`, do mesmo
- * tamanho e da mesma voz mono das outras etiquetas da barra, para não virar o
- * único controle "de site" no meio de um painel de terminal.
- */
-export function ConsoleLanguagePicker() {
+export function LanguagePicker() {
   const { t, locale, setLocale } = useTranslation();
 
   return (
     <select
-      className="zn-select"
+      className="zn-select uppercase"
       aria-label={t('common.language')}
       title={t('common.language')}
       value={locale}

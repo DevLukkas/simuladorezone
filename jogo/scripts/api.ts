@@ -47,6 +47,13 @@ const guestToken = guest.body.token as string;
 assert.ok(guestToken);
 assert.equal(guest.body.guest, true);
 
+// a tela de entrada NÃO manda apelido: quem entra como convidado ganha um
+// sorteado, e dois convidados nunca saem da porta com o mesmo nome
+const anonimo = await chamar('POST', '/api/guest', {});
+const outroAnonimo = await chamar('POST', '/api/guest', {});
+assert.match(anonimo.body.nickname as string, /^Summoner-[0-9A-F]{6}$/);
+assert.notEqual(anonimo.body.nickname, outroAnonimo.body.nickname);
+
 const semToken = await chamar('GET', '/api/account');
 assert.equal(semToken.status, 401);
 
@@ -133,6 +140,19 @@ assert.equal(apagado.status, 200);
 
 const vazia = await chamar('GET', '/api/decks', undefined, tokenLukkas);
 assert.equal((vazia.body.decks as unknown[]).length, 0);
+
+// formato único (decisão nº 37): deck com carta das DUAS edições é legal, e o
+// servidor não guarda mais formato nenhum para conferir
+const misto = {
+  name: 'Duas edições',
+  hero: 'badur',
+  cards: { 28: 3, 29: 3, 31: 2, 46: 3, 47: 3, 48: 3 },
+};
+const mistoCriado = await chamar('POST', '/api/decks', misto, tokenLukkas);
+assert.equal(mistoCriado.status, 201);
+assert.equal('format' in mistoCriado.body, false);
+assert.deepEqual(mistoCriado.body.cards, misto.cards);
+await chamar('DELETE', `/api/decks/${mistoCriado.body.id as number}`, undefined, tokenLukkas);
 
 // ── partidas online (sala com código) ────────────────────────────────────────
 

@@ -21,6 +21,7 @@ import {
   type FieldMap,
 } from './vocabulary.ts';
 import {
+  CARD_STATUSES,
   CARD_TYPES,
   EDITIONS,
   ELEMENTS,
@@ -266,6 +267,7 @@ const IDENTITY_KEYS = [
   'ref',
   'author',
   'behaviorPending',
+  'status',
 ] as const;
 
 const optionalText = (value: unknown, path: string, report: Report): void => {
@@ -295,6 +297,12 @@ function checkIdentity(card: Record<string, unknown>, report: Report): void {
   }
   if (card.behaviorPending !== undefined && card.behaviorPending !== true) {
     report.add('behaviorPending', 'wrong_literal');
+  }
+  // ausente é `published` (decisão nº 41): o campo só é conferido quando existe
+  if (card.status !== undefined) {
+    if (typeof card.status !== 'string' || !CARD_STATUSES.includes(card.status as never)) {
+      report.add('status', 'not_in_options');
+    }
   }
 }
 

@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { creatureActivations, handActivations, type ActivationScope } from '../activation.ts';
+import {
+  creatureAbilityOffers,
+  creatureActivations,
+  handAbilityOffers,
+  handActivations,
+  type ActivationScope,
+} from '../activation.ts';
 import { reduce } from '../reduce.ts';
 import type { Element } from '../../data/types.ts';
 import type { GameState, SideId } from '../state.ts';
@@ -16,6 +22,7 @@ function scopeOf(state: GameState, side: SideId): ActivationScope {
     field: state.sides[side].field,
     discard: state.sides[side].discard,
     hand: state.sides[side].hand,
+    enemyField: state.sides[side === 'a' ? 'b' : 'a'].field,
   };
 }
 
@@ -130,5 +137,82 @@ describe('oferta de habilidade ativada', () => {
     expect(options).toHaveLength(1);
     expect(options[0]!.sourceUid).toBe(leviathan);
     expect(engineAccepts(state, side, leviathan, 'leviathan_special_summon')).toBe(true);
+  });
+
+  /**
+   * A oferta da MÃO tem duas leituras, e a tela precisa das duas: `handActivations`
+   * é o que dá para fazer agora (o ícone que pisca na carta), `handAbilityOffers` é
+   * o que a carta SABE fazer (o botão, desligado, com o porquê no `title`). Sem a
+   * segunda o Leviathan não desenhava botão nenhum e parecia carta quebrada.
+   */
+  test('Leviathan (4): a oferta existe desligada, e o porquê é a recusa do motor', () => {
+    const state = readyMatch();
+    const side = state.activeSide;
+    state.sides[side].hand.length = 0;
+    const leviathan = putInHand(state, side, 4);
+    const inHand = state.sides[side].hand[0]!;
+
+    const [blocked] = handAbilityOffers(inHand, scopeOf(state, side));
+    expect(blocked?.available).toBe(false);
+    expect(blocked?.blocked).toBe('needs_creature_and_card');
+    expect(blocked?.cost).toBe('discard_self');
+    expect(engineAccepts(state, side, leviathan, 'leviathan_special_summon')).toBe(false);
+
+    placeCreature(state, side, 0, 31);
+    putInHand(state, side, 4);
+    const [ready] = handAbilityOffers(inHand, scopeOf(state, side));
+    expect(ready?.available).toBe(true);
+    expect(ready?.blocked).toBeUndefined();
+    expect(engineAccepts(state, side, leviathan, 'leviathan_special_summon')).toBe(true);
+  });
+
+  /**
+   * A oferta EM CAMPO tem as mesmas duas leituras da mão. O painel dizia "esta
+   * criatura não tem habilidade ativável" para o Bebê Urso sem o Urso no
+   * descarte — o texto da carta prometia uma habilidade, e a tela negava a
+   * existência dela (relato do DevLukkas).
+   */
+  test('Badur bebê (30): a oferta existe desligada, dizendo o que falta', () => {
+    const state = readyMatch();
+    const side = state.activeSide;
+    const bebe = placeCreature(state, side, 0, 30);
+
+    const [blocked] = creatureAbilityOffers(bebe, 0, scopeOf(state, side));
+    expect(blocked?.available).toBe(false);
+    expect(blocked?.blocked).toBe('no_discard_target');
+    expect(blocked?.cost).toBe('sacrifice_self');
+
+    state.sides[side].discard.push({ uid: 'badur-morto', cardId: 31 });
+    const [ready] = creatureAbilityOffers(bebe, 0, scopeOf(state, side));
+    expect(ready?.available).toBe(true);
+    expect(ready?.blocked).toBeUndefined();
+  });
+
+  test('Mysticus (3): sem Tridente, a oferta diz que o custo não dá para pagar', () => {
+    const state = readyMatch();
+    const side = state.activeSide;
+    const mysticus = placeCreature(state, side, 0, 3);
+    expect(creatureAbilityOffers(mysticus, 0, scopeOf(state, side))[0]?.blocked).toBe(
+      'cost_not_paid',
+    );
+  });
+
+  test('Feiticeiro Tribal (32): a oferta explica que é habilidade de reação', () => {
+    const state = readyMatch();
+    const side = state.activeSide;
+    const feiticeiro = placeCreature(state, side, 0, 32);
+    const [offer] = creatureAbilityOffers(feiticeiro, 0, scopeOf(state, side));
+    expect(offer?.available).toBe(false);
+    expect(offer?.blocked).toBe('reaction_only_ability');
+    // e continua fora da lista do que dá para ativar agora
+    expect(creatureActivations(feiticeiro, 0, scopeOf(state, side))).toEqual([]);
+  });
+
+  test('carta sem habilidade de mão não oferece nada', () => {
+    const state = readyMatch();
+    const side = state.activeSide;
+    state.sides[side].hand.length = 0;
+    putInHand(state, side, 31); // Badur, o Urso Guardião: invocação normal
+    expect(handAbilityOffers(state.sides[side].hand[0]!, scopeOf(state, side))).toEqual([]);
   });
 });

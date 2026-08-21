@@ -1,15 +1,32 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { cardById } from '../../data/cards.ts';
+import type { CreatureInPlay } from '../../engine/state.ts';
 import { useCardZoomStore } from '../stores/cardZoomStore.ts';
+import { useMatchStore } from '../stores/matchStore.ts';
 import { artPath } from './Card.tsx';
-import { ComposedCard } from './ComposedCard.tsx';
-import { ELEMENT_COLOR, RARITY_COLOR, rarityHalo } from '../theme.ts';
+import { CardFacts, InPlayFacts } from './CardFacts.tsx';
+import { collectionCode, ComposedCard } from './ComposedCard.tsx';
 import { useTranslation } from '../useTranslation.ts';
 
-/** Modal de leitura: a carta em tamanho grande + os dados do catálogo ao lado. */
+/**
+ * A carta ampliada, no console (decisão nº 31): a carta grande à esquerda e a
+ * ficha à direita — a MESMA ficha do painel da coleção (`CardFacts`), para o
+ * jogador ler os mesmos cinco dados no mesmo lugar nas duas telas.
+ *
+ * É o que o clique direito abre em qualquer carta do jogo, e no tabuleiro é o
+ * único caminho para ler o texto de regras: em campo a carta tem 120px e o
+ * impresso não se lê.
+ *
+ * Ampliando uma criatura DO TABULEIRO a ficha ganha duas abas (decisão nº 36):
+ * "Impressa" é o que está escrito na carta, "Em campo" é o que vale para aquela
+ * cópia — números vigentes, anexos e restrições. A carta grande não muda de aba
+ * nenhuma; ela é sempre a impressa, com os números do motor.
+ */
 export function CardZoom() {
-  const { cardId, close } = useCardZoomStore();
-  const { t, cardName, cardRulesText } = useTranslation();
+  const { cardId, onField, close } = useCardZoomStore();
+  const view = useMatchStore((state) => state.view);
+  const { t, cardName } = useTranslation();
+  const [tab, setTab] = useState<'printed' | 'inPlay'>('inPlay');
 
   useEffect(() => {
     if (cardId === null) return;
@@ -20,61 +37,111 @@ export function CardZoom() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [cardId, close]);
 
+  /* carta nova ampliada volta para a aba de campo, que é a mais específica */
+  useEffect(() => setTab('inPlay'), [cardId, onField]);
+
   if (cardId === null) return null;
   const card = cardById(cardId);
-  const elementColor = ELEMENT_COLOR[card.element];
-  const rarityColor = RARITY_COLOR[card.rarity];
+
+  /*
+    A criatura sai da visão de AGORA, não de uma cópia guardada no clique: se ela
+    morreu (ou trocou de dono da coluna) enquanto a janela estava aberta, a aba
+    simplesmente deixa de existir em vez de mostrar um retrato velho.
+  */
+  const side = onField && view ? (onField.owner === 'me' ? view.me : view.opponent) : null;
+  const creature: CreatureInPlay | null =
+    side && side.field[onField!.slot]?.uid === onField!.uid ? side.field[onField!.slot]! : null;
+  const showInPlay = creature !== null && tab === 'inPlay';
 
   return (
     <div
-      className="ez-backdrop fixed inset-0 z-[60] flex flex-wrap items-center justify-center gap-8 overflow-y-auto p-6"
+      className="zn-backdrop z-90 cursor-zoom-out"
       onClick={close}
       onContextMenu={(event) => {
         event.preventDefault();
         close();
       }}
     >
-      <div
-        className="aspect-[415/555] h-[85vh] shrink-0 rounded-2xl"
-        style={{
-          boxShadow: `0 40px 90px rgba(0,0,0,.8), 0 0 50px ${rarityHalo(card.rarity)}`,
-          animation: 'ez-card-in .4s cubic-bezier(.2,.9,.3,1.2) both',
-        }}
-      >
-        <ComposedCard card={card} art={artPath(card)} />
-      </div>
+      <div className="flex max-h-full flex-wrap items-center justify-center gap-6 overflow-auto">
+        <div
+          className="aspect-[415/555] h-[min(84vh,660px)] shrink-0 border border-zn-edge-hi"
+          style={{ animation: 'zn-card-in .4s cubic-bezier(.2,.9,.3,1.2) both' }}
+        >
+          <ComposedCard card={card} art={artPath(card)} />
+        </div>
 
-      <div
-        className="ez-panel w-[min(360px,88vw)] p-5.5 text-sm"
-        style={{ animation: 'ez-fade-in .35s ease both' }}
-      >
-        <h2 className="ez-heading text-xl">{cardName(card.id)}</h2>
-        <p className="mb-3 mt-3 flex flex-wrap gap-2">
-          <span className="ez-pill">{t(`cardType.${card.type}`)}</span>
-          <span className="ez-pill" style={{ borderColor: elementColor, color: elementColor }}>
-            {t(`element.${card.element}`)}
-          </span>
-          <span className="ez-pill" style={{ borderColor: rarityColor, color: rarityColor }}>
-            {t(`rarity.${card.rarity}`)}
-          </span>
-        </p>
-        {card.type === 'creature' && (
-          <p className="mb-3 text-ez-text">
-            {t('card.stats', {
-              race: t(`race.${card.race}`),
-              attack: card.attack,
-              health: card.health,
-            })}
+        <aside
+          className="zn-dialog zn-notch w-[min(360px,92vw)] cursor-default p-5"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-center justify-between gap-2.5">
+            <span className="zn-label tracking-[0.26em] uppercase">
+              {t('collection.cardCode', { code: collectionCode(card) })}
+            </span>
+            <button
+              type="button"
+              onClick={close}
+              className="zn-btn zn-btn-quiet zn-btn-undo h-6.5 w-6.5 text-[12px]"
+            >
+              ×
+            </button>
+          </div>
+
+          <h2 className="zn-head mt-3 text-[24px] leading-tight tracking-[0.06em]">
+            {cardName(card.id)}
+          </h2>
+
+          {creature && (
+            <div className="mt-3 flex gap-2">
+              <TabButton
+                label={t('card.tabInPlay')}
+                active={showInPlay}
+                onClick={() => setTab('inPlay')}
+              />
+              <TabButton
+                label={t('card.tabPrinted')}
+                active={!showInPlay}
+                onClick={() => setTab('printed')}
+              />
+            </div>
+          )}
+
+          <div className="mt-3.5">
+            {showInPlay && creature && side ? (
+              <InPlayFacts creature={creature} field={side.field} turn={view!.turn} />
+            ) : (
+              <CardFacts card={card} />
+            )}
+          </div>
+
+          <p className="zn-num mt-4 text-[9px] uppercase tracking-[0.16em] text-zn-ghost">
+            {t('card.closeHint')}
           </p>
-        )}
-        <p className="ez-rules whitespace-pre-line text-ez-text">
-          {cardRulesText(card.id) ?? t('card.noText')}
-        </p>
-        <p className="mt-3 text-[13px] text-ez-dim">
-          {t('card.footer', { edition: t(`edition.${card.edition}`), id: card.id })}
-        </p>
-        <p className="mt-1 text-xs text-ez-faint">{t('card.closeHint')}</p>
+        </aside>
       </div>
     </div>
+  );
+}
+
+/** aba da ficha: a ativa em ouro, a outra em fio apagado */
+function TabButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`zn-btn h-7 px-3 text-[9px] uppercase tracking-[0.16em] ${
+        active ? 'zn-btn-gold' : 'zn-btn-quiet'
+      }`}
+    >
+      {label}
+    </button>
   );
 }

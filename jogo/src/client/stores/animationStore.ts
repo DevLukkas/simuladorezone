@@ -43,7 +43,21 @@ export type Animation =
       direct: boolean;
     } & Ghost)
   | ({ id: number; kind: 'destroy'; from: Anchor; to: Anchor } & Ghost)
+  /**
+   * Carta indo PARA O DESCARTE — da mão, do deck (moagem) ou de cima de uma
+   * criatura (anexo). Carrega uma LISTA porque descarte costuma vir em lote
+   * ("descarte a mão inteira"): uma carta por passo faria a mão sumir num
+   * comboio de dois segundos, e o que interessa é ver as cartas saindo juntas.
+   */
+  | { id: number; kind: 'discard'; from: Anchor; to: Anchor; cards: Ghost[] }
   | { id: number; kind: 'score'; mine: boolean; gained: number; total: number }
+  /**
+   * A pausa que esconde a mão do oponente (decisão nº 39). Sem ela, a jogada que
+   * resolve na hora denuncia que o outro não tinha comando para responder.
+   */
+  | { id: number; kind: 'thinking' }
+  /** o efeito passivo do herói disparou: sem isto ele acontecia sem ninguém ver */
+  | { id: number; kind: 'hero'; side: SideId; hero: string; mine: boolean }
   /** aviso de virada — "SEU TURNO", "FASE DE BATALHA" */
   | {
       id: number;
@@ -129,6 +143,10 @@ function ghostOf(identity: Identity | undefined): Ghost {
   return { cardId: identity.cardId, ...(identity.token ? { token: identity.token } : {}) };
 }
 
+function discardStep(from: Anchor, side: SideId, ghost: Ghost): Animation {
+  return { id: nextId++, kind: 'discard', from, to: `discard:${side}`, cards: [ghost] };
+}
+
 /** Um evento vira um passo da linha do tempo — ou nada, se não houver o que mostrar. */
 function plan(event: GameEvent, mySide: SideId): Animation | null {
   switch (event.type) {
@@ -156,6 +174,36 @@ function plan(event: GameEvent, mySide: SideId): Animation | null {
         // ficha não vai ao descarte: some ali mesmo, na fumaça
         to: event.toDiscard ? `discard:${event.side}` : `slot:${event.side}:${event.slot}`,
         ...ghostOf(identities.get(event.uid)),
+      };
+    // tudo que vai para o descarte faz o caminho até lá; o que muda é a ORIGEM
+    case 'CARD_DISCARDED':
+    case 'HAND_LIMIT_DISCARD':
+    case 'COMMAND_PLAYED':
+      return discardStep(`hand:${event.side}`, event.side, { cardId: event.card.cardId });
+    case 'CARD_MILLED':
+      return discardStep(`deck:${event.side}`, event.side, { cardId: event.card.cardId });
+    case 'ATTACHMENT_DISCARDED':
+      return discardStep(`slot:${event.side}:${event.slot}`, event.side, {
+        cardId: event.card.cardId,
+      });
+    case 'REACTION_WINDOW':
+      // a espera é para quem NÃO decide: quem decide vê o próprio modal, e uma
+      // pausa antes dele só comeria o relógio curto da reação
+      return event.side === mySide ? null : { id: nextId++, kind: 'thinking' };
+    case 'HERO_ACTIVATED':
+      return {
+        id: nextId++,
+        kind: 'hero',
+        side: event.side,
+        hero: event.hero,
+        mine: event.side === mySide,
+      };
+    case 'ATTACK_BLOCKED':
+      return {
+        id: nextId++,
+        kind: 'announce',
+        title: text('board.announce.attackBlocked'),
+        tone: 'neutral',
       };
     case 'SCORED':
       return {
@@ -217,7 +265,18 @@ export const useAnimationStore = create<AnimationState>((set, get) => ({
       const step = plan(event, mySide);
       if (!step) continue;
       // dois avisos colados não são dois momentos: só o último diz onde a partida parou
-      if (step.kind === 'announce' && steps[steps.length - 1]?.kind === 'announce') steps.pop();
+      const previousStep = steps[steps.length - 1];
+      if (step.kind === 'announce' && previousStep?.kind === 'announce') steps.pop();
+      // descartes seguidos para o mesmo lugar viram UM passo com várias cartas
+      if (
+        step.kind === 'discard' &&
+        previousStep?.kind === 'discard' &&
+        previousStep.from === step.from &&
+        previousStep.to === step.to
+      ) {
+        previousStep.cards.push(...step.cards);
+        continue;
+      }
       steps.push(step);
     }
     if (broken.a > 0 || broken.b > 0) {

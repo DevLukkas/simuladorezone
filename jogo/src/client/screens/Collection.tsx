@@ -1,13 +1,14 @@
 import { useState } from 'react';
-import { ALL_CARDS, cardById, formatOfCard } from '../../data/cards.ts';
+import { PLAYABLE_CARDS, cardById } from '../../data/cards.ts';
 import { MAX_COPIES, MAX_DECK_CARDS } from '../../data/deckRules.ts';
 import type { Card } from '../../data/types.ts';
 import { CardImage } from '../components/Card.tsx';
+import { CardFacts } from '../components/CardFacts.tsx';
 import { collectionCode } from '../components/ComposedCard.tsx';
 import { FilterBar, INITIAL_FILTER, filterCards } from '../components/CardFilters.tsx';
 import { useDecksStore, activeDeckOf } from '../stores/decksStore.ts';
 import { useToastStore } from '../stores/toastStore.ts';
-import { ELEMENT_COLOR, RARITY_COLOR, ZN } from '../theme.ts';
+import { ELEMENT_COLOR, ZN } from '../theme.ts';
 import { useTranslation } from '../useTranslation.ts';
 
 /**
@@ -20,13 +21,13 @@ import { useTranslation } from '../useTranslation.ts';
  * depois" seria mentira).
  */
 export function Collection() {
-  const { t, cardName, cardRulesText } = useTranslation();
+  const { t, cardName } = useTranslation();
   const [filter, setFilter] = useState(INITIAL_FILTER);
   const [chosen, setChosen] = useState<number | null>(null);
   const deck = useDecksStore(activeDeckOf);
   const { save } = useDecksStore();
   const toast = useToastStore((state) => state.show);
-  const cards = filterCards(ALL_CARDS, filter);
+  const cards = filterCards(PLAYABLE_CARDS, filter);
   const card = chosen === null ? null : cardById(chosen);
 
   /** grava a cópia direto no baralho ativo; sem ativo, não há onde pôr */
@@ -54,7 +55,7 @@ export function Collection() {
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <FilterBar value={filter} onChange={setFilter} elements={false}>
           <span className="zn-num text-[10px] uppercase tracking-[0.16em] text-zn-fainter">
-            {t('collection.count', { count: cards.length, total: ALL_CARDS.length })}
+            {t('collection.count', { count: cards.length, total: PLAYABLE_CARDS.length })}
           </span>
         </FilterBar>
 
@@ -104,39 +105,13 @@ export function Collection() {
             {cardName(card.id)}
           </h2>
 
-          <div className="zn-hair mt-3.5 grid-cols-2">
-            <Fact label={t('collection.fact.type')} value={t(`cardType.${card.type}`)} />
-            <Fact
-              label={t('collection.fact.element')}
-              value={t(`element.${card.element}`)}
-              color={ELEMENT_COLOR[card.element]}
-            />
-            <Fact
-              label={t('collection.fact.rarity')}
-              value={t(`rarity.${card.rarity}`)}
-              color={RARITY_COLOR[card.rarity]}
-            />
-            {card.type === 'creature' ? (
-              <Fact
-                label={t('collection.fact.stats')}
-                value={`${card.attack} / ${card.health}`}
-              />
-            ) : (
-              <Fact
-                label={t('collection.fact.edition')}
-                value={t(`edition.${card.edition}`)}
-              />
-            )}
+          <div className="mt-3.5">
+            <CardFacts card={card} />
           </div>
 
-          <p className="mt-3.5 whitespace-pre-line text-[13px] leading-relaxed text-zn-dim">
-            {cardRulesText(card.id) ?? t('card.noText')}
-          </p>
-
           <DeckActions
-            card={card}
             copies={deck?.cards[card.id] ?? 0}
-            legal={Boolean(deck) && formatOfCard(card) === (deck?.format ?? 'classic')}
+            hasDeck={Boolean(deck)}
             onAdd={() => void adjust(card.id, 1)}
             onRemove={() => void adjust(card.id, -1)}
           />
@@ -195,37 +170,24 @@ function CollectionTile({
   );
 }
 
-function Fact({ label, value, color }: { label: string; value: string; color?: string }) {
-  return (
-    <div className="flex flex-col gap-1 px-3.5 py-2.5">
-      <span className="zn-num text-[9px] uppercase tracking-[0.2em] text-zn-faint">{label}</span>
-      <span className="zn-num text-[13px] font-bold" style={{ color: color ?? '#e6e2d8' }}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
 function DeckActions({
-  card,
   copies,
-  legal,
+  hasDeck,
   onAdd,
   onRemove,
 }: {
-  card: Card;
   copies: number;
-  /** há baralho ativo E a carta é do formato dele */
-  legal: boolean;
+  /** há baralho ativo para receber a carta (formato único: toda carta é legal) */
+  hasDeck: boolean;
   onAdd: () => void;
   onRemove: () => void;
 }) {
   const { t } = useTranslation();
 
-  if (!legal) {
+  if (!hasDeck) {
     return (
       <p className="zn-num mt-4 text-[10px] uppercase tracking-[0.14em] text-zn-ghost">
-        {t('collection.otherFormat')} · {t(`format.${formatOfCard(card)}`)}
+        {t('collection.noDeck')}
       </p>
     );
   }

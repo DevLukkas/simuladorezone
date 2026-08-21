@@ -4,18 +4,22 @@ import { useDecksStore, activeDeckOf } from '../stores/decksStore.ts';
 import { useSessionStore } from '../stores/sessionStore.ts';
 import { useToastStore } from '../stores/toastStore.ts';
 import { DeckSwitcher } from './DeckSwitcher.tsx';
-import { ConsoleLanguagePicker } from './LanguagePicker.tsx';
+import { LanguagePicker } from './LanguagePicker.tsx';
 import { useTranslation } from '../useTranslation.ts';
 import { ZN } from '../theme.ts';
 
 /** as telas de fora da partida, na ordem em que a trilha as numera */
-export type Screen = 'hub' | 'builder' | 'collection' | 'online' | 'studio';
+export type Screen = 'hub' | 'builder' | 'collection' | 'online' | 'history' | 'studio';
 
-const NAV: readonly { screen: Screen; label: 'hub' | 'builder' | 'collection' | 'online' }[] = [
+const NAV: readonly {
+  screen: Screen;
+  label: 'hub' | 'builder' | 'collection' | 'online' | 'history';
+}[] = [
   { screen: 'hub', label: 'hub' },
   { screen: 'builder', label: 'builder' },
   { screen: 'collection', label: 'collection' },
   { screen: 'online', label: 'online' },
+  { screen: 'history', label: 'history' },
 ];
 
 /**
@@ -155,25 +159,25 @@ function ActiveDeckPlate({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-/** o canto direito da barra: idioma, formato do baralho ativo e quem está logado */
+/** o canto direito da barra: idioma e quem está logado */
 function TopbarStatus() {
   const { t } = useTranslation();
   const { session, signOut } = useSessionStore();
-  const deck = useDecksStore(activeDeckOf);
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-3.5">
-      <ConsoleLanguagePicker />
-      {deck && (
-        <span className="zn-num hidden text-[10px] uppercase tracking-[0.18em] text-zn-fainter lg:inline">
-          {t('shell.formatTag', { format: t(`format.${deck.format ?? 'classic'}`) })}
-        </span>
-      )}
+      <LanguagePicker />
       <span className="zn-panel flex items-center gap-2 px-3 py-1.5">
         <span aria-hidden className="zn-beacon h-1.5 w-1.5 bg-zn-green" />
+        {/*
+          Convidada mostra o selo traduzido primeiro e o apelido sorteado depois
+          ("CONVIDADO · SUMMONER-A3F91C"): o selo diz o QUE a conta é, o apelido diz
+          QUEM ela é — e é ele que a distingue de outro convidado na mesma sala.
+          Conta com e-mail não tem selo: só o apelido.
+        */}
         <span className="zn-num text-[10px] uppercase tracking-[0.14em] text-zn-muted">
+          {session?.guest ? `${t('shell.guest')} · ` : ''}
           {session?.nickname}
-          {session?.guest ? ` · ${t('shell.guest')}` : ''}
         </span>
       </span>
       <button

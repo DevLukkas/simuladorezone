@@ -125,9 +125,80 @@ export function t(key: TextKey, params?: Record<string, TextParam>): string {
   return fill(template ?? key, params);
 }
 
+/**
+ * Existe texto para esta chave em algum dos dois dicionários?
+ *
+ * `t` devolve a própria chave quando falta, o que é o certo para chave escrita à
+ * mão (aparece o erro). Mas a dica de campo do estúdio monta a chave a partir do
+ * NOME do campo, que é string livre: lá o certo é não mostrar dica nenhuma.
+ */
+export function hasText(key: string): boolean {
+  return (
+    lookup(BUNDLES[current].ui, key) !== undefined ||
+    lookup(BUNDLES[DEFAULT_LOCALE].ui, key) !== undefined
+  );
+}
+
 /** Traduz o texto adiado que o motor/servidor devolveu. */
 export function resolve(ref: TextRef): string {
   return t(ref.key, ref.params);
+}
+
+/**
+ * O PAPEL de cada pedaço de uma frase traduzida. O texto é o mesmo do `resolve`;
+ * o que muda é que o parâmetro chega separado da moldura, e com o que ele é.
+ */
+export type TextRole = 'plain' | 'card' | 'token' | 'you' | 'opponent' | 'number';
+
+export interface TextPart {
+  text: string;
+  role: TextRole;
+}
+
+/**
+ * A mesma frase do `resolve`, mas em pedaços etiquetados — é o que o registro da
+ * partida usa para pintar o nome da carta de ouro, o número em destaque e o autor
+ * do lance na cor de quem é (decisão nº 42).
+ *
+ * Vive aqui, e não no cliente, porque quem sabe onde acaba a moldura e começa o
+ * parâmetro é quem preenche o `{...}` — reconstituir isso depois, a partir da
+ * frase pronta, seria adivinhar por casamento de texto.
+ */
+export function resolveParts(ref: TextRef): TextPart[] {
+  const template =
+    lookup(BUNDLES[current].ui, ref.key) ?? lookup(BUNDLES[DEFAULT_LOCALE].ui, ref.key) ?? ref.key;
+  const parts: TextPart[] = [];
+
+  function push(text: string, role: TextRole): void {
+    if (!text) return;
+    const last = parts[parts.length - 1];
+    // moldura seguida de moldura é uma só: o placeholder desconhecido volta como texto
+    if (role === 'plain' && last?.role === 'plain') last.text += text;
+    else parts.push({ text, role });
+  }
+
+  let cut = 0;
+  for (const match of template.matchAll(/\{(\w+)\}/g)) {
+    const at = match.index ?? 0;
+    push(template.slice(cut, at), 'plain');
+    cut = at + match[0].length;
+    const value = ref.params?.[match[1]!];
+    if (value === undefined) push(match[0], 'plain');
+    else for (const part of paramParts(value)) push(part.text, part.role);
+  }
+  push(template.slice(cut), 'plain');
+  return parts;
+}
+
+function paramParts(value: TextParam): TextPart[] {
+  if (typeof value === 'number') return [{ text: String(value), role: 'number' }];
+  if (typeof value === 'string') return [{ text: value, role: 'plain' }];
+  if ('card' in value) return [{ text: cardName(value.card), role: 'card' }];
+  if ('token' in value) return [{ text: tokenName(value.token), role: 'token' }];
+  // quem é o autor do lance vem como referência a board.you / board.opponent
+  if (value.key === 'board.you') return [{ text: resolve(value), role: 'you' }];
+  if (value.key === 'board.opponent') return [{ text: resolve(value), role: 'opponent' }];
+  return resolveParts(value);
 }
 
 /**
